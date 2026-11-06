@@ -105,6 +105,10 @@ private:
 
     void SetImageCount();
 
+    /// While frame generation is on, logs the presents of every 10 s.
+    void LogPacing(const Frame* frame, std::chrono::steady_clock::duration took,
+                   std::chrono::steady_clock::time_point now);
+
 private:
     const vk::Instance& instance;
     Core::Frontend::EmuWindow& render_window;
@@ -133,6 +137,13 @@ private:
     std::atomic<VkFormat> swapchain_image_format{};
     /// The present thread presents no frame before this (Frame::present_spacing).
     std::chrono::steady_clock::time_point next_present{};
+    struct {
+        std::chrono::steady_clock::time_point since{};
+        u64 real{};
+        u64 generated{};
+        std::chrono::nanoseconds spacing{};
+        std::chrono::steady_clock::duration present_time{};
+    } pacing_log;
 };
 
 } // namespace Vulkan

@@ -191,6 +191,36 @@ PresentManager::PresentManager(const vk::Instance& instance_,
     if (use_present_thread) {
         present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
     }
+    if (Settings::values.frame_gen.GetValue()) {
+        LOG_INFO(Render_Vulkan, "Frame gen present pacing: {}",
+                 use_present_thread ? "on" : "off (needs async presentation)");
+    }
+}
+
+void PresentManager::LogPacing(const Frame* frame, std::chrono::steady_clock::duration took,
+                               std::chrono::steady_clock::time_point now) {
+    if (!Settings::values.frame_gen.GetValue()) {
+        return;
+    }
+    const bool generated = frame->present_spacing.count() != 0;
+    ++(generated ? pacing_log.generated : pacing_log.real);
+    pacing_log.spacing += frame->present_spacing;
+    pacing_log.present_time += took;
+    if (pacing_log.since == std::chrono::steady_clock::time_point{}) {
+        pacing_log.since = now;
+    } else if (now - pacing_log.since >= std::chrono::seconds(10)) {
+        const auto ms = [](auto duration) {
+            return std::chrono::duration<double, std::milli>(duration).count();
+        };
+        const u64 total = pacing_log.real + pacing_log.generated;
+        LOG_INFO(Render_Vulkan,
+                 "Frame gen pacing (10 s): {} real and {} generated presents, spacing {:.2f} ms "
+                 "after each generated frame, {:.2f} ms average wait and present",
+                 pacing_log.real, pacing_log.generated,
+                 pacing_log.generated ? ms(pacing_log.spacing) / pacing_log.generated : 0.0,
+                 total ? ms(pacing_log.present_time) / total : 0.0);
+        pacing_log = {.since = now};
+    }
 }
 
 PresentManager::~PresentManager() = default;
@@ -389,9 +419,12 @@ void PresentManager::PresentThread(std::stop_token token) {
             // before the queue lock goes out of scope. This way the swapchain
             // lock in WaitPresent is guaranteed to occur after here.
             void(std::exchange(lock, std::unique_lock{swapchain_mutex}));
+            const auto ready = std::chrono::steady_clock::now();
             SleepUntil(next_present);
             CopyToSwapchain(frame);
-            next_present = std::chrono::steady_clock::now() + frame->present_spacing;
+            const auto presented = std::chrono::steady_clock::now();
+            next_present = presented + frame->present_spacing;
+            LogPacing(frame, presented - ready, presented);
 
             // Free the frame for reuse
             std::scoped_lock fl{free_mutex};
