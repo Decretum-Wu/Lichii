@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <boost/container/deque.hpp>
@@ -42,6 +43,9 @@ struct Frame {
     vk::Semaphore render_ready;
     vk::Fence present_done;
     bool storage_capable{};
+    /// Time the present thread leaves before presenting the next frame. Frame generation sets it
+    /// on generated frames, so they share the screen time evenly with the real ones.
+    std::chrono::nanoseconds present_spacing{};
 };
 
 class PresentManager {
@@ -127,6 +131,8 @@ private:
     std::atomic<std::size_t> image_count{};
     std::atomic<std::size_t> swapchain_image_count{};
     std::atomic<VkFormat> swapchain_image_format{};
+    /// The present thread presents no frame before this (Frame::present_spacing).
+    std::chrono::steady_clock::time_point next_present{};
 };
 
 } // namespace Vulkan
