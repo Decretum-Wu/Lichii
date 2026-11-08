@@ -191,7 +191,12 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
             UNREACHABLE();
         }
 opcode_branch:
-        (this->*opcode_handlers[size_t(opcode)])(ctx, &inst);
+        // PushRSB has an A64 version (the opcode table holds EmitX64's).
+        if (opcode == IR::Opcode::PushRSB) {
+            EmitPushRSB(ctx, &inst);
+        } else {
+            (this->*opcode_handlers[size_t(opcode)])(ctx, &inst);
+        }
         goto finish_this_inst;
 a64_branch:
         (this->*a64_handlers[size_t(opcode) - std::size(opcode_handlers)])(ctx, &inst);
