@@ -407,6 +407,11 @@ void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak:
     }
 }
 
+/// A folded address displacement as an Xbyak displacement (sign-extended).
+inline size_t FoldedDisp(s32 disp) {
+    return static_cast<size_t>(static_cast<s64>(disp));
+}
+
 inline bool IsOrdered(IR::AccType acctype) {
     return acctype == IR::AccType::ORDERED || acctype == IR::AccType::ORDEREDRW || acctype == IR::AccType::LIMITEDORDERED;
 }

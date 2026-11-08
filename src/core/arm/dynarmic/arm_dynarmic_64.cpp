@@ -488,6 +488,9 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         // W-register writes and zero-extends of values a 32-bit instruction produced skip the
         // second `mov r32, r32`.
         config.elide_redundant_zext = true;
+        // ldr/str [xN, #imm]: the immediate goes into the fastmem addressing mode instead of a
+        // separate LEA (and often a register copy).
+        config.fold_address_offsets = true;
         // The per-block %rbp frame is three instructions per block that nothing reads.
         config.omit_block_frame = true;
         // Fast dispatch table of 2^16 entries, 4-way set associative: 1 MiB per core instead of

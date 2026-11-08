@@ -11,7 +11,10 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include "common/common_types.h"
 #include "common/x64/xbyak.h"
@@ -175,6 +178,11 @@ public:
     const void* nzcv_flags_pos = nullptr;
     const void* nzcv_flags_inst = nullptr;
 
+    // Address folding (A64 fold_address_offsets), per block: Add64(base, disp) instructions whose
+    // only use is the address of a fastmem access. The Add is not emitted (its value is the base);
+    // the access adds disp in its addressing mode.
+    std::vector<std::pair<const void*, s32>> folded_address_adds;
+
     /// A64 elide_redundant_zext.
     bool elide_redundant_zext = false;
 
@@ -184,6 +192,14 @@ public:
     bool HasFarCode() const { return far_code_begin != nullptr; }
     void SwitchToFarCode();
     void SwitchToNearCode();
+    std::optional<s32> FoldedAddressDisp(const void* inst) const {
+        for (const auto& [add, disp] : folded_address_adds) {
+            if (add == inst) {
+                return disp;
+            }
+        }
+        return std::nullopt;
+    }
 
 private:
     using RunCodeFuncType = HaltReason (*)(void*, CodePtr);

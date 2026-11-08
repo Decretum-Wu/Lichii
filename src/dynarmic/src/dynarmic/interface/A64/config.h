@@ -302,6 +302,10 @@ struct UserConfig {
     /// register allocator writes into a copy in a free register instead of evicting the original.
     bool scratch_copy_to_free_reg = false;
 
+    /// x64 only, with unchecked 64-bit fastmem. A base + immediate address whose only use is one
+    /// load or store is folded into that access's addressing mode instead of computed with LEA.
+    bool fold_address_offsets = false;
+
     /// x64 only. A 32-bit value known to be zero-extended in its host register (written by a
     /// 32-bit instruction) is not zero-extended again by SetW / ZeroExtendWordToLong.
     bool elide_redundant_zext = false;

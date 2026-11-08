@@ -930,6 +930,12 @@ static Xbyak::Reg64 DoNZCV(BlockOfCode& code, RegAlloc& reg_alloc, IR::Inst* nzc
 }
 
 static void EmitAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, size_t bitsize) {
+    if (bitsize == 64 && !code.folded_address_adds.empty() && code.FoldedAddressDisp(inst)) {
+        // Folded into the address of the memory access that is its only use.
+        auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+        ctx.reg_alloc.DefineValue(code, inst, args[0]);
+        return;
+    }
     const auto carry_inst = inst->GetAssociatedPseudoOperation(IR::Opcode::GetCarryFromOp);
     const auto overflow_inst = inst->GetAssociatedPseudoOperation(IR::Opcode::GetOverflowFromOp);
     const auto nzcv_inst = inst->GetAssociatedPseudoOperation(IR::Opcode::GetNZCVFromOp);

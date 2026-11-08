@@ -101,6 +101,46 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
 
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
 
+    // Fold Add64(base, disp) into the [r13 + base + disp] address of the fastmem access that is its
+    // only use (unchecked 64-bit fastmem only: the sum then wraps exactly like the guest's).
+    code.folded_address_adds.clear();
+    if (conf.fold_address_offsets && conf.fastmem_address_space_bits == 64) {
+        for (auto& inst : block.instructions) {
+            switch (inst.GetOpcode()) {
+            case IR::Opcode::A64ReadMemory8:
+            case IR::Opcode::A64ReadMemory16:
+            case IR::Opcode::A64ReadMemory32:
+            case IR::Opcode::A64ReadMemory64:
+            case IR::Opcode::A64WriteMemory8:
+            case IR::Opcode::A64WriteMemory16:
+            case IR::Opcode::A64WriteMemory32:
+            case IR::Opcode::A64WriteMemory64:
+                break;
+            default:
+                continue;
+            }
+            const IR::Value vaddr = inst.GetArg(1);
+            if (vaddr.IsImmediate()) {
+                continue;
+            }
+            IR::Inst* const add = vaddr.GetInst();
+            if (add->GetOpcode() != IR::Opcode::Add64 || add->UseCount() != 1) {
+                continue;
+            }
+            const IR::Value base = add->GetArg(0);
+            const IR::Value offset = add->GetArg(1);
+            const IR::Value carry = add->GetArg(2);
+            if (base.IsImmediate() || !offset.IsImmediate() || !carry.IsImmediate() || carry.GetU1()) {
+                continue;
+            }
+            const s64 disp = static_cast<s64>(offset.GetImmediateAsU64());
+            if (disp < -0x7FFF'FFFF || disp > 0x7FFF'FFFF || !ShouldFastmem(ctx, &inst)) {
+                continue;
+            }
+            code.folded_address_adds.emplace_back(add, static_cast<s32>(disp));
+        }
+    }
+
     // Start emitting.
     code.align();
     const auto* const entrypoint = code.getCurr();
@@ -176,6 +216,7 @@ finish_this_inst:
             code.nzcv_live_pos = code.getCurr();
     }
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
+    code.folded_address_adds.clear();
     code.nzcv_flags_pos = nullptr;
     code.nzcv_live_pos = nullptr;
     check_bit_in_zf = false;
