@@ -318,6 +318,10 @@ struct UserConfig {
     /// return) instead of an inline stub, so patch sites are 5/6 bytes instead of 22/23.
     bool compact_block_exits = false;
 
+    /// x64 only. Cold code (memory-access fault and abort paths, atomic fallbacks, exit stubs) is
+    /// emitted into a separate region at the end of the code cache, away from the hot blocks.
+    bool far_code = false;
+
     /// x64 only. log2 of the number of fast dispatch table entries (0 = default 20) and whether
     /// the table is 4-way set associative (the four ways of a set share one cache line).
     std::uint32_t fast_dispatch_table_bits = 0;

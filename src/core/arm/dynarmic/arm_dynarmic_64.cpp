@@ -496,6 +496,9 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         // Unlinked exits jump to one shared stub per target: 5/6-byte patch sites instead of
         // 22/23 bytes plus an inline exit stub.
         config.compact_block_exits = true;
+        // Fault/abort paths, atomic fallbacks and exit stubs go to a cold region at the end of
+        // the code cache, so hot blocks sit densely.
+        config.far_code = true;
         // Halt checks on links to lower PCs and on indirect branches instead of every linked
         // branch (multicore only: dynarmic counts no cycles there).
         config.halt_check_on_back_edges = !config.enable_cycle_counting;

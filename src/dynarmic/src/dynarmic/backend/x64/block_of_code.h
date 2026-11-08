@@ -168,11 +168,31 @@ public:
 
     bool HasHostFeature(HostFeature feature) const noexcept;
 
+    /// Far code (A64 far_code): the last far_size bytes of the code space hold cold code. Call
+    /// before PreludeComplete. Does nothing where the code space needs W^X switching.
+    void EnableFarCode(size_t far_size);
+    bool HasFarCode() const { return far_code_begin != nullptr; }
+    void SwitchToFarCode();
+    void SwitchToNearCode();
+
 private:
     using RunCodeFuncType = HaltReason (*)(void*, CodePtr);
     static constexpr size_t MXCSR_ALREADY_EXITED = 1 << 0;
     static constexpr size_t FORCE_RETURN = 1 << 1;
 
+    // The commit and far-code state is declared before constant_pool on purpose: the ConstantPool
+    // constructor already calls EnsureMemoryCommitted, which reads these, so they have to be
+    // initialised first (members are initialised in declaration order).
+#ifdef _WIN32
+    size_t committed_size = 0;
+#endif
+    const u8* far_code_begin = nullptr;
+    const u8* far_code_ptr = nullptr;
+    const u8* near_code_ptr = nullptr;
+    bool in_far_code = false;
+#ifdef _WIN32
+    size_t far_committed_end = 0;
+#endif
     ConstantPool constant_pool;
     JitStateInfo jsi;
     std::array<const void*, 4> return_from_run_code;
@@ -180,9 +200,6 @@ private:
     RunCodeFuncType step_code = nullptr;
     RunCodeCallbacks cb;
     CodePtr code_begin = nullptr;
-#ifdef _WIN32
-    size_t committed_size = 0;
-#endif
     bool prelude_complete = false;
 
     void GenRunCode(std::function<void(BlockOfCode&)> rcp);

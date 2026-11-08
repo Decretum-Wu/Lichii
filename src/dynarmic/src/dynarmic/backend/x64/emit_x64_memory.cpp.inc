@@ -128,7 +128,7 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
 
         const auto location = EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
 
-        ctx.deferred_emits.emplace_back([=, this, &ctx] {
+        ColdEmits(code, ctx).emplace_back([=, this, &ctx] {
             code.L(*abort);
             code.call(wrapped_fn);
 
@@ -143,7 +143,7 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
         const auto src_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
         EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
 
-        ctx.deferred_emits.emplace_back([=, this, &ctx] {
+        ColdEmits(code, ctx).emplace_back([=, this, &ctx] {
             code.L(*abort);
             code.call(wrapped_fn);
             EmitCheckMemoryAbort(ctx, inst, end);
@@ -208,7 +208,7 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
 
         const auto location = EmitWriteMemoryMov<bitsize>(code, dest_ptr, value_idx, ordered);
 
-        ctx.deferred_emits.emplace_back([=, this, &ctx] {
+        ColdEmits(code, ctx).emplace_back([=, this, &ctx] {
             code.L(*abort);
             code.call(wrapped_fn);
 
@@ -223,7 +223,7 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
         const auto dest_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
         EmitWriteMemoryMov<bitsize>(code, dest_ptr, value_idx, ordered);
 
-        ctx.deferred_emits.emplace_back([=, this, &ctx] {
+        ColdEmits(code, ctx).emplace_back([=, this, &ctx] {
             code.L(*abort);
             code.call(wrapped_fn);
             EmitCheckMemoryAbort(ctx, inst, end);
@@ -381,7 +381,7 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
         code.L(*end);
 
         if (require_abort_handling) {
-            ctx.deferred_emits.emplace_back([=, this] {
+            ColdEmits(code, ctx).emplace_back([=, this] {
                 code.L(*abort);
                 code.call(wrapped_fn);
                 code.jmp(*end, code.T_NEAR);
@@ -503,7 +503,7 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
         }
 
         code.setnz(status.cvt8());
-        ctx.deferred_emits.emplace_back([=, this] {
+        ColdEmits(code, ctx).emplace_back([=, this] {
             code.L(*abort);
             code.call(wrapped_fn);
 

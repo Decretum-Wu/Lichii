@@ -65,6 +65,9 @@ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_in
         fast_dispatch_table.resize(size_t(1) << bits);
         fast_dispatch_table_mask = u32(((size_t(1) << bits) - 1) * sizeof(FastDispatchEntry)) & ~u32(fast_dispatch_set_size * sizeof(FastDispatchEntry) - 1);
     }
+    if (conf.far_code) {
+        code.EnableFarCode(conf.code_cache_size / 4);
+    }
     GenMemory128Accessors();
     GenFastmemFallbacks();
     GenTerminalHandlers();
@@ -164,8 +167,17 @@ finish_this_inst:
     }
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.int3();
+    const bool far_code = code.HasFarCode();
+    if (far_code) {
+        code.SwitchToFarCode();
+    }
     FlushPendingExitStubs();
     emitting_block = false;
+    for (auto& deferred_emit : ctx.far_deferred_emits)
+        deferred_emit();
+    if (far_code) {
+        code.SwitchToNearCode();
+    }
     for (auto& deferred_emit : ctx.deferred_emits)
         deferred_emit();
     code.int3();
