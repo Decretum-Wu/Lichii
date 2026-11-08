@@ -107,7 +107,7 @@ private:
 
     void SetImageCount();
 
-    /// While frame generation is on, logs the presents of every 10 s.
+    /// With EDEN_DKB_FRAME_TRACE=1 and frame generation on, logs the presents of every 10 s.
     void LogPacing(const Frame* frame, std::chrono::steady_clock::duration took,
                    std::chrono::steady_clock::time_point now);
 

@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "common/display_hdr.h"
+#include "common/dkb_frame_trace.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #ifdef _WIN32
@@ -424,12 +425,16 @@ void PresentManager::PresentThread(std::stop_token token) {
             // before the queue lock goes out of scope. This way the swapchain
             // lock in WaitPresent is guaranteed to occur after here.
             void(std::exchange(lock, std::unique_lock{swapchain_mutex}));
-            const auto ready = std::chrono::steady_clock::now();
+            const bool trace = Common::DkbFrameTrace::Enabled();
+            const auto ready = trace ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
             SleepUntil(next_present);
             CopyToSwapchain(frame);
             const auto presented = std::chrono::steady_clock::now();
             next_present = presented + frame->present_spacing;
-            LogPacing(frame, presented - ready, presented);
+            if (trace) {
+                LogPacing(frame, presented - ready, presented);
+            }
 
             // Free the frame for reuse
             std::scoped_lock fl{free_mutex};
