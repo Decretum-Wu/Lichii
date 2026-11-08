@@ -295,9 +295,16 @@ void EmitX64::EmitAddCycles(size_t cycles) {
 Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
     Xbyak::Label pass;
 
-    code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
-
-    code.LoadRequiredFlagsForCondFromRax(cond);
+    if (code.nzcv_live_pos != nullptr && code.nzcv_live_pos == code.getCurr()) {
+        // The host flags still hold the guest NZCV with CF in ARM polarity, as after sahf.
+        if (cond == IR::Cond::HI || cond == IR::Cond::LS) {
+            code.cmc();
+        }
+        code.nzcv_live_pos = nullptr;
+    } else {
+        code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
+        code.LoadRequiredFlagsForCondFromRax(cond);
+    }
 
     switch (cond) {
     case IR::Cond::EQ:

@@ -499,6 +499,9 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         // Fault/abort paths, atomic fallbacks and exit stubs go to a cold region at the end of
         // the code cache, so hot blocks sit densely.
         config.far_code = true;
+        // Branches, CSEL and CBZ/TBZ read the host flags left by the instruction before them
+        // instead of reloading NZCV from the guest state.
+        config.reuse_host_flags = !config.enable_cycle_counting;
         // Halt checks on links to lower PCs and on indirect branches instead of every linked
         // branch (multicore only: dynarmic counts no cycles there).
         config.halt_check_on_back_edges = !config.enable_cycle_counting;

@@ -327,6 +327,11 @@ struct UserConfig {
     std::uint32_t fast_dispatch_table_bits = 0;
     bool fast_dispatch_set_associative = false;
 
+    /// x64 only, without cycle counting. Conditional branches, CSEL and CBZ/TBZ use the host
+    /// flags directly when the flag-setting instruction was emitted right before them, instead
+    /// of reloading NZCV from the guest state (the state is still written).
+    bool reuse_host_flags = false;
+
     /// This option relates to translation. Generally when we run into an unpredictable
     /// instruction the ExceptionRaised callback is called. If this is true, we define
     /// definite behaviour for some unpredictable instructions.

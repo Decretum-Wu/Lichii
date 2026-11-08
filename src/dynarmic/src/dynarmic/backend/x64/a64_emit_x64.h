@@ -131,6 +131,8 @@ public:
     /// Byte offset mask of a set (or entry) in fast_dispatch_table.
     u32 fast_dispatch_table_mask = 0;
     size_t fast_dispatch_set_size = 1;
+    /// EmitA64SetCheckBit left the check bit in ZF for the CheckBit terminal.
+    bool check_bit_in_zf = false;
 
     // Compact block exits (conf.compact_block_exits): one shared unlinked-exit stub per target
     // descriptor, created while a block that links to it is emitted, and kept until ClearCache.

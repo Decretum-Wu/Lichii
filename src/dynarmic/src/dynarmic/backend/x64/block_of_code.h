@@ -168,6 +168,13 @@ public:
 
     bool HasHostFeature(HostFeature feature) const noexcept;
 
+    // Flag reuse (A64 reuse_host_flags). The host flags equal the guest NZCV (x64 layout, CF in
+    // ARM polarity) while getCurr() == nzcv_live_pos. nzcv_flags_pos/inst: the flags of the Add/Sub
+    // that defined nzcv_flags_inst (a GetNZCVFromOp) are live while getCurr() == nzcv_flags_pos.
+    const void* nzcv_live_pos = nullptr;
+    const void* nzcv_flags_pos = nullptr;
+    const void* nzcv_flags_inst = nullptr;
+
     /// Far code (A64 far_code): the last far_size bytes of the code space hold cold code. Call
     /// before PreludeComplete. Does nothing where the code space needs W^X switching.
     void EnableFarCode(size_t far_size);
