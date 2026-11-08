@@ -485,6 +485,8 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         // operand that is overwritten but still needed is copied to a free register instead.
         config.spill_to_free_gpr = true;
         config.scratch_copy_to_free_reg = true;
+        // The per-block %rbp frame is three instructions per block that nothing reads.
+        config.omit_block_frame = true;
     }
 #endif
     m_jit.emplace(config);

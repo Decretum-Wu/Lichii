@@ -302,6 +302,10 @@ struct UserConfig {
     /// register allocator writes into a copy in a free register instead of evicting the original.
     bool scratch_copy_to_free_reg = false;
 
+    /// x64 only. Blocks do not save and set up %rbp as a frame pointer (nothing in the JIT
+    /// reads it; Windows unwinding does not use it).
+    bool omit_block_frame = false;
+
     /// This option relates to translation. Generally when we run into an unpredictable
     /// instruction the ExceptionRaised callback is called. If this is true, we define
     /// definite behaviour for some unpredictable instructions.
