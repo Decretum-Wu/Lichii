@@ -85,7 +85,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
         if (conf.page_table)
             gprs.reset(size_t(HostLoc::R14));
         return gprs;
-    }(), any_xmm);
+    }(), any_xmm, conf.spill_to_free_gpr, conf.scratch_copy_to_free_reg);
 
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
 

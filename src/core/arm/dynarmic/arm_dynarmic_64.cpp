@@ -477,6 +477,16 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     if (Kernel::Nx2ThreadStats::g_enabled && m_core_index < g_jit_counters.size()) {
         config.counters = &g_jit_counters[m_core_index];
     }
+#if defined(ARCHITECTURE_x86_64)
+    // x86-64 host code generation options; Paranoid keeps dynarmic's defaults.
+    if (Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Paranoid) {
+        // The JIT spilled ~9% of its instructions to stack slots in Ocarina of Time's hot code
+        // while callee-saved GPRs sat empty: evictions go to a free callee-saved GPR first, and an
+        // operand that is overwritten but still needed is copied to a free register instead.
+        config.spill_to_free_gpr = true;
+        config.scratch_copy_to_free_reg = true;
+    }
+#endif
     m_jit.emplace(config);
 }
 

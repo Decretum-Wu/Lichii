@@ -294,6 +294,14 @@ struct UserConfig {
     /// callbacks.
     bool recompile_on_exclusive_fastmem_failure = true;
 
+    /// x64 only. The register allocator moves a value it must evict into a free callee-saved
+    /// GPR when there is one, instead of spilling it to the stack.
+    bool spill_to_free_gpr = false;
+
+    /// x64 only. When an instruction overwrites an operand that is still needed later, the
+    /// register allocator writes into a copy in a free register instead of evicting the original.
+    bool scratch_copy_to_free_reg = false;
+
     /// This option relates to translation. Generally when we run into an unpredictable
     /// instruction the ExceptionRaised callback is called. If this is true, we define
     /// definite behaviour for some unpredictable instructions.

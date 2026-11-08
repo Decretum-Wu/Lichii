@@ -146,7 +146,7 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
     RegAlloc() noexcept = default;
-    void Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order) noexcept;
+    void Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order, bool new_spill_to_gpr = false, bool new_scratch_copy = false) noexcept;
 
     ArgumentInfo GetArgumentInfo(const IR::Inst* inst) noexcept;
     void RegisterPseudoOperation(const IR::Inst* inst) noexcept;
@@ -305,6 +305,8 @@ private:
     u64 occupied_lo = 0;
     u64 occupied_hi = 0;
     mutable u32 touched_regs = 0;
+    bool spill_to_gpr = false;
+    bool scratch_copy = false;
 };
 
 }  // namespace Dynarmic::Backend::X64
