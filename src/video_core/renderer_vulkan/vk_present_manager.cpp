@@ -35,23 +35,19 @@ constexpr u32 MAX_PRESENT_ATTEMPTS = 3;
 static_assert(MAX_FRAMES_IN_FLIGHT <= LSFG_MAX_TARGETS);
 #endif
 
-// Sleeps in timer ticks while more than a millisecond is left, then yields until the deadline.
+// Sleeps until the deadline, without spinning: it may pass by up to a timer tick (about 0.5 ms
+// on Windows), well within a refresh, and the next deadline counts from the actual present.
 void SleepUntil(std::chrono::steady_clock::time_point deadline) {
-    using namespace std::chrono_literals;
     while (true) {
         const auto left = deadline - std::chrono::steady_clock::now();
         if (left <= std::chrono::steady_clock::duration::zero()) {
             return;
         }
-        if (left > 1ms) {
 #ifdef _WIN32
-            Common::Windows::SleepForOneTick();
+        Common::Windows::SleepForOneTick();
 #else
-            std::this_thread::sleep_for(left - 1ms);
+        std::this_thread::sleep_for(left);
 #endif
-        } else {
-            std::this_thread::yield();
-        }
     }
 }
 
