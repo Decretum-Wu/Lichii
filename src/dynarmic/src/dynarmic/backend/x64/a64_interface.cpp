@@ -51,6 +51,15 @@ static std::function<void(BlockOfCode&)> GenRCP(const A64::UserConfig& conf) {
     };
 }
 
+// Largest power of two <= conf.rsb_size, between 8 and A64JitState::RSB_SIZE, minus one.
+static size_t RsbPtrMask(const A64::UserConfig& conf) {
+    size_t size = A64JitState::RSB_SIZE;
+    while (size > 8 && size > conf.rsb_size) {
+        size >>= 1;
+    }
+    return size - 1;
+}
+
 static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code) {
     return Optimization::PolyfillOptions{
         .sha256 = !code.HasHostFeature(HostFeature::SHA),
@@ -62,7 +71,7 @@ struct Jit::Impl final {
 public:
     Impl(Jit* jit, UserConfig conf)
         : conf(conf)
-        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
+        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state, RsbPtrMask(conf)}, conf.code_cache_size, GenRCP(conf))
         , emitter(block_of_code, conf, jit)
         , polyfill_options(GenPolyfillOptions(block_of_code))
     {
@@ -78,7 +87,7 @@ public:
         // TODO: Check code alignment
         const CodePtr current_code_ptr = [this] {
             // RSB optimization
-            const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A64JitState::RSB_PTR_MASK;
+            const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & u32(RsbPtrMask(conf));
             if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
                 jit_state.rsb_ptr = new_rsb_ptr;
                 return CodePtr(jit_state.rsb_codeptrs[new_rsb_ptr]);

@@ -491,6 +491,8 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         // the 16 MiB direct-mapped 2^20 table.
         config.fast_dispatch_table_bits = 16;
         config.fast_dispatch_set_associative = true;
+        // A 32-entry return stack buffer: returns from deeper call chains skip the dispatcher.
+        config.rsb_size = 32;
     }
 #endif
     m_jit.emplace(config);
