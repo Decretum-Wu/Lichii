@@ -192,8 +192,13 @@ PresentManager::PresentManager(const vk::Instance& instance_,
     }
 
     if (use_present_thread) {
-        present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
+        StartPresentThread();
     }
+}
+
+void PresentManager::StartPresentThread() {
+    use_present_thread = true;
+    present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
 }
 
 void PresentManager::LogPacing(const Frame* frame, std::chrono::steady_clock::duration took,
@@ -245,6 +250,11 @@ Frame* PresentManager::GetRenderFrame() {
 }
 
 void PresentManager::Present(Frame* frame) {
+    if (!use_present_thread && Settings::values.frame_gen.GetValue()) {
+        // Frame generation was turned on from the status bar while a game runs. Earlier frames
+        // were presented here, so none are in flight.
+        StartPresentThread();
+    }
     if (use_present_thread) {
         scheduler.Record([this, frame](vk::CommandBuffer) {
             std::unique_lock lock{queue_mutex};

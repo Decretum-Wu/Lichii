@@ -86,6 +86,8 @@ public:
 private:
     enum class TransferMode { Unsupported, Copy, Blit };
 
+    void StartPresentThread();
+
     void PresentThread(std::stop_token token);
 
     void CopyToSwapchain(Frame* frame);
