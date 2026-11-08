@@ -340,6 +340,13 @@ struct UserConfig {
     /// of reloading NZCV from the guest state (the state is still written).
     bool reuse_host_flags = false;
 
+    /// x64 only, without cycle counting and with omit_block_frame. BL and BLR become a host
+    /// `call` and RET a host `ret` once the guest return address matches the one the call
+    /// pushed (else the fast dispatcher runs), so the host's return predictor predicts guest
+    /// returns. Spills and the check bit move into the JIT state; the host stack holds one frame
+    /// per guest call.
+    bool host_call_return = false;
+
     /// This option relates to translation. Generally when we run into an unpredictable
     /// instruction the ExceptionRaised callback is called. If this is true, we define
     /// definite behaviour for some unpredictable instructions.

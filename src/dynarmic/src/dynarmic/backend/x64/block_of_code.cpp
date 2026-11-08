@@ -394,10 +394,17 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     SwitchMxcsrOnEntry();
     jmp(ABI_PARAM2);
 
-    // Dispatcher loop
+    // Dispatcher loop. With host_stack_base_offset, guest call frames may be on the stack here:
+    // every entry drops them before the StackLayout below is addressed through rsp.
+    const auto reset_host_stack = [this] {
+        if (cb.host_stack_base_offset) {
+            mov(rsp, qword[ABI_JIT_PTR + *cb.host_stack_base_offset]);
+        }
+    };
 
     align();
     return_from_run_code[0] = getCurr<const void*>();
+    reset_host_stack();
 
     cmp(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller);
@@ -410,6 +417,7 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
 
     align();
     return_from_run_code[MXCSR_ALREADY_EXITED] = getCurr<const void*>();
+    reset_host_stack();
 
     cmp(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller_mxcsr_already_exited);
@@ -424,12 +432,14 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     align();
     return_from_run_code[FORCE_RETURN] = getCurr<const void*>();
     L(return_to_caller);
+    reset_host_stack();
 
     SwitchMxcsrOnExit();
     // fallthrough
 
     return_from_run_code[MXCSR_ALREADY_EXITED | FORCE_RETURN] = getCurr<const void*>();
     L(return_to_caller_mxcsr_already_exited);
+    reset_host_stack();
 
     if (cb.enable_cycle_counting) {
         cb.AddTicks.EmitCall(*this, [this](RegList param) {

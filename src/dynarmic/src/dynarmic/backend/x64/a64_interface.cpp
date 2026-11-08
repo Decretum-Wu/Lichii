@@ -37,6 +37,7 @@ static RunCodeCallbacks GenRunCodeCallbacks(A64::UserCallbacks* cb, CodePtr (*Lo
         ArgCallback(Devirtualize<&A64::UserCallbacks::AddTicks>(cb)),
         ArgCallback(Devirtualize<&A64::UserCallbacks::GetTicksRemaining>(cb)),
         conf.enable_cycle_counting,
+        HostCallReturn(conf) ? std::optional<u32>{u32(offsetof(A64JitState, host_stack_base))} : std::nullopt,
     };
 }
 
@@ -47,6 +48,15 @@ static std::function<void(BlockOfCode&)> GenRCP(const A64::UserConfig& conf) {
         }
         if (conf.fastmem_pointer) {
             code.mov(code.r13, *conf.fastmem_pointer);
+        }
+        if (HostCallReturn(conf)) {
+            // A RET compares its target with the frame's [rsp + ABI_SHADOW_SPACE]; with no guest
+            // frame that is the first StackLayout word (the spills live in the JIT state), which
+            // holds a value no location descriptor has (bits 57-58 are never set in one).
+            code.mov(code.qword[code.rsp + ABI_SHADOW_SPACE], -1);
+            code.mov(code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, host_stack_base)], code.rsp);
+            code.lea(code.rax, code.ptr[code.rsp - HostCallFrameSize * HostCallMaxDepth]);
+            code.mov(code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, host_stack_limit)], code.rax);
         }
     };
 }

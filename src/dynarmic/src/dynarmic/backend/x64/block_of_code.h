@@ -38,6 +38,9 @@ struct RunCodeCallbacks {
     ArgCallback AddTicks;
     ArgCallback GetTicksRemaining;
     bool enable_cycle_counting;
+    /// Offset of a u64 in the JIT state holding the host stack pointer to restore whenever
+    /// control is back in the dispatcher (A64 host_call_return); none when rsp never moves.
+    std::optional<u32> host_stack_base_offset = std::nullopt;
 };
 
 class BlockOfCode final : public Xbyak::CodeGenerator {

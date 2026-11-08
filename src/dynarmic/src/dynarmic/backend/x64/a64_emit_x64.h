@@ -27,6 +27,12 @@
 
 namespace Dynarmic::Backend::X64 {
 
+/// UserConfig::host_call_return in effect: it needs rsp-free blocks (no %rbp frame, no cycle
+/// counter on the stack).
+inline bool HostCallReturn(const A64::UserConfig& conf) {
+    return conf.host_call_return && conf.omit_block_frame && !conf.enable_cycle_counting;
+}
+
 struct A64EmitContext final : public EmitContext {
     A64EmitContext(const A64::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block, boost::container::stable_vector<Xbyak::Label>& shared_labels);
 
@@ -133,6 +139,12 @@ public:
     size_t fast_dispatch_set_size = 1;
     /// EmitA64SetCheckBit left the check bit in ZF for the CheckBit terminal.
     bool check_bit_in_zf = false;
+    /// host_call_return: the guest return address of the block's BL/BLR, pushed as a host call
+    /// frame right before the terminal.
+    std::optional<IR::LocationDescriptor> call_return_target;
+    void EmitHostCall(const IR::LocationDescriptor& return_target);
+    /// Where the check bit lives: the JIT state with host_call_return, else the stack.
+    Xbyak::Address CheckBitAddress() const;
 
     // Compact block exits (conf.compact_block_exits): one shared unlinked-exit stub per target
     // descriptor, created while a block that links to it is emitted, and kept until ClearCache.

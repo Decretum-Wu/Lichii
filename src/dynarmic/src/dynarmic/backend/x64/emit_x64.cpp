@@ -141,7 +141,11 @@ void EmitX64::EmitVerboseDebuggingOutput(RegAlloc& reg_alloc) {
     for (int i = 0; i < 16; i++) {
         code.movaps(xword[rsp + offsetof(RegisterData, xmms) + 2 * sizeof(u64) * i], Xbyak::Xmm{i});
     }
-    code.lea(rax, ptr[rsp + sizeof(RegisterData) + offsetof(StackLayout, spill)]);
+    if (const auto offset = reg_alloc.SpillJitOffset()) {
+        code.lea(rax, ptr[code.ABI_JIT_PTR + *offset]);
+    } else {
+        code.lea(rax, ptr[rsp + sizeof(RegisterData) + ABI_SHADOW_SPACE + offsetof(StackLayout, spill)]);
+    }
     code.mov(qword[rsp + offsetof(RegisterData, spill)], rax);
 
     reg_alloc.EmitVerboseDebuggingOutput(code);

@@ -185,7 +185,8 @@ bool Argument::IsInMemory(RegAlloc& reg_alloc) const noexcept {
     return HostLocIsSpill(*reg_alloc.ValueLocation(value.GetInst()));
 }
 
-void RegAlloc::Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order, bool new_spill_to_gpr, bool new_scratch_copy) noexcept {
+void RegAlloc::Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order, bool new_spill_to_gpr, bool new_scratch_copy,
+                     std::optional<s32> new_spill_jit_offset) noexcept {
     u32 regs = touched_regs;
     touched_regs = 0;
     while (regs) {
@@ -197,6 +198,7 @@ void RegAlloc::Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_orde
     xmm_order = new_xmm_order;
     spill_to_gpr = new_spill_to_gpr;
     scratch_copy = new_scratch_copy;
+    spill_jit_offset = new_spill_jit_offset;
     reserved_stack_space = 0;
     dirty_lo = 0;
     dirty_hi = 0;
@@ -672,6 +674,9 @@ void RegAlloc::EmitMove(BlockOfCode& code, const size_t bit_width, const HostLoc
         ASSERT(HostLocIsSpill(loc));
         size_t i = size_t(loc) - size_t(HostLoc::FirstSpill);
         ASSERT(i < SpillCount && "Spill index greater than number of available spill locations");
+        if (spill_jit_offset) {
+            return Xbyak::util::r15 + *spill_jit_offset + i * sizeof(StackLayout::spill[0]);
+        }
         return Xbyak::util::rsp + reserved_stack_space + ABI_SHADOW_SPACE + offsetof(StackLayout, spill) + i * sizeof(StackLayout::spill[0]);
     };
     auto const spill_xmm_to_op = [&](const HostLoc loc) {
