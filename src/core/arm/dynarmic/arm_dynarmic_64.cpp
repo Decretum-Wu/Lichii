@@ -493,6 +493,9 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.fast_dispatch_set_associative = true;
         // A 32-entry return stack buffer: returns from deeper call chains skip the dispatcher.
         config.rsb_size = 32;
+        // Unlinked exits jump to one shared stub per target: 5/6-byte patch sites instead of
+        // 22/23 bytes plus an inline exit stub.
+        config.compact_block_exits = true;
     }
 #endif
     m_jit.emplace(config);

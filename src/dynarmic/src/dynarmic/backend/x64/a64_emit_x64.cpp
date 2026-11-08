@@ -100,6 +100,8 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     // Start emitting.
     code.align();
     const auto* const entrypoint = code.getCurr();
+    emitting_block = true;
+    pending_exit_stubs.clear();
     if (!conf.omit_block_frame) {
         code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
         code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
@@ -162,6 +164,8 @@ finish_this_inst:
     }
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.int3();
+    FlushPendingExitStubs();
+    emitting_block = false;
     for (auto& deferred_emit : ctx.deferred_emits)
         deferred_emit();
     code.int3();
@@ -182,6 +186,8 @@ finish_this_inst:
 
 void A64EmitX64::ClearCache() {
     EmitX64::ClearCache();
+    exit_stubs.clear();
+    pending_exit_stubs.clear();
     block_ranges.ClearCache();
     ClearFastDispatchTable();
     fastmem_patch_info.clear();
@@ -669,9 +675,7 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
                 e.EmitPatchJz(terminal.next);
             }
         }
-        e.code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
-        e.code.mov(qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
-        e.code.ForceReturnFromRunCode();
+        e.EmitUnlinkedExit(terminal.next);
     } else {
         e.code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
         e.code.mov(qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
@@ -775,8 +779,72 @@ bool A64EmitX64::EmitTerminal(IR::Term::Terminal const& terminal, IR::LocationDe
     UNREACHABLE();
 }
 
+Xbyak::Label* A64EmitX64::PendingExitStub(const IR::LocationDescriptor& target) {
+    for (const auto& [value, label] : pending_exit_stubs) {
+        if (value == target.Value()) {
+            return label;
+        }
+    }
+    Xbyak::Label* const label = &shared_labels.emplace_back();
+    pending_exit_stubs.emplace_back(target.Value(), label);
+    return label;
+}
+
+void A64EmitX64::EnsureExitStub(const IR::LocationDescriptor& target) {
+    if (!exit_stubs.contains(target.Value())) {
+        PendingExitStub(target);
+    }
+}
+
+void A64EmitX64::FlushPendingExitStubs() {
+    for (const auto& [value, label] : pending_exit_stubs) {
+        code.L(*label);
+        exit_stubs[value] = code.getCurr<CodePtr>();
+        code.mov(rax, A64::LocationDescriptor{IR::LocationDescriptor{value}}.PC());
+        code.mov(qword[code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
+        code.ReturnFromRunCode();
+    }
+    pending_exit_stubs.clear();
+}
+
+void A64EmitX64::EmitUnlinkedExit(const IR::LocationDescriptor& target) {
+    if (conf.compact_block_exits) {
+        // The stub returns through the dispatcher, which also returns when a halt is pending.
+        if (const auto it = exit_stubs.find(target.Value()); it != exit_stubs.end()) {
+            code.jmp(it->second, code.T_NEAR);
+        } else {
+            ASSERT(emitting_block);
+            code.jmp(*PendingExitStub(target), code.T_NEAR);
+        }
+        return;
+    }
+    code.mov(rax, A64::LocationDescriptor{target}.PC());
+    code.mov(qword[code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
+    code.ForceReturnFromRunCode();
+}
+
+// Compact exits: a 5/6-byte rel32 jump to the target block, or to the target's shared exit stub
+// while unlinked. Every site gets its stub at first emission, so Unpatch always finds one.
+#define COMPACT_PATCH(JCC, SIZE)                                                                    \
+    if (conf.compact_block_exits) {                                                                 \
+        if (emitting_block) {                                                                       \
+            EnsureExitStub(target_desc);                                                            \
+        }                                                                                           \
+        if (target_code_ptr) {                                                                      \
+            code.JCC(target_code_ptr);                                                              \
+        } else if (const auto it = exit_stubs.find(target_desc.Value()); it != exit_stubs.end()) { \
+            code.JCC(it->second);                                                                   \
+        } else {                                                                                    \
+            ASSERT(emitting_block);                                                                 \
+            code.JCC(*PendingExitStub(target_desc), code.T_NEAR);                                   \
+        }                                                                                           \
+        code.EnsurePatchLocationSize(patch_location, SIZE);                                         \
+        return;                                                                                     \
+    }
+
 void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
+    COMPACT_PATCH(jg, 6)
     if (target_code_ptr) {
         code.jg(target_code_ptr);
     } else {
@@ -789,6 +857,7 @@ void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr 
 
 void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
+    COMPACT_PATCH(jz, 6)
     if (target_code_ptr) {
         code.jz(target_code_ptr);
     } else {
@@ -801,6 +870,7 @@ void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr 
 
 void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
     const CodePtr patch_location = code.getCurr();
+    COMPACT_PATCH(jmp, 5)
     if (target_code_ptr) {
         code.jmp(target_code_ptr);
     } else {
@@ -810,6 +880,8 @@ void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
     }
     code.EnsurePatchLocationSize(patch_location, 22);
 }
+
+#undef COMPACT_PATCH
 
 void A64EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
     if (!target_code_ptr) {

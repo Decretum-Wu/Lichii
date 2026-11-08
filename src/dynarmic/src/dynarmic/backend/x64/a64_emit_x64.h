@@ -131,6 +131,17 @@ public:
     /// Byte offset mask of a set (or entry) in fast_dispatch_table.
     u32 fast_dispatch_table_mask = 0;
     size_t fast_dispatch_set_size = 1;
+
+    // Compact block exits (conf.compact_block_exits): one shared unlinked-exit stub per target
+    // descriptor, created while a block that links to it is emitted, and kept until ClearCache.
+    ::Common::unordered_map<u64, CodePtr> exit_stubs;
+    std::vector<std::pair<u64, Xbyak::Label*>> pending_exit_stubs;
+    bool emitting_block = false;
+    Xbyak::Label* PendingExitStub(const IR::LocationDescriptor& target);
+    void EnsureExitStub(const IR::LocationDescriptor& target);
+    void FlushPendingExitStubs();
+    /// Leaves the block for `target` without linking: stores the PC and returns to the dispatcher.
+    void EmitUnlinkedExit(const IR::LocationDescriptor& target);
     std::vector<FastmemPatchInfo> fastmem_patch_info;  // sorted by rip
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
