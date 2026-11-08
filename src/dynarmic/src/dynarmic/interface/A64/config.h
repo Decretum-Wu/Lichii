@@ -306,6 +306,11 @@ struct UserConfig {
     /// reads it; Windows unwinding does not use it).
     bool omit_block_frame = false;
 
+    /// x64 only, without cycle counting. Links to a higher guest PC skip the halt check; links
+    /// to the same or a lower PC and indirect branches (RSB/fast dispatch) check it instead, so
+    /// every loop still sees a halt request.
+    bool halt_check_on_back_edges = false;
+
     /// x64 only. Return stack buffer entries used (power of two, 8 to 32).
     std::uint32_t rsb_size = 8;
 

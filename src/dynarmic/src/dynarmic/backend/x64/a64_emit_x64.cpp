@@ -218,11 +218,21 @@ void A64EmitX64::GenTerminalHandlers() {
         code.or_(rbx, rcx);
     };
 
+    // With halt_check_on_back_edges forward links skip the halt check, so indirect branches
+    // (the PC is already stored) take it.
+    const auto check_halt = [this] {
+        if (conf.halt_check_on_back_edges && !conf.enable_cycle_counting) {
+            code.cmp(dword[code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
+            code.jne(code.GetForceReturnFromRunCodeAddress());
+        }
+    };
+
     Xbyak::Label fast_dispatch_cache_miss;
     Xbyak::Label rsb_cache_miss;
 
     code.align();
     terminal_handler_pop_rsb_hint = code.getCurr<const void*>();
+    check_halt();
     calculate_location_descriptor();
     code.mov(eax, dword[code.ABI_JIT_PTR + offsetof(A64JitState, rsb_ptr)]);
     code.sub(eax, 1);
@@ -241,6 +251,7 @@ void A64EmitX64::GenTerminalHandlers() {
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.align();
         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
+        check_halt();
         calculate_location_descriptor();
         code.L(rsb_cache_miss);
         code.mov(r8, u64(fast_dispatch_table.data()));
@@ -655,9 +666,40 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::ReturnToDispatch, IR::LocationDes
     return true;
 }
 
-bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationDescriptor, bool is_single_step) {
+// A link to a higher guest PC cannot close a loop on its own: every cycle of blocks contains a
+// link to the same or a lower start PC, or an indirect branch, and those check for a halt.
+bool IsForwardLink(const A64EmitX64& e, const IR::LocationDescriptor& next, const IR::LocationDescriptor& initial_location) {
+    return e.conf.halt_check_on_back_edges && !e.conf.enable_cycle_counting &&
+           A64::LocationDescriptor{next}.PC() > A64::LocationDescriptor{initial_location}.PC();
+}
+
+void EmitHaltCheckedLink(A64EmitX64& e, const IR::LocationDescriptor& next) {
+    e.code.cmp(dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
+    e.AddPatchLocation(next, EmitX64::PatchKind::Jz);
+    if (const auto next_bb = e.GetBasicBlock(next)) {
+        e.EmitPatchJz(next, next_bb->entrypoint);
+    } else {
+        e.EmitPatchJz(next);
+    }
+    e.EmitUnlinkedExit(next);
+}
+
+void EmitUncheckedLink(A64EmitX64& e, const IR::LocationDescriptor& next) {
+    e.AddPatchLocation(next, EmitX64::PatchKind::Jmp);
+    if (auto next_bb = e.GetBasicBlock(next)) {
+        e.EmitPatchJmp(next, next_bb->entrypoint);
+    } else {
+        e.EmitPatchJmp(next);
+    }
+}
+
+bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     // Used for patches and linking
     if (e.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
+        if (IsForwardLink(e, terminal.next, initial_location)) {
+            EmitUncheckedLink(e, terminal.next);
+            return true;
+        }
         if (e.conf.enable_cycle_counting) {
             e.code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
             e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jg);
@@ -684,13 +726,12 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
     return true;
 }
 
-bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::LocationDescriptor, bool is_single_step) {
+bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     if (e.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
-        e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jmp);
-        if (auto next_bb = e.GetBasicBlock(terminal.next)) {
-            e.EmitPatchJmp(terminal.next, next_bb->entrypoint);
+        if (e.conf.halt_check_on_back_edges && !e.conf.enable_cycle_counting && !IsForwardLink(e, terminal.next, initial_location)) {
+            EmitHaltCheckedLink(e, terminal.next);
         } else {
-            e.EmitPatchJmp(terminal.next);
+            EmitUncheckedLink(e, terminal.next);
         }
     } else {
         e.code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
