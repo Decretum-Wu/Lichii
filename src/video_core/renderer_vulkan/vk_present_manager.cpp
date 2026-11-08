@@ -155,7 +155,10 @@ PresentManager::PresentManager(const vk::Instance& instance_,
     , swapchain{swapchain_}
     , surface{surface_}
     , storage_supported{CanStoreToFrame(device.GetPhysical(), swapchain.GetImageFormat())}
-    , use_present_thread{Settings::values.async_presentation.GetValue()}
+    // Frame generation needs the present thread to space generated frames without stalling the
+    // emulator.
+    , use_present_thread{Settings::values.async_presentation.GetValue() ||
+                         Settings::values.frame_gen.GetValue()}
 {
     SetImageCount();
 
@@ -190,10 +193,6 @@ PresentManager::PresentManager(const vk::Instance& instance_,
 
     if (use_present_thread) {
         present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
-    }
-    if (Settings::values.frame_gen.GetValue()) {
-        LOG_INFO(Render_Vulkan, "Frame gen present pacing: {}",
-                 use_present_thread ? "on" : "off (needs async presentation)");
     }
 }
 
