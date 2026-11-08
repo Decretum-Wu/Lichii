@@ -487,6 +487,10 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.scratch_copy_to_free_reg = true;
         // The per-block %rbp frame is three instructions per block that nothing reads.
         config.omit_block_frame = true;
+        // Fast dispatch table of 2^16 entries, 4-way set associative: 1 MiB per core instead of
+        // the 16 MiB direct-mapped 2^20 table.
+        config.fast_dispatch_table_bits = 16;
+        config.fast_dispatch_set_associative = true;
     }
 #endif
     m_jit.emplace(config);

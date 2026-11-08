@@ -8,6 +8,7 @@
 
 #include "dynarmic/backend/x64/a64_emit_x64.h"
 
+#include <algorithm>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
 #include "common/assert.h"
@@ -57,6 +58,13 @@ FP::FPCR A64EmitContext::FPCR(bool fpcr_controlled) const {
 
 A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_interface)
         : EmitX64(code), conf(conf), jit_interface{jit_interface} {
+    if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+        size_t bits = conf.fast_dispatch_table_bits != 0 ? conf.fast_dispatch_table_bits : default_fast_dispatch_table_bits;
+        bits = std::clamp<size_t>(bits, 8, 24);
+        fast_dispatch_set_size = conf.fast_dispatch_set_associative ? fast_dispatch_ways : 1;
+        fast_dispatch_table.resize(size_t(1) << bits);
+        fast_dispatch_table_mask = u32(((size_t(1) << bits) - 1) * sizeof(FastDispatchEntry)) & ~u32(fast_dispatch_set_size * sizeof(FastDispatchEntry) - 1);
+    }
     GenMemory128Accessors();
     GenFastmemFallbacks();
     GenTerminalHandlers();
@@ -185,7 +193,7 @@ void A64EmitX64::InvalidateCacheRanges(const boost::icl::interval_set<u64>& rang
 
 void A64EmitX64::ClearFastDispatchTable() {
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        fast_dispatch_table.fill({});
+        std::fill(fast_dispatch_table.begin(), fast_dispatch_table.end(), FastDispatchEntry{});
     }
 }
 
@@ -237,10 +245,24 @@ void A64EmitX64::GenTerminalHandlers() {
         }
         code.and_(r12d, fast_dispatch_table_mask);
         code.lea(r12, ptr[r8 + r12]);
-        code.cmp(rbx, qword[r12 + offsetof(FastDispatchEntry, location_descriptor)]);
-        code.jne(fast_dispatch_cache_miss, code.T_NEAR);
-        code.jmp(ptr[r12 + offsetof(FastDispatchEntry, code_ptr)]);
+        for (size_t way = 0; way < fast_dispatch_set_size; ++way) {
+            const size_t entry = way * sizeof(FastDispatchEntry);
+            Xbyak::Label next_way;
+            code.cmp(rbx, qword[r12 + entry + offsetof(FastDispatchEntry, location_descriptor)]);
+            code.jne(way + 1 < fast_dispatch_set_size ? next_way : fast_dispatch_cache_miss, code.T_NEAR);
+            code.jmp(ptr[r12 + entry + offsetof(FastDispatchEntry, code_ptr)]);
+            code.L(next_way);
+        }
         code.L(fast_dispatch_cache_miss);
+        // Insert at way 0: the older ways move down one and the last one is dropped.
+        for (size_t way = fast_dispatch_set_size - 1; way > 0; --way) {
+            const size_t to = way * sizeof(FastDispatchEntry);
+            const size_t from = to - sizeof(FastDispatchEntry);
+            code.mov(rax, qword[r12 + from + offsetof(FastDispatchEntry, location_descriptor)]);
+            code.mov(rcx, qword[r12 + from + offsetof(FastDispatchEntry, code_ptr)]);
+            code.mov(qword[r12 + to + offsetof(FastDispatchEntry, location_descriptor)], rax);
+            code.mov(qword[r12 + to + offsetof(FastDispatchEntry, code_ptr)], rcx);
+        }
         code.mov(qword[r12 + offsetof(FastDispatchEntry, location_descriptor)], rbx);
         code.LookupBlock();
         code.mov(ptr[r12 + offsetof(FastDispatchEntry, code_ptr)], rax);
@@ -802,7 +824,12 @@ void A64EmitX64::Unpatch(const IR::LocationDescriptor& location) {
     EmitX64::Unpatch(location);
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.DisableWriting();
-        (*fast_dispatch_table_lookup)(location.Value()) = {};
+        FastDispatchEntry* const set = &(*fast_dispatch_table_lookup)(location.Value());
+        for (size_t way = 0; way < fast_dispatch_set_size; ++way) {
+            if (set[way].location_descriptor == location.Value()) {
+                set[way] = {};
+            }
+        }
         code.EnableWriting();
     }
 }

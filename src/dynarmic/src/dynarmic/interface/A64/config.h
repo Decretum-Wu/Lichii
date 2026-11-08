@@ -306,6 +306,11 @@ struct UserConfig {
     /// reads it; Windows unwinding does not use it).
     bool omit_block_frame = false;
 
+    /// x64 only. log2 of the number of fast dispatch table entries (0 = default 20) and whether
+    /// the table is 4-way set associative (the four ways of a set share one cache line).
+    std::uint32_t fast_dispatch_table_bits = 0;
+    bool fast_dispatch_set_associative = false;
+
     /// This option relates to translation. Generally when we run into an unpredictable
     /// instruction the ExceptionRaised callback is called. If this is true, we define
     /// definite behaviour for some unpredictable instructions.
