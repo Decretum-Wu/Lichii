@@ -485,6 +485,9 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         // operand that is overwritten but still needed is copied to a free register instead.
         config.spill_to_free_gpr = true;
         config.scratch_copy_to_free_reg = true;
+        // W-register writes and zero-extends of values a 32-bit instruction produced skip the
+        // second `mov r32, r32`.
+        config.elide_redundant_zext = true;
         // The per-block %rbp frame is three instructions per block that nothing reads.
         config.omit_block_frame = true;
         // Fast dispatch table of 2^16 entries, 4-way set associative: 1 MiB per core instead of

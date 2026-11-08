@@ -65,6 +65,7 @@ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_in
         fast_dispatch_table.resize(size_t(1) << bits);
         fast_dispatch_table_mask = u32(((size_t(1) << bits) - 1) * sizeof(FastDispatchEntry)) & ~u32(fast_dispatch_set_size * sizeof(FastDispatchEntry) - 1);
     }
+    code.elide_redundant_zext = conf.elide_redundant_zext;
     if (conf.far_code) {
         code.EnableFarCode(conf.code_cache_size / 4);
     }
@@ -473,6 +474,9 @@ void A64EmitX64::EmitA64SetW(A64EmitContext& ctx, IR::Inst* inst) {
     const auto addr = qword[code.ABI_JIT_PTR + offsetof(A64JitState, reg) + sizeof(u64) * static_cast<size_t>(reg)];
     if (args[1].FitsInImmediateS32()) {
         code.mov(addr, args[1].GetImmediateS32());
+    } else if (conf.elide_redundant_zext && !args[1].IsImmediate() && IsZeroExtendedU32Producer(args[1].GetInst())) {
+        const Xbyak::Reg64 to_store = ctx.reg_alloc.UseGpr(code, args[1]);
+        code.mov(addr, to_store);
     } else {
         // TODO: zext tracking, xmm variant
         const Xbyak::Reg64 to_store = ctx.reg_alloc.UseScratchGpr(code, args[1]);

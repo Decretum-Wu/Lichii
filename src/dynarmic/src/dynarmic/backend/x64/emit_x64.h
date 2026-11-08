@@ -74,6 +74,10 @@ struct EmitContext {
     boost::container::stable_vector<Xbyak::Label>& shared_labels;
 };
 
+/// True when the producer of a U32 value always writes it with a 32-bit instruction, so its
+/// host register is already zero-extended to 64 bits.
+bool IsZeroExtendedU32Producer(const IR::Inst* inst) noexcept;
+
 class EmitX64 {
 public:
     struct BlockDescriptor {

@@ -116,6 +116,10 @@ public:
     inline bool IsVoid() const noexcept {
         return GetType() == IR::Type::Void;
     }
+    /// The producing instruction of a non-immediate argument.
+    inline IR::Inst* GetInst() const noexcept {
+        return value.GetInst();
+    }
 
     bool FitsInImmediateU32() const noexcept;
     bool FitsInImmediateS32() const noexcept;

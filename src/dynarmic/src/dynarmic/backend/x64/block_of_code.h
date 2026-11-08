@@ -175,6 +175,9 @@ public:
     const void* nzcv_flags_pos = nullptr;
     const void* nzcv_flags_inst = nullptr;
 
+    /// A64 elide_redundant_zext.
+    bool elide_redundant_zext = false;
+
     /// Far code (A64 far_code): the last far_size bytes of the code space hold cold code. Call
     /// before PreludeComplete. Does nothing where the code space needs W^X switching.
     void EnableFarCode(size_t far_size);

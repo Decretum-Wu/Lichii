@@ -63,6 +63,20 @@ void EmitX64::EmitInvalid(EmitContext&, IR::Inst* inst) {
 void EmitX64::EmitVoid(EmitContext&, IR::Inst*) {
 }
 
+bool IsZeroExtendedU32Producer(const IR::Inst* inst) noexcept {
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::A64GetW:              // mov r32, [mem]
+    case IR::Opcode::A64ReadMemory32:      // mov r32, [mem]; the fallbacks zero-extend
+    case IR::Opcode::LeastSignificantWord: // mov r32, r32
+    case IR::Opcode::Add32:                // add/adc/lea r32
+    case IR::Opcode::Sub32:                // sub/sbb/add/lea r32
+    case IR::Opcode::ConditionalSelect32:  // cmovcc r32 always clears the upper half
+        return true;
+    default:
+        return false;
+    }
+}
+
 void EmitX64::EmitIdentity(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     if (!args[0].IsImmediate()) {

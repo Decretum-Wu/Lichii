@@ -302,6 +302,10 @@ struct UserConfig {
     /// register allocator writes into a copy in a free register instead of evicting the original.
     bool scratch_copy_to_free_reg = false;
 
+    /// x64 only. A 32-bit value known to be zero-extended in its host register (written by a
+    /// 32-bit instruction) is not zero-extended again by SetW / ZeroExtendWordToLong.
+    bool elide_redundant_zext = false;
+
     /// x64 only. Blocks do not save and set up %rbp as a frame pointer (nothing in the JIT
     /// reads it; Windows unwinding does not use it).
     bool omit_block_frame = false;
