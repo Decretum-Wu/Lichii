@@ -950,6 +950,43 @@ TEST_CASE("Split command list fetches wait only for the writers before the last 
     REQUIRE_FALSE(split.WaitForSyncedWriters());
     release[2] = true;
     split.Drain(VideoCommon::DrainSite::Other);
+
+    // Work between the earlier writer and the sync is not a writer, even if a later
+    // writer was sent after the sync.
+    std::atomic<bool> other{};
+    std::atomic<bool> later{};
+    std::atomic<bool> other_done{};
+    bool other_waited{true};
+    std::thread other_waiter;
+    SCOPE_EXIT {
+        other = true;
+        later = true;
+        if (other_waiter.joinable()) {
+            other_waiter.join();
+        }
+    };
+    split.Defer([] {});
+    split.NoteWriter();
+    split.Drain(VideoCommon::DrainSite::Other);
+    blocking(other);
+    split.NoteSync();
+    blocking(later);
+    split.NoteWriter();
+    split.Publish();
+    other_waiter = std::thread([&] {
+        other_waited = split.WaitForSyncedWriters();
+        other_done = true;
+    });
+    const auto other_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (!other_done.load() && std::chrono::steady_clock::now() < other_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    REQUIRE(other_done.load());
+    other_waiter.join();
+    REQUIRE_FALSE(other_waited);
+    other = true;
+    later = true;
+    split.Drain(VideoCommon::DrainSite::Other);
 }
 
 TEST_CASE("Split tells whether compute or copy work it was sent is still queued",
@@ -1155,119 +1192,6 @@ TEST_CASE("Split waits for a semaphore write's position, not for the work sent a
     split.Drain(VideoCommon::DrainSite::Other);
     REQUIRE(split.Ran(split.Position()));
     REQUIRE_FALSE(split.WaitForPosition(release_position, VideoCommon::DrainSite::Acquire));
-}
-
-TEST_CASE("Split command list fetches wait only for the writers before the last host sync",
-          "[video_core][gpu_split_dependencies]") {
-    using Access = VideoCommon::GpuSplitTestAccess;
-    Fixture f;
-    f.system.Initialize();
-    VideoCommon::GpuSplit split;
-    std::array<std::atomic<bool>, 3> release{};
-    std::atomic<bool> done{};
-    bool waited{};
-    std::thread waiter;
-    Access::Start(split, f.system);
-    SCOPE_EXIT {
-        split.Stop();
-    };
-    SCOPE_EXIT {
-        for (auto& flag : release) {
-            flag = true;
-        }
-        if (waiter.joinable()) {
-            waiter.join();
-        }
-    };
-    const auto blocking = [&split](std::atomic<bool>& flag) {
-        split.Defer([&flag] {
-            while (!flag.load()) {
-                std::this_thread::yield();
-            }
-        });
-    };
-    const auto finishes = [&done] {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-        while (!done.load() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds{1});
-        }
-        return done.load();
-    };
-
-    split.NoteSync();
-    blocking(release[0]);
-    split.NoteWriter();
-    split.Publish();
-    REQUIRE_FALSE(split.WaitForSyncedWriters());
-
-    split.NoteSync();
-    blocking(release[1]);
-    split.NoteWriter();
-    split.Publish();
-    waiter = std::thread([&] {
-        waited = split.WaitForSyncedWriters();
-        done = true;
-    });
-    const auto wait_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-    while (!Access::FrontWaits(split) && !done.load() &&
-           std::chrono::steady_clock::now() < wait_deadline) {
-        std::this_thread::yield();
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds{20});
-    REQUIRE_FALSE(done.load());
-    release[0] = true;
-    REQUIRE(finishes());
-    waiter.join();
-    REQUIRE(waited);
-    release[1] = true;
-    split.Drain(VideoCommon::DrainSite::Other);
-
-    split.Defer([] {});
-    split.NoteWriter();
-    split.Drain(VideoCommon::DrainSite::Other);
-    blocking(release[2]);
-    split.NoteSync();
-    split.Publish();
-    REQUIRE_FALSE(split.WaitForSyncedWriters());
-    release[2] = true;
-    split.Drain(VideoCommon::DrainSite::Other);
-
-    // Work between the earlier writer and the sync is not a writer, even if a later
-    // writer was sent after the sync.
-    std::atomic<bool> other{};
-    std::atomic<bool> later{};
-    std::atomic<bool> other_done{};
-    bool other_waited{true};
-    std::thread other_waiter;
-    SCOPE_EXIT {
-        other = true;
-        later = true;
-        if (other_waiter.joinable()) {
-            other_waiter.join();
-        }
-    };
-    split.Defer([] {});
-    split.NoteWriter();
-    split.Drain(VideoCommon::DrainSite::Other);
-    blocking(other);
-    split.NoteSync();
-    blocking(later);
-    split.NoteWriter();
-    split.Publish();
-    other_waiter = std::thread([&] {
-        other_waited = split.WaitForSyncedWriters();
-        other_done = true;
-    });
-    const auto other_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-    while (!other_done.load() && std::chrono::steady_clock::now() < other_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds{1});
-    }
-    REQUIRE(other_done.load());
-    other_waiter.join();
-    REQUIRE_FALSE(other_waited);
-    other = true;
-    later = true;
-    split.Drain(VideoCommon::DrainSite::Other);
 }
 
 TEST_CASE("Split restart resets writer positions without replaying old releases",
