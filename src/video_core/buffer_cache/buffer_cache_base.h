@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <array>
 #include <bit>
@@ -324,6 +325,15 @@ public:
 
     /// The query cache wrote a result NoteReportPending kept to guest memory, or dropped it.
     void FinishReport(DAddr device_addr, u64 size);
+
+    /// Without `mutex`: false when the page under device_addr can't be one the guest reads back
+    /// (NoteReportPending would return false). Seeing the bounds before a page joins them is
+    /// the same as looking before that read took the lock.
+    [[nodiscard]] bool MayBeReadBackPage(DAddr device_addr) const noexcept {
+        const DAddr page = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
+        return page >= read_back_first.load(std::memory_order_acquire) &&
+               page <= read_back_last.load(std::memory_order_acquire);
+    }
 
     /// The GPU thread recorded a draw or dispatch (`mutex` held). After a dispatch, the downloads
     /// of the pages written since that the guest reads after each write go right behind it
@@ -1065,6 +1075,9 @@ private:
     static constexpr u64 EarlyBytesPerFrame = 1_MiB;
     static constexpr u32 MaxPendingEarlyDownloads = 32;
     std::vector<ReadBackPage> read_back_pages; ///< Sorted by page
+    /// The first and last page of read_back_pages (MayBeReadBackPage), set under `mutex`.
+    std::atomic<DAddr> read_back_first{~DAddr{0}};
+    std::atomic<DAddr> read_back_last{0};
     /// NoteReportPending's results not yet written, oldest first.
     struct PendingReport {
         DAddr addr;
