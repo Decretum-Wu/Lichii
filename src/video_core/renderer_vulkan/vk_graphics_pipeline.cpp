@@ -456,25 +456,59 @@ GraphicsPipeline::GraphicsPipeline(
     for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
         const Shader::Info& info = stage_infos[stage];
         u32& handles = handle_constant_buffers[stage];
-        // Handles computed at draw time don't block delta draws: ComputedHandlesChanged evaluates
-        // them again for each one.
-        for (const auto& desc : info.texture_buffer_descriptors) {
-            handles |= 1U << desc.cbuf_index;
-            if (desc.has_secondary) {
-                handles |= 1U << desc.secondary_cbuf_index;
+        auto& ranges = handle_ranges[stage];
+        std::array<boost::container::small_vector<std::pair<u32, u32>, 8>,
+                   Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>
+            words;
+        const auto add_range = [&](u32 slot, u32 begin, u32 end) {
+            handles |= 1U << slot;
+            auto& range = ranges[slot];
+            range = range.first == range.second
+                        ? std::pair{begin, end}
+                        : std::pair{(std::min)(range.first, begin), (std::max)(range.second, end)};
+            words[slot].emplace_back(begin, end);
+        };
+        // The words read_handle reads. Handles computed at draw time neither block delta draws
+        // nor take part: ComputedHandlesChanged evaluates them again for each delta draw, from
+        // the constant buffers bound and the data in memory then.
+        const auto add = [&](const auto& desc) {
+            if (desc.handle_program != ~0U) {
+                return;
             }
+            const u32 last = ((std::max)(desc.count, 1U) - 1) << desc.size_shift;
+            add_range(desc.cbuf_index, desc.cbuf_offset, desc.cbuf_offset + last + 4);
+            if constexpr (requires { desc.has_secondary; }) {
+                if (desc.has_secondary) {
+                    add_range(desc.secondary_cbuf_index, desc.secondary_cbuf_offset,
+                              desc.secondary_cbuf_offset + 4);
+                }
+            }
+        };
+        for (const auto& desc : info.texture_buffer_descriptors) {
+            add(desc);
         }
         for (const auto& desc : info.image_buffer_descriptors) {
-            handles |= 1U << desc.cbuf_index;
+            add(desc);
         }
         for (const auto& desc : info.texture_descriptors) {
-            handles |= 1U << desc.cbuf_index;
-            if (desc.has_secondary) {
-                handles |= 1U << desc.secondary_cbuf_index;
-            }
+            add(desc);
         }
         for (const auto& desc : info.image_descriptors) {
-            handles |= 1U << desc.cbuf_index;
+            add(desc);
+        }
+        for (u32 slot = 0; slot < words.size(); ++slot) {
+            auto& list = words[slot];
+            std::ranges::sort(list);
+            const size_t first = handle_words.size();
+            for (const auto& range : list) {
+                if (handle_words.size() != first && range.first <= handle_words.back().second) {
+                    handle_words.back().second = (std::max)(handle_words.back().second, range.second);
+                } else {
+                    handle_words.push_back(range);
+                }
+            }
+            handle_word_index[stage][slot] = {static_cast<u16>(first),
+                                              static_cast<u16>(handle_words.size() - first)};
         }
     }
 

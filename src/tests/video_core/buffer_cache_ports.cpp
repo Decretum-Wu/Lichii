@@ -1036,7 +1036,7 @@ TEST_CASE("Uniform keep binds unwritten uniform buffers streamed by earlier draw
 
     // Writes the draws did not all hear of: a full delta, or a draw that never bound its uniforms.
     Delta overflowed{};
-    overflowed.overflow = true;
+    overflowed.no_uniform_keeps = true;
     f.Draw(&overflowed);
     f.Draw(nullptr);
     REQUIRE(f.Counts().kept == 1);

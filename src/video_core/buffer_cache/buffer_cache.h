@@ -1696,7 +1696,7 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
     UniformKeep& keep = uniform_keep;
     const u64 sync_serial = Nx2FastDraw::SyncSerial();
     const u64 host_serial = gpu_memory != nullptr ? gpu_memory->HostPointerSerial() : 0;
-    const bool known = delta != nullptr && !delta->overflow && !keep.memory_writes_lost &&
+    const bool known = delta != nullptr && !delta->no_uniform_keeps && !keep.memory_writes_lost &&
                        keep.draw_deletions == buffer_deletions &&
                        keep.sync_serial == sync_serial && keep.host_serial == host_serial;
     keep.draw_deletions = buffer_deletions;

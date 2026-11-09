@@ -520,6 +520,14 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
         ++fast_draw_stats.delta_blockers[static_cast<size_t>(draw.pipeline->DeltaDrawBlocker())];
         return full(FullDraw::DeltaPipeline);
     }
+    // Vertex attribute formats are draw parameters with dynamic vertex input (UpdateVertexInput
+    // records them for every draw); only the type class of each attribute is in the pipeline key.
+    if (maxwell3d->dirty.flags[Dirty::VertexInput] &&
+        (!draw.pipeline->HasDynamicVertexInput() ||
+         FixedPipelineState::DynamicAttributeTypes(maxwell3d->regs) !=
+             draw.pipeline->DynamicAttributeTypes())) {
+        return full(FullDraw::VertexInput);
+    }
     const auto& handles = draw.pipeline->HandleConstantBuffers();
     for (size_t stage = 0; stage < handles.size() && !delta.Empty(); ++stage) {
         if ((delta.binds[stage] & handles[stage]) != 0) {
@@ -532,10 +540,16 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
         for (u32 mask = handles[stage]; mask != 0; mask &= mask - 1) {
             const u32 slot = std::countr_zero(mask);
             const auto& cbuf = cbufs[slot];
+            // Only the words the handles are read from: draws write their own data next to them.
+            const auto [begin, end] = draw.pipeline->HandleRange(stage, slot);
             FastDraw::DeviceSpans& spans = handle_spans[stage][slot];
-            spans.Update(*gpu_memory, cbuf.address, cbuf.size);
-            if (delta.Reaches(cbuf.address, cbuf.size, spans)) {
-                return full(FullDraw::HandleData);
+            spans.Update(*gpu_memory, cbuf.address + begin, end - begin);
+            if (delta.Reaches(cbuf.address + begin, end - begin, spans)) {
+                if (delta.ReachesWords(cbuf.address, draw.pipeline->HandleWords(stage, slot),
+                                       spans)) {
+                    return full(FullDraw::HandleData);
+                }
+                taken_delta.no_uniform_keeps = true;
             }
         }
     }
@@ -632,13 +646,13 @@ void RasterizerVulkan::ReportFastDraws() {
              "different kind, {:.0f} state changed, {:.0f} after a submit, {:.0f} render pass or "
              "pipeline changed, {:.0f} pipeline takes no delta draws, {:.0f} handle buffer bound, "
              "{:.0f} handle data written, {:.0f} sampled image to prepare, {:.0f} computed handle "
-             "changed",
+             "changed, {:.0f} vertex attribute types changed",
              static_cast<double>(stats.delta) / seconds, per_second(FullDraw::NoCandidate),
              per_second(FullDraw::Kind), per_second(FullDraw::StateChanged),
              per_second(FullDraw::Submitted), per_second(FullDraw::RenderPass),
              per_second(FullDraw::DeltaPipeline), per_second(FullDraw::HandleBind),
              per_second(FullDraw::HandleData), per_second(FullDraw::SampledImages),
-             per_second(FullDraw::ComputedHandles));
+             per_second(FullDraw::ComputedHandles), per_second(FullDraw::VertexInput));
     static constexpr std::array<const char*, static_cast<size_t>(Ineligible::Count)>
         ineligible_names{"indirect",       "mesh",          "not built",     "writes images",
                          "transform feedback", "inline index", "quads",       "repacked vertices",
@@ -1194,21 +1208,23 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         }
         ++fast_draw_stats.delta;
     } else {
-        // What the delta draw would have kept: the texture buffer bindings.
+        // What the delta draw would have kept: the texture buffer bindings. Only draws that
+        // passed DeltaStillHolds are compared; the others would have been resolved in full.
+        const bool verify_kept = verify_views && delta_holds;
         const u64 kept_bindings =
-            verify_views ? buffer_cache.KeptGraphicsBindingsHash(false, false, true) : 0;
+            verify_kept ? buffer_cache.KeptGraphicsBindingsHash(false, false, true) : 0;
         if (fast_draw_on) {
-            pipeline->CaptureNextDelta(verify_views);
+            pipeline->CaptureNextDelta(verify_kept);
         }
         if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
             report_failure("configure failed");
             TraceRenderState(is_indexed, "configure-failed", nullptr);
             return;
         }
-        if (verify_views && pipeline->DeltaMismatch()) {
+        if (verify_kept && pipeline->DeltaMismatch()) {
             ++fast_draw_stats.view_mismatches;
         }
-        if (verify_views &&
+        if (verify_kept &&
             kept_bindings != buffer_cache.KeptGraphicsBindingsHash(false, false, true)) {
             ++fast_draw_stats.binding_mismatches;
         }

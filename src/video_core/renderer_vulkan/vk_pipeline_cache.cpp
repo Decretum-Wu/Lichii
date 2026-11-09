@@ -68,6 +68,7 @@
 #include "video_core/shader_cache.h"
 #include "video_core/shader_cache_v2/cache_file.h"
 #include "video_core/shader_cache_v2/records.h"
+#include "video_core/nx2_fast_draw.h"
 #include "video_core/shader_environment.h"
 #include "video_core/shader_notify.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
@@ -765,6 +766,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         Settings::values.vertex_input_dynamic_state.GetValue();
     dynamic_features.has_static_vertex_repack =
         StaticVertexRepackEnabled(device.GetMinVertexInputBindingStrideAlignment());
+    VideoCommon::Nx2FastDraw::g_dynamic_vertex_input.store(
+        dynamic_features.has_dynamic_vertex_input, std::memory_order_relaxed);
 
     dynamic_features.has_provoking_vertex = device.IsExtProvokingVertexSupported();
     dynamic_features.has_provoking_vertex_first_mode =

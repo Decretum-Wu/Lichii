@@ -148,6 +148,7 @@ public:
     static std::pair<u64, u64> TakeTextureMemoCounts() noexcept;
 
     bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }
+    u64 DynamicAttributeTypes() const noexcept { return key.state.attribute_types; }
     const std::array<u64, 6>& ShaderHashes() const noexcept {
         return key.unique_hashes;
     }
@@ -358,6 +359,18 @@ public:
         return handle_constant_buffers;
     }
 
+    /// The bytes [first, second) of a HandleConstantBuffers slot that handles are read from.
+    [[nodiscard]] std::pair<u32, u32> HandleRange(size_t stage, u32 slot) const noexcept {
+        return handle_ranges[stage][slot];
+    }
+
+    /// The same bytes word by word: sorted, disjoint ranges within HandleRange.
+    [[nodiscard]] std::span<const std::pair<u32, u32>> HandleWords(size_t stage,
+                                                                   u32 slot) const noexcept {
+        const auto [first, count] = handle_word_index[stage][slot];
+        return std::span{handle_words}.subspan(first, count);
+    }
+
     /// Resolves and binds every buffer as Configure does (storage buffer addresses are read from
     /// the constant buffers again) and records the draw's descriptors with the image views,
     /// samplers and texture buffers the last captured Configure resolved. False when the draw
@@ -448,6 +461,13 @@ private:
     bool delta_mismatch{};
     std::array<bool, NUM_STAGES> configured_stages{};
     std::array<u32, NUM_STAGES> handle_constant_buffers{};
+    std::array<std::array<std::pair<u32, u32>, Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
+               NUM_STAGES>
+        handle_ranges{};
+    std::vector<std::pair<u32, u32>> handle_words;
+    std::array<std::array<std::pair<u16, u16>, Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers>,
+               NUM_STAGES>
+        handle_word_index{};
     std::vector<VideoCommon::ImageViewInOut> delta_views;
     std::vector<VideoCommon::SamplerId> delta_samplers;
     /// A descriptor whose handles the captured Configure computed at draw time: the descriptor
