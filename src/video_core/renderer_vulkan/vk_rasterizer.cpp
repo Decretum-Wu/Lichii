@@ -2307,6 +2307,10 @@ void RasterizerVulkan::Clear(u32 layer_count) {
 }
 
 void RasterizerVulkan::DispatchCompute() {
+    // As after a draw, serve sync requests once dispatch resources and cache locks are released.
+    SCOPE_EXIT {
+        gpu.TickWork();
+    };
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Compute};
     FlushWork();
     gpu_memory->FlushCaching();
