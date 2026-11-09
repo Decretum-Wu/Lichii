@@ -564,6 +564,10 @@ bool RasterizerVulkan::DeltaStillHolds(u64 serial, u64 map_serial) {
     if (taken_draw.pipeline->DeltaImagesChange()) {
         return full(FullDraw::SampledImages);
     }
+    // Handles computed at draw time come from memory the delta doesn't track (storage buffers).
+    if (taken_draw.pipeline->ComputedHandlesChanged()) {
+        return full(FullDraw::ComputedHandles);
+    }
     return true;
 }
 
@@ -627,12 +631,14 @@ void RasterizerVulkan::ReportFastDraws() {
              "Fast draw per second: {:.0f} delta | full: {:.0f} after an ineligible draw, {:.0f} "
              "different kind, {:.0f} state changed, {:.0f} after a submit, {:.0f} render pass or "
              "pipeline changed, {:.0f} pipeline takes no delta draws, {:.0f} handle buffer bound, "
-             "{:.0f} handle data written, {:.0f} sampled image to prepare",
+             "{:.0f} handle data written, {:.0f} sampled image to prepare, {:.0f} computed handle "
+             "changed",
              static_cast<double>(stats.delta) / seconds, per_second(FullDraw::NoCandidate),
              per_second(FullDraw::Kind), per_second(FullDraw::StateChanged),
              per_second(FullDraw::Submitted), per_second(FullDraw::RenderPass),
              per_second(FullDraw::DeltaPipeline), per_second(FullDraw::HandleBind),
-             per_second(FullDraw::HandleData), per_second(FullDraw::SampledImages));
+             per_second(FullDraw::HandleData), per_second(FullDraw::SampledImages),
+             per_second(FullDraw::ComputedHandles));
     static constexpr std::array<const char*, static_cast<size_t>(Ineligible::Count)>
         ineligible_names{"indirect",       "mesh",          "not built",     "writes images",
                          "transform feedback", "inline index", "quads",       "repacked vertices",
@@ -655,7 +661,7 @@ void RasterizerVulkan::ReportFastDraws() {
     const u64 all_ns = stats.prepare_ns[0] + stats.prepare_ns[1];
     static constexpr std::array<const char*,
                                 static_cast<size_t>(GraphicsPipeline::DeltaBlocker::Count)>
-        blocker_names{"none", "writes images", "mesh", "computed handles", "not configured"};
+        blocker_names{"none", "writes images", "mesh", "not configured"};
     std::string blockers;
     for (size_t blocker = 0; blocker < stats.delta_blockers.size(); ++blocker) {
         if (stats.delta_blockers[blocker] != 0) {

@@ -416,6 +416,7 @@ private:
         HandleBind,
         HandleData,
         SampledImages,
+        ComputedHandles,
         Count,
     };
     /// Why a recorded draw can't be followed by a delta draw.
