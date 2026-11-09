@@ -285,10 +285,16 @@ public:
     }
 
     /// Fast draw (nx2_fast_draw.h): whether draws can keep the image views and samplers the last
-    /// captured Configure resolved. Handles computed at draw time are resolved on every draw.
+    /// captured Configure resolved. Handles computed at draw time are evaluated again for each
+    /// delta draw (ComputedHandlesChanged).
     [[nodiscard]] bool TakesDeltaDraws() const noexcept {
         return delta_blocker == DeltaBlocker::None && delta_views_valid;
     }
+
+    /// Whether a handle the last captured Configure computed at draw time (a handle program, which
+    /// reads constant and storage buffers) evaluates to another value now: a delta draw would keep
+    /// views and samplers resolved from the old one.
+    [[nodiscard]] bool ComputedHandlesChanged() const;
 
     /// Why TakesDeltaDraws is false (diagnostics).
     enum class DeltaBlocker : u8 {
@@ -399,6 +405,16 @@ private:
     std::array<u32, NUM_STAGES> handle_constant_buffers{};
     std::vector<VideoCommon::ImageViewInOut> delta_views;
     std::vector<VideoCommon::SamplerId> delta_samplers;
+    /// A handle the captured Configure computed at draw time: the descriptor it was read for
+    /// (stage, kind as ComputedHandleKind, index in its list) and its value.
+    struct ComputedHandle {
+        u8 stage;
+        u8 kind;
+        u16 descriptor;
+        u32 value;
+    };
+    enum ComputedHandleKind : u8 { TextureBuffer, ImageBuffer, Texture, Image };
+    std::vector<ComputedHandle> delta_computed_handles;
     /// Delta draws: the image descriptor entries (first entry and count per
     /// stage) and rescaling words pushed for delta_views, which delta draws push again while no
     /// image changed its scale (TextureCache::ScaleEpoch).
