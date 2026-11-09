@@ -243,15 +243,15 @@ public:
         Commit(2 + payload);
         NoteWrites(writes);
     }
-    /// Defer, calling `func` with a copy of `words` (a std::span<const u32>).
+    /// Defer, calling `func` with a copy of `words` (a std::span<const u32>). `flags` as Defer's.
     template <typename Func>
     void DeferWords(const Func& func, std::span<const u32> words,
-                    Writes writes = Writes::Anywhere) {
+                    Writes writes = Writes::Anywhere, u64 flags = 0) {
         static_assert(std::is_trivially_copyable_v<Func> && alignof(Func) <= alignof(u64));
         constexpr size_t function_words = (sizeof(Func) + sizeof(u64) - 1) / sizeof(u64);
         const size_t payload = function_words + 1 + (words.size() + 1) / 2;
         u64* const entry = Reserve(2 + payload);
-        entry[0] = static_cast<u64>(Kind::Call) | (u64{payload} << 8);
+        entry[0] = static_cast<u64>(Kind::Call) | flags | (u64{payload} << 8);
         entry[1] = reinterpret_cast<u64>(&CallWordsThunk<Func>);
         std::memcpy(entry + 2, &func, sizeof(Func));
         entry[2 + function_words] = words.size();

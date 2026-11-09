@@ -1966,8 +1966,12 @@ bool Maxwell3D::FrontRunOnBack(Core::System& system, VideoCommon::GpuSplit& spli
                 escapes->fetch_add(1, std::memory_order_release);
             }
         },
-        // Its writes (BackWritable) touch registers and the caches, not guest memory.
-        fs.parameters, VideoCommon::GpuSplit::Writes::Caches);
+        // Its writes (BackWritable) touch registers and the caches, not guest memory. The call
+        // doesn't end fast draw reuse itself: the macro's methods and register writes go through
+        // ProcessMethodCall and ProcessDirtyRegisters, which end it when they change what a draw
+        // resolves to, and the caches end it on their own invalidations.
+        fs.parameters, VideoCommon::GpuSplit::Writes::Caches,
+        VideoCommon::GpuSplit::FastDrawNeutral);
     fs.sink_pending = false; // The back macro consumes the sink before it runs.
     const u64 position = split.Position();
     fs.back_last = position;
