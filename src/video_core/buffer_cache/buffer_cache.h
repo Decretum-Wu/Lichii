@@ -978,6 +978,8 @@ void BufferCache<P>::NoteReadBack(DAddr begin, DAddr end, bool gpu_modified) {
                     it = std::ranges::lower_bound(read_back_pages, page, {}, &ReadBackPage::page);
                 }
                 it = read_back_pages.insert(it, ReadBackPage{.page = page, .written = true});
+                read_back_first.store(read_back_pages.front().page, std::memory_order_release);
+                read_back_last.store(read_back_pages.back().page, std::memory_order_release);
             }
             if (!it->written) {
                 // Nothing new since its last read.
@@ -2069,7 +2071,7 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
     keep.candidates = {};
     keep.writes.clear();
     const std::array<u32, NUM_STAGES> streamed = std::exchange(keep.streamed, {});
-    const bool usable = delta != nullptr && unwritten;
+    const bool usable = delta != nullptr && unwritten && !delta->no_uniform_keeps;
     if (usable) {
         keep.writes.insert(keep.writes.end(), keep.memory_writes.begin(),
                            keep.memory_writes.end());

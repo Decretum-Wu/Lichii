@@ -414,6 +414,7 @@ private:
         HandleData,
         SampledImages,
         ComputedHandles,
+        VertexInput,
         Count,
     };
     /// Why a recorded draw can't be followed by a delta draw.

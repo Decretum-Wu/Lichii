@@ -215,8 +215,7 @@ TEST_CASE("Fast draw records bind and constant data changes, keeps index buffer 
     CHECK_FALSE(FastDraw::g_delta.Empty());
 }
 
-TEST_CASE("Fast draw breaks on state, texture headers and delta overflow",
-          "[fast_draw]") {
+TEST_CASE("Fast draw breaks on state and texture headers", "[fast_draw]") {
     DeltaFixture f;
     f.Write(MAXWELL3D_REG_INDEX(tex_header.address_high), 0);
     f.Write(MAXWELL3D_REG_INDEX(tex_header.address_low), 0x40000);
@@ -244,13 +243,25 @@ TEST_CASE("Fast draw breaks on state, texture headers and delta overflow",
         f.SetConstantBuffer(0x40000, 0x1000, 0x100); // just past the headers
         f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), 1);
     }));
-    CHECK(breaks([&] {
+    // More separate writes than the delta holds widen its ranges instead of ending draw reuse.
+    CHECK_FALSE(breaks([&] {
         f.SetConstantBuffer(0x60000, 0x1000, 0);
         for (u32 i = 0; i <= FastDraw::Delta::MaxWrites; ++i) {
             f.Write(MAXWELL3D_REG_INDEX(const_buffer.offset), i * 0x20);
             f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), i);
         }
     }));
+    const auto& delta = FastDraw::g_delta;
+    REQUIRE(delta.num_writes == FastDraw::Delta::MaxWrites);
+    CHECK(delta.no_uniform_keeps);
+    for (u32 i = 0; i <= FastDraw::Delta::MaxWrites; ++i) {
+        const GPUVAddr address = 0x60000 + i * 0x20;
+        bool covered = false;
+        for (u32 write = 0; write < delta.num_writes; ++write) {
+            covered |= delta.write_begin[write] <= address && address + 4 <= delta.write_end[write];
+        }
+        CHECK(covered);
+    }
 }
 
 TEST_CASE("Fast draw breaks on texture header data written through another mapping",
@@ -319,6 +330,38 @@ TEST_CASE("Fast draw finds texture handle data written through another mapping",
     f.memory.Map(handles, 0x400000, 0x1000, Kind, false);
     CHECK(reaches(handles, other, 0x10, {1}));
     CHECK_FALSE(reaches(handles, alias + 0x1000, 0x10, {1}));
+}
+
+TEST_CASE("Fast draw compares texture handle data word by word", "[fast_draw]") {
+    DeltaFixture f;
+    f.memory.BindRasterizer(&f.rasterizer);
+    constexpr GPUVAddr handles = 0x100000; // handles at 0x10 and 0x80, draw data between
+    constexpr GPUVAddr alias = 0x300000;
+    constexpr GPUVAddr split = 0x500000; // two pages that map device memory apart
+    constexpr auto Kind = Tegra::PTEKind::PITCH;
+    f.memory.Map(handles, 0x200000, 0x1000, Kind, false);
+    f.memory.Map(alias, 0x200000, 0x1000, Kind, false);
+    const std::array<std::pair<u32, u32>, 2> words{{{0x10, 0x14}, {0x80, 0x84}}};
+    FastDraw::DeviceSpans spans;
+    const auto reaches = [&](GPUVAddr handle_buffer, GPUVAddr buffer, u32 offset) {
+        FastDraw::g_delta = {};
+        f.SetConstantBuffer(buffer, 0x2000, offset);
+        f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), 1);
+        spans.Update(f.memory, handle_buffer + 0x10, 0x74);
+        return FastDraw::g_delta.Reaches(handle_buffer + 0x10, 0x74, spans) &&
+               FastDraw::g_delta.ReachesWords(handle_buffer, words, spans);
+    };
+    CHECK(reaches(handles, handles, 0x10));
+    CHECK(reaches(handles, handles, 0x80));
+    CHECK_FALSE(reaches(handles, handles, 0x40)); // draw data between the handles
+    CHECK(reaches(handles, alias, 0x80));
+    CHECK_FALSE(reaches(handles, alias, 0x40));
+
+    // Not one run of device memory: a device write anywhere in the range counts.
+    f.memory.Map(split, 0x401000, 0x1000, Kind, false);
+    f.memory.Map(split + 0x1000, 0x400000, 0x1000, Kind, false);
+    f.memory.Map(alias, 0x401000, 0x1000, Kind, false);
+    CHECK(reaches(split + 0xf80, alias, 0xfc0));
 }
 
 TEST_CASE("Fast draw records and breaks nothing while switched off", "[fast_draw]") {

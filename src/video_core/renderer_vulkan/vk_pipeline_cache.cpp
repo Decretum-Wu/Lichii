@@ -64,6 +64,7 @@
 #include "video_core/shader_cache.h"
 #include "video_core/shader_cache_v2/cache_file.h"
 #include "video_core/shader_cache_v2/records.h"
+#include "video_core/nx2_fast_draw.h"
 #include "video_core/shader_environment.h"
 #include "video_core/shader_notify.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
@@ -733,6 +734,10 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         Settings::values.vertex_input_dynamic_state.GetValue();
     dynamic_features.has_static_vertex_repack =
         StaticVertexRepackEnabled(device.GetMinVertexInputBindingStrideAlignment());
+    // Neither the key's strides (extended dynamic state) nor its vertex input (dynamic vertex
+    // input) depend on the vertex streams' stride and enable word then.
+    VideoCommon::Nx2FastDraw::g_vertex_streams_dynamic =
+        dynamic_features.has_extended_dynamic_state && dynamic_features.has_dynamic_vertex_input;
 
     dynamic_features.has_provoking_vertex = device.IsExtProvokingVertexSupported();
     dynamic_features.has_provoking_vertex_first_mode =

@@ -304,16 +304,50 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     // They must not retire one of those reports from the buffer cache's ordered tracking.
     const bool report_noted =
         !immediate && !is_synced && impl->rasterizer.NoteReportPending(cpu_addr, report_size);
-    std::function<void()> operation([this, is_synced, streamer, query_base = query,
-                                     query_location, pointer, pointer_timestamp, cpu_addr, addr,
-                                     asid = gpu_memory->GetID(), counter_type, split_entry, mirrored,
-                                     report_size, report_noted] {
+    // What the operation needs, small enough for std::function to hold without allocating: a
+    // report per draw (Ocarina of Time's occlusion counts) allocated one each.
+    struct ReportOp {
+        QueryBase* query;
+        DAddr cpu_addr;
+        GPUVAddr addr;
+        u64 split_entry; ///< ~0: none
+        QueryLocation location;
+        u8 counter_type;
+        u8 bits;
+        u16 asid;
+    };
+    static constexpr u8 OpSynced = 1;
+    static constexpr u8 OpMirrored = 2;
+    static constexpr u8 OpNoted = 4;
+    static constexpr u8 OpWide = 8;
+    const ReportOp report_op{
+        .query = query,
+        .cpu_addr = cpu_addr,
+        .addr = addr,
+        .split_entry = split_entry.value_or(~u64{0}),
+        .location = query_location,
+        .counter_type = static_cast<u8>(counter_type),
+        .bits = static_cast<u8>((is_synced ? OpSynced : 0) | (mirrored ? OpMirrored : 0) |
+                                (report_noted ? OpNoted : 0) | (has_timestamp ? OpWide : 0)),
+        .asid = static_cast<u16>(gpu_memory->GetID()),
+    };
+    const auto operation_body = [this, op = report_op] {
+        const bool is_synced = (op.bits & OpSynced) != 0;
+        const bool mirrored = (op.bits & OpMirrored) != 0;
+        const u64 report_size = (op.bits & OpWide) != 0 ? 16 : 4;
+        const DAddr cpu_addr = op.cpu_addr;
+        const GPUVAddr addr = op.addr;
+        const QueryType counter_type = static_cast<QueryType>(op.counter_type);
+        const QueryLocation query_location = op.location;
+        const size_t asid = op.asid;
+        QueryBase* const query_base = op.query;
+        auto* const streamer = impl->streamers[query_location.stream_id.Value()];
         SCOPE_EXIT {
-            if (report_noted) {
+            if ((op.bits & OpNoted) != 0) {
                 impl->rasterizer.FinishReport(cpu_addr, report_size);
             }
-            if (split_entry) {
-                VideoCommon::GpuSplit::Get().NoteFencedWrite(*split_entry);
+            if (op.split_entry != ~u64{0}) {
+                VideoCommon::GpuSplit::Get().NoteFencedWrite(op.split_entry);
             }
         };
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
@@ -347,14 +381,20 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         query_base->value += streamer->GetAmendValue();
         streamer->SetAccumulationValue(query_base->value);
         FinishReads(cpu_addr, True(query_base->flags & QueryFlagBits::HasTimestamp) ? 16 : 4);
+        u8* const pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
+        u8* const pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
         auto& shadow = Tegra::Nx2MirrorShadow::Get();
-        if (mirrored && shadow.Diverts(cpu_addr)) {
+        if (pointer == nullptr) [[unlikely]] {
+            // Unmapped since the report: nothing to write.
+        } else if (mirrored && shadow.Diverts(cpu_addr)) {
             u32 guest;
             std::memcpy(&guest, pointer, sizeof(guest));
             shadow.Set(cpu_addr, static_cast<u32>(query_base->value), guest);
         } else if (True(query_base->flags & QueryFlagBits::HasTimestamp)) {
             u64 timestamp = impl->gpu.GetTicks();
-            std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
+            if (pointer_timestamp != nullptr) {
+                std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
+            }
             std::memcpy(pointer, &query_base->value, sizeof(query_base->value));
         } else {
             u32 value = static_cast<u32>(query_base->value);
@@ -379,7 +419,10 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         if (!is_synced) {
             impl->pending_unregister.push_back(query_location);
         }
-    });
+    };
+    static_assert(sizeof(operation_body) <= 48,
+                  "the report operation must fit std::function's own storage");
+    std::function<void()> operation(operation_body);
     if (is_fence) {
         VideoCore::g_signaling_query_report_fence = !is_synced;
         impl->rasterizer.SignalFence(std::move(operation));
