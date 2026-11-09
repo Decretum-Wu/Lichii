@@ -166,6 +166,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Strength of RCAS (AMD's contrast-adaptive sharpening) on the upscaler used in place "
               "of a game's DLSS (AMD FSR 3.1); 0% turns it off.\nAlso sets the sharpening "
               "of the AMD FSR 1 and SGSR window adapting filters."));
+    INSERT(Settings, ocarina_fsr, tr("Use AMD FSR 3.1 upscaling in Ocarina of Time"),
+           tr("Replaces Ocarina of Time's native upscaler using scene depth and camera motion. "
+              "Works on any supported Vulkan GPU. NVIDIA DLSS takes precedence when enabled and "
+              "available. RCAS Sharpness controls sharpening. Takes effect when a game starts."));
     INSERT(Settings, nvidia_dlss, tr("Use NVIDIA DLSS in place of a game's DLSS (experimental)"),
            tr("Uses NVIDIA DLSS on GeForce RTX cards in place of a Switch 2 game's own DLSS, "
               "instead of AMD FSR 3.1.\nNeeds NVIDIA's Streamline loader, and NVIDIA DLSS unless "
