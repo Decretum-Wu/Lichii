@@ -107,7 +107,7 @@ are still required. #949's reported Bananza gain (+8–9%, back thread about
 56.0 to 52.2 ms/frame on a Ryzen 9 5900X) includes its acquire changes and does
 not predict the gain of this partial port in Ocarina of Time.
 
-## nx2 integration through 0ab7736df9
+## nx2 integration through 1a5e995a38
 
 - #1028 does not replace #805's read downloads, write tracking, sampled method
   profiling or diagnostics. Its correctness fixes are retained: discard/DMA
@@ -128,6 +128,10 @@ not predict the gain of this partial port in Ocarina of Time.
 - #965/#1039 add stutter sites, GPU waits by zone, queue/present waits, contention
   and opt-in live-read comparisons around the existing split. Method profiling
   still takes the fast path and samples timing, rather than timing every write.
+- #1056's macro-on-back port arrived during integration. Keep #805's full effect
+  analysis and back-macro machinery, but take the review fixes: recheck command
+  pages even when the writer wait did not block, and remember the actual last
+  writer at each host sync rather than waiting through unrelated intervening work.
 
 In-game validation should cover low/default and high/delayed fence modes,
 cross-channel semaphore waits, concurrent CPU read-back, cold/migrated/warm v2

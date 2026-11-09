@@ -170,6 +170,7 @@ void GpuSplit::Stop() {
     write_position = 0;
     last_writer_position = 0;
     last_sync_position = 0;
+    synced_writer_position = 0;
     last_entry_start = 0;
     back_entry_start = 0;
     semaphore_writes.clear();
@@ -299,7 +300,7 @@ bool GpuSplit::WaitForSync() {
 }
 
 bool GpuSplit::WaitForSyncedWriters(DrainSite site) {
-    return WaitFor(std::min({last_writer_position, last_sync_position, write_position}), site);
+    return WaitFor(std::min(synced_writer_position, write_position), site);
 }
 
 GpuSplit::Landing GpuSplit::FencedPayloadLanding() {

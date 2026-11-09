@@ -328,6 +328,7 @@ public:
     /// work before it is complete before the commands after it are fetched.
     void NoteSync() {
         last_sync_position = write_position;
+        synced_writer_position = last_writer_position;
     }
     /// The position after everything sent so far, for Ran and WaitForPosition.
     [[nodiscard]] u64 Position() const {
@@ -653,6 +654,7 @@ private:
     u64 write_position{};
     u64 last_writer_position{};
     u64 last_sync_position{};
+    u64 synced_writer_position{};
     u64 last_entry_start{}; ///< Where the last entry sent starts
     struct SemaphoreWrite {
         u64 position; ///< write_position once it was sent

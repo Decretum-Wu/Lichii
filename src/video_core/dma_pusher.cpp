@@ -365,8 +365,11 @@ bool DmaPusher::Step() {
         const bool command_entry = dma_state.method_count == 0;
         const bool waits_for_writers =
             !command_entry || CopyWritersPending(VideoCommon::GpuSplit::Get());
-        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() && waits_for_writers &&
-            VideoCommon::GpuSplit::Get().WaitForSyncedWriters()) {
+        if (!gpu_written && VideoCommon::GpuSplit::Get().Active()) {
+            if (waits_for_writers) {
+                VideoCommon::GpuSplit::Get().WaitForSyncedWriters();
+            }
+            // A writer may have marked the page since the first check without making us wait.
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
         }
