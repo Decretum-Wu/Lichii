@@ -271,6 +271,9 @@ public:
     /// newer bytes.
     void ClearDownload(DAddr base_addr, u64 size);
 
+    /// Cancel downloads only where newer bytes reach guest memory before the next read.
+    void ClearReplacedDownload(DAddr device_addr, u64 size);
+
     /// CPU writes collected but not yet applied (SetPendingCpuWrites).
     [[nodiscard]] Common::RangeSet<DAddr> PendingCpuWriteRanges();
 
@@ -305,6 +308,10 @@ public:
     /// of the pages written since that the guest reads after each write go right behind it
     /// (RecordEarlyDownloads). Those the host GPU has run land in guest memory.
     void NoteWorkRecorded(bool dispatch);
+
+    /// Track deferred query results on early-download pages until their callback lands.
+    [[nodiscard]] bool NoteReportPending(DAddr device_addr, u64 size);
+    void FinishReport(DAddr device_addr, u64 size);
 
     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
 
@@ -1153,6 +1160,12 @@ private:
         return enabled;
     }
     std::vector<ReadBackPage> read_back_pages; ///< Sorted by page
+    struct PendingReport {
+        DAddr addr;
+        u64 size;
+        bool rewritten;
+    };
+    std::vector<PendingReport> pending_reports;
     /// Pages to download once the work writing them is recorded.
     boost::container::small_vector<DAddr, 8> early_pages;
     u64 read_back_reads{};

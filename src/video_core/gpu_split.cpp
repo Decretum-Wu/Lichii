@@ -218,9 +218,11 @@ void GpuSplit::WaitForSpace(size_t words) {
     }
     Publish();
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Ticks() : 0;
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (write_position + words - consumed_cache <= RingWords) {
+            Nx2Profile::AddDrain(DrainSite::RingFull, start);
             return;
         }
         if (spins < 4096) {
@@ -714,6 +716,7 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
 
 void GpuSplit::BackLoop(std::stop_token stop_token) {
     const Common::DkbCpuTrace::Registration cpu_trace{Common::DkbCpuTrace::Role::GpuBack};
+    const StutterTrace::ThreadScope stutter_thread{StutterTrace::Thread::Back};
     Common::SetCurrentThreadName("GPUBack");
     on_back_thread = true;
     back_running.store(true, std::memory_order_release);
@@ -728,7 +731,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
 #endif
     u64 read_position = 0;
     while (!stop_token.stop_requested()) {
-        Nx2Profile::Report("GPU back thread");
+        Nx2Profile::Report("GPU back thread", true);
         MaybeTick();
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {

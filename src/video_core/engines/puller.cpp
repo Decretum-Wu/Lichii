@@ -46,7 +46,11 @@ u32 ReadSemaphoreWord(DmaPusher& dma_pusher, GPUVAddr address) {
             },
             VideoCommon::DrainSite::SemaphoreFlush);
     }
-    return dma_pusher.memory_manager.Read<u32>(address);
+    const u32 word = dma_pusher.memory_manager.Read<u32>(address);
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
+        return Nx2MirrorShadow::Get().Read(*device, word).value_or(word);
+    }
+    return word;
 }
 
 // With the GPU thread split (gpu_split.h) the rasterizer belongs to the back thread: work that
@@ -579,13 +583,25 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         const auto properties = g_nx2_ampere && (regs.semaphore_trigger & (1U << 24)) != 0
                                     ? VideoCommon::QueryPropertiesFlags::IsAFence
                                     : VideoCommon::QueryPropertiesFlags::HasTimeout;
+        // The full front view values releases at their original addresses. A second release
+        // would change its decisions; mirroring belongs only to the non-view path.
+        const GPUVAddr mirror =
+            g_nx2_ampere && !ViewApplies() ? Nx2SemaphoreMirror(sequence_address) : 0;
         OnBack(
-            [rasterizer = dma_pusher.rasterizer, sequence_address, properties, payload] {
+            [rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
                 rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties,
                                   payload, 0);
+                if (mirror != 0) {
+                    rasterizer->Query(mirror, VideoCommon::QueryType::Payload,
+                                      properties | VideoCommon::QueryPropertiesFlags::Nx2Mirror,
+                                      payload, 0);
+                }
             },
             VideoCommon::GpuSplit::Writes::Noted);
         NoteRelease(dma_pusher, sequence_address, payload, properties);
+        if (mirror != 0) {
+            NoteRelease(dma_pusher, mirror, payload, properties);
+        }
     } else if (g_nx2_ampere) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
@@ -791,6 +807,9 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
         VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Fence);
         ReleaseFences(dma_pusher);
         word = dma_pusher.memory_manager.Read<u32>(address);
+        if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
+            word = Nx2MirrorShadow::Get().Read(*device, *word).value_or(*word);
+        }
     }
     if (word && !ready(*word)) {
         static std::atomic<u32> reported{};

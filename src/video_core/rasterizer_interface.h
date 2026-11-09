@@ -135,6 +135,12 @@ public:
     virtual void TraceRead([[maybe_unused]] VideoCommon::ReadTrace::Read& read,
                            [[maybe_unused]] VideoCommon::ReadTrace::Step step) {}
 
+    /// A query result written later; finish its tracking when written or discarded.
+    virtual bool NoteReportPending([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size) {
+        return false;
+    }
+    virtual void FinishReport([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size) {}
+
     /// Switch 2, from the GPU thread's front: where a GPU-written command list's words are.
     enum class GpuWrittenList {
         Unknown, ///< Neither: the caller drains, flushes the page and notes it synced

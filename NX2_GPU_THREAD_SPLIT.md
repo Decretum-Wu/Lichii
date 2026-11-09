@@ -74,8 +74,10 @@ caches were locked. Rescaling ends the chain too.
 Only the uniform-keep and image-descriptor replay portions of nx2 `a4f6287327`
 (#949) are ported: `6b38851501`, `ee98215f14`, and the CPU-write follow-up
 `3e86407514`. The test-runtime support in `b2375cff7f` already exists on #805.
-Its semaphore, waiter, acquire/drain and scheduler-ownership changes are not
-included; #805 retains its own implementations.
+Its semaphore, waiter and acquire/drain replacements are not included; #805
+retains its own implementations. The subsequent nx2 merge keeps the independent
+scheduler-owner guard on buffer-cache writes from CPU/service threads, without
+replacing #805's back-owned `Run` operations with nx2's `back_quiet` drain scheme.
 
 Small streamed uniforms can reuse the previous allocation without rereading
 guest memory when the stage, slot, device range and command-buffer tick still
@@ -104,3 +106,30 @@ the porting machine; compilation, runtime verification and visual A/B testing
 are still required. #949's reported Bananza gain (+8–9%, back thread about
 56.0 to 52.2 ms/frame on a Ryzen 9 5900X) includes its acquire changes and does
 not predict the gain of this partial port in Ocarina of Time.
+
+## nx2 integration through 0ab7736df9
+
+- #1028 does not replace #805's read downloads, write tracking, sampled method
+  profiling or diagnostics. Its correctness fixes are retained: discard/DMA
+  destinations first land overlapping read downloads, and older deferred query
+  results cannot mark newer GPU writes clean. Synced #874 payload callbacks still
+  do not advance `fenced_landed`; `FencedPayloadLanding` remains authoritative.
+- #979/#1014 retain every registered semaphore region and the direct-release
+  shadow. Mirrored releases are emitted only when `ViewApplies()` is false
+  (unsplit, back macros, or delayed/high-accuracy releases). The full #805 front
+  view continues to decide from the original releases, never a second mirrored
+  counter. Its unbounded, source-tracking waiter collection is retained.
+- Shader cache v2 replaces the legacy Vulkan cache. #970's no-flush TIC reads
+  apply to worker translation too, so no pool-wide flush is introduced before
+  launching workers. As with #970, pending GPU writes to descriptors remain a
+  runtime validation risk. AMD shader exceptions, the image recycler and memory
+  usage caching are unchanged.
+- #965/#1039 add stutter sites, GPU waits by zone, queue/present waits, contention
+  and opt-in live-read comparisons around the existing split. Method profiling
+  still takes the fast path and samples timing, rather than timing every write.
+
+In-game validation should cover low/default and high/delayed fence modes,
+cross-channel semaphore waits, concurrent CPU read-back, cold/migrated/warm v2
+caches, and the fast-draw checks above. The integration build disables
+`BUILD_TESTING`; the updated C++ regression sources must be run separately in a
+test-enabled build.

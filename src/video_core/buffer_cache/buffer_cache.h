@@ -77,6 +77,7 @@ BufferCache<P>::~BufferCache() {
 
 template <class P>
 void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
+    const StutterTrace::SiteScope site{StutterTrace::Site::BufferCollect};
     const u64 ticks_to_destroy = aggressive_gc ? 60 : 120;
     int num_iterations = aggressive_gc ? 64 : 32;
     // Their GPU-written data is downloaded first, all with one wait for the GPU: one wait per
@@ -119,6 +120,13 @@ void BufferCache<P>::TickFrame() {
     }
     runtime.TickFrame(slot_buffers);
     native_indirect_uniforms_this_frame.clear();
+    static const bool mem_trace = std::getenv("EDEN_NX2_MEM_TRACE") != nullptr;
+    if (static std::chrono::steady_clock::time_point last{}; mem_trace) {
+        if (const auto now = std::chrono::steady_clock::now(); now - last >= std::chrono::seconds{2}) {
+            last = now;
+            LOG_INFO(HW_GPU, "Memory trace: buffer cache {} MiB", buffer_bytes >> 20);
+        }
+    }
     if (const GeometryStats& stats = geometry_stats; frame_tick % 600 == 0 && stats.syncs != 0) {
         if (Nx2Profile::Enabled() || Nx2Perf::Verify()) {
             LOG_INFO(HW_GPU,
@@ -248,7 +256,7 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
         }
     }
     if (IsRegionGpuModified(device_addr, size)) {
-        ClearDownload(device_addr, size);
+        ClearReplacedDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
     }
     // The tracker marks whole pages CPU-modified, which drops their GPU-modified state: GPU-written
@@ -259,7 +267,9 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
     // above, so they aren't overwritten).
     const DAddr page_begin = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
     const DAddr page_end = Common::AlignUp(device_addr + size, DEVICE_PAGESIZE);
-    if (keep_page_gpu_data && gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) {
+    // Unmaps and service-thread writes must not record into the GPU thread's scheduler.
+    if (keep_page_gpu_data && VideoCommon::GpuSplit::OwnsScheduler() &&
+        gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) {
         // Switch 2 titles: upload the CPU's bytes into the buffer instead, as CachedWriteMemory
         // does, so the page stays GPU-owned and nothing waits for the host GPU.
         static const int forced = [] {
@@ -476,7 +486,7 @@ void BufferCache<P>::DownloadRangesMemory(std::span<const std::pair<DAddr, u64>>
                                 staged.push_back({buffer_id, copy});
                                 total_size_bytes += Common::AlignUp(range_end - start, 64);
                             });
-                        ClearDownload(device_addr_out, range_size);
+                        ClearReplacedDownload(device_addr_out, range_size);
                         gpu_modified_ranges.Subtract(device_addr_out, range_size);
                     });
             });
@@ -987,8 +997,35 @@ void BufferCache<P>::NoteReadBack(DAddr begin, DAddr end, bool gpu_modified) {
 }
 
 template <class P>
+bool BufferCache<P>::NoteReportPending(DAddr device_addr, u64 size) {
+    if constexpr (!IS_OPENGL && USE_MEMORY_MAPS) {
+        const DAddr page = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
+        if (std::ranges::binary_search(read_back_pages, page, {}, &ReadBackPage::page)) {
+            pending_reports.push_back({device_addr, size, false});
+            return true;
+        }
+    }
+    return false;
+}
+
+template <class P>
+void BufferCache<P>::FinishReport(DAddr device_addr, u64 size) {
+    const auto it = std::ranges::find_if(pending_reports, [&](const PendingReport& report) {
+        return report.addr == device_addr && report.size == size;
+    });
+    if (it != pending_reports.end()) {
+        pending_reports.erase(it);
+    }
+}
+
+template <class P>
 void BufferCache<P>::NoteReadBackWrite(DAddr device_addr, u64 size) {
     if constexpr (!IS_OPENGL && USE_MEMORY_MAPS) {
+        for (PendingReport& report : pending_reports) {
+            if (report.addr < device_addr + size && device_addr < report.addr + report.size) {
+                report.rewritten = true;
+            }
+        }
         if (read_back_pages.empty()) {
             return;
         }
@@ -1298,6 +1335,13 @@ void BufferCache<P>::WriteReadDownloads(u64 tick) {
             if (download.check) [[unlikely]] {
                 CheckReadDownload(download, cpu_written);
                 async_buffers_death_ring.push_back(download.check->staging);
+            }
+            // An older query result can still land over these bytes after this download.
+            for (const PendingReport& report : pending_reports) {
+                if (report.rewritten) {
+                    download.clean_ranges.Subtract(report.addr, report.size);
+                    read_download_ranges.Subtract(report.addr, report.size);
+                }
             }
             download.clean_ranges.ForEach([&](DAddr start, DAddr end) {
                 gpu_modified_ranges.Subtract(start, end - start);
@@ -1660,6 +1704,12 @@ void BufferCache<P>::NoteLandedBytes(ReadCheck& check, const ReadDownload& downl
 
 template <class P>
 void BufferCache<P>::ClearDownload(DAddr device_addr, u64 size) {
+    FinishReadDownloads(device_addr, size);
+    ClearReplacedDownload(device_addr, size);
+}
+
+template <class P>
+void BufferCache<P>::ClearReplacedDownload(DAddr device_addr, u64 size) {
     ClearFenceDownloads(device_addr, size);
     // TEST (EDEN_NX2_READ_CHECK): a newer value there, as without early downloads.
     if (!early_landed.empty()) [[unlikely]] {
@@ -2427,7 +2477,7 @@ template <class P>
 void BufferCache<P>::ClaimCpuWrites(std::span<const std::pair<DAddr, u64>> ranges) {
     for (const auto& [device_addr, size] : ranges) {
         if (IsRegionGpuModified(device_addr, size)) {
-            ClearDownload(device_addr, size);
+            ClearReplacedDownload(device_addr, size);
             gpu_modified_ranges.Subtract(device_addr, size);
         }
     }
@@ -4108,6 +4158,7 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
 template <class P>
 BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
                                       bool sparse_compatible) {
+    const StutterTrace::SiteScope site{StutterTrace::Site::BufferCreate};
     DAddr device_addr_end = Common::AlignUp(device_addr + wanted_size, CACHING_PAGESIZE);
     device_addr = Common::AlignDown(device_addr, CACHING_PAGESIZE);
     wanted_size = static_cast<u32>(device_addr_end - device_addr);
@@ -4419,7 +4470,7 @@ void BufferCache<P>::DownloadBuffersMemory(std::span<const BufferId> buffer_ids)
                                                     }});
                     total_size_bytes += Common::AlignUp(end - start, 64);
                 });
-                ClearDownload(device_addr_out, range_size);
+                ClearReplacedDownload(device_addr_out, range_size);
                 gpu_modified_ranges.Subtract(device_addr_out, range_size);
             });
     }
@@ -4427,6 +4478,7 @@ void BufferCache<P>::DownloadBuffersMemory(std::span<const BufferId> buffer_ids)
         return;
     }
     GpuWaitStats::AddDownloadBytes(total_size_bytes);
+    const StutterTrace::SiteScope site{StutterTrace::Site::BufferDownload};
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
     for (Download& download : downloads) {
         download.copy.dst_offset += download_staging.offset;
@@ -4478,13 +4530,14 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
             };
 
             gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, add_download);
-            ClearDownload(device_addr_out, range_size);
+            ClearReplacedDownload(device_addr_out, range_size);
             gpu_modified_ranges.Subtract(device_addr_out, range_size);
         });
     if (total_size_bytes == 0) {
         return;
     }
     GpuWaitStats::AddDownloadBytes(total_size_bytes);
+    const StutterTrace::SiteScope site{StutterTrace::Site::BufferDownload};
     // Guest memory is written once the host GPU ran the copies: the CPU writes collected meanwhile
     // keep their bytes too.
     DAddr landing_begin = ~DAddr{0};
@@ -4541,6 +4594,7 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+    const StutterTrace::SiteScope site{StutterTrace::Site::BufferDelete};
     ++buffer_deletions;
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);

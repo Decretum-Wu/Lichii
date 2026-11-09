@@ -70,6 +70,7 @@ enum class DrainSite : u32 {
     BackRegister,   ///< A register a macro the back ran may have written (Maxwell3D)
     BackCode,       ///< The macro code changes under the macros the back has yet to run
     ListCopies,     ///< Lists on GPU-written pages: the dispatches and copies before the last sync
+    RingFull,       ///< The front waits for room in the split ring
     Count,
 };
 
@@ -77,7 +78,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(DrainSite::Count)> 
     "other",           "fetch drain",   "acquire",    "semaphore flush", "fence release",
     "list writers",    "list sync",     "list flush", "macro dma read",  "macro dma writes",
     "macro dma flush", "gp sync fence", "map",        "front start",     "front verify",
-    "back register",   "back code",     "list copy writers",
+    "back register",   "back code",     "list copy writers", "ring full",
 };
 
 // Splits the GPU thread in two (NX2_GPU_THREAD_SPLIT.md). The GPU thread (the front) takes the
@@ -111,6 +112,12 @@ public:
     /// Whether the calling thread is the back.
     [[nodiscard]] static bool OnBackThread() {
         return on_back_thread;
+    }
+    static void MarkGpuThread() {
+        on_gpu_thread = true;
+    }
+    [[nodiscard]] static bool OwnsScheduler() {
+        return Get().BackRunning() ? on_back_thread : on_gpu_thread;
     }
     /// Back thread: the entry it runs, as NoteFencedWrite takes it; elsewhere nothing.
     [[nodiscard]] std::optional<u64> BackEntry() const {
@@ -703,6 +710,7 @@ private:
 
     static GpuSplit instance;
     static inline thread_local bool on_back_thread{};
+    static inline thread_local bool on_gpu_thread{};
     void (*idle_hook)(void*){};
     void* idle_argument{};
     void (*tick_hook)(void*){};

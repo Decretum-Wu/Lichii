@@ -1407,6 +1407,106 @@ VideoCore::RasterizerDownloadArea ReadWord(Fixture& f, DAddr address) {
 }
 } // namespace
 
+TEST_CASE("Newer bytes not yet in guest memory land overlapping read downloads first",
+          "[buffer_ports]") {
+    Fixture f;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    std::ranges::fill(Access::Get(*f.cache, id).bytes, 0x12);
+    Access::Dirty(*f.cache, 0x20000, 0x1000);
+    f.cache->DownloadMemoryForRead(0x20000, 0x1000);
+    SECTION("indirect dispatch arguments discarded before the GPU writes them") {
+        (void)f.cache->ObtainCPUBuffer(0x20040, 12,
+                                     VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+                                     VideoCommon::ObtainBufferOperation::DiscardWrite);
+    }
+    SECTION("a DMA copy destination") {
+        f.cache->ClearDownload(0x20040, 12);
+    }
+    f.cache->FinishReadDownloads(0x20000, 0x1000);
+    REQUIRE(f.bytes[0x10040] == 0x12);
+    REQUIRE(f.bytes[0x1004b] == 0x12);
+    REQUIRE(f.bytes[0x10fff] == 0x12);
+    REQUIRE(f.runtime.host_read_waits == 1);
+    REQUIRE(VideoCore::g_read_downloads == 0);
+}
+
+namespace {
+void ReportOnReadBackPage(Fixture& f, VideoCommon::BufferId id) {
+    for (u8 frame = 1; frame <= 2; ++frame) {
+        WriteByDispatch(f, id, 0x20000, 0x100, frame);
+        ReadWord(f, 0x20010);
+    }
+    REQUIRE(f.cache->NoteReportPending(0x20040, 4));
+}
+
+void WriteReportResult(Fixture& f, u32 result, bool noted) {
+    f.cache->FinishReadDownloads(0x20040, 4);
+    std::memcpy(f.bytes + 0x10040, &result, sizeof(result));
+    if (noted) {
+        f.cache->FinishReport(0x20040, 4);
+    }
+}
+} // namespace
+
+TEST_CASE("An older query result leaves overlapping GPU writes to be read again",
+          "[buffer_ports]") {
+    Fixture f;
+    const Nx2TitleScope nx2_title;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    ReportOnReadBackPage(f, id);
+    WriteByDispatch(f, id, 0x20000, 0x100, 3);
+    REQUIRE(Access::ReadDownloads(*f.cache) == 1);
+    SECTION("its early download lands at the result's own wait") {}
+    SECTION("its early download landed before the result") {
+        f.runtime.Complete(f.runtime.submitted_tick);
+        f.cache->NoteWorkRecorded(true);
+        REQUIRE(Access::ReadDownloads(*f.cache) == 0);
+        REQUIRE(f.bytes[0x10040] == 3);
+    }
+    WriteReportResult(f, 0xcafef00d, true);
+    REQUIRE_FALSE(ReadWord(f, 0x20040).preemtive);
+    REQUIRE(f.bytes[0x10040] == 3);
+    REQUIRE(f.bytes[0x10043] == 3);
+}
+
+TEST_CASE("A query result newer than the GPU writes under it stays in guest memory",
+          "[buffer_ports]") {
+    Fixture f;
+    const Nx2TitleScope nx2_title;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    for (u8 frame = 1; frame <= 2; ++frame) {
+        WriteByDispatch(f, id, 0x20000, 0x100, frame);
+        ReadWord(f, 0x20010);
+    }
+    WriteByDispatch(f, id, 0x20000, 0x100, 3);
+    const bool noted = f.cache->NoteReportPending(0x20040, 4);
+    REQUIRE(noted);
+    WriteReportResult(f, 0xcafef00d, noted);
+    REQUIRE(ReadWord(f, 0x20040).preemtive);
+    u32 value{};
+    std::memcpy(&value, f.bytes + 0x10040, sizeof(value));
+    REQUIRE(value == 0xcafef00d);
+}
+
+TEST_CASE("An untracked result ends no other result's tracking", "[buffer_ports]") {
+    Fixture f;
+    const Nx2TitleScope nx2_title;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    const bool r1 = f.cache->NoteReportPending(0x20040, 4);
+    REQUIRE_FALSE(r1);
+    for (u8 frame = 1; frame <= 2; ++frame) {
+        WriteByDispatch(f, id, 0x20000, 0x100, frame);
+        ReadWord(f, 0x20010);
+    }
+    const bool r2 = f.cache->NoteReportPending(0x20040, 4);
+    REQUIRE(r2);
+    WriteReportResult(f, 0x11111111, r1);
+    WriteByDispatch(f, id, 0x20000, 0x100, 3);
+    WriteReportResult(f, 0x22222222, r2);
+    REQUIRE_FALSE(ReadWord(f, 0x20040).preemtive);
+    REQUIRE(f.bytes[0x10040] == 3);
+}
+
 TEST_CASE("Pages read after each GPU write get their downloads right behind the writes",
           "[buffer_ports]") {
     Fixture f;

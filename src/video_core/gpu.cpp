@@ -736,3 +736,12 @@ void GPU::FlushAndInvalidateRegion(DAddr addr, u64 size) {
 }
 
 } // namespace Tegra
+
+namespace VideoCore {
+
+bool MayHoldGpuWrites(DAddr addr, u64 size) {
+    return !Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
+           Tegra::Nx2MayBeGpuWritten(addr, size);
+}
+
+} // namespace VideoCore
