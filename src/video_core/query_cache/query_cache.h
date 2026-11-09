@@ -300,8 +300,10 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     const u64 report_size = has_timestamp ? 16 : 4;
     const bool immediate =
         !is_fence && !Settings::IsGPULevelHigh() && counter_type == QueryType::Payload;
+    // Synced payload callbacks can run ahead of older fenced reports at the same address.
+    // They must not retire one of those reports from the buffer cache's ordered tracking.
     const bool report_noted =
-        !immediate && impl->rasterizer.NoteReportPending(cpu_addr, report_size);
+        !immediate && !is_synced && impl->rasterizer.NoteReportPending(cpu_addr, report_size);
     std::function<void()> operation([this, is_synced, streamer, query_base = query,
                                      query_location, pointer, pointer_timestamp, cpu_addr, addr,
                                      asid = gpu_memory->GetID(), counter_type, split_entry, mirrored,

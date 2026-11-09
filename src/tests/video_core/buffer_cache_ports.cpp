@@ -1469,6 +1469,23 @@ TEST_CASE("An older query result leaves overlapping GPU writes to be read again"
     REQUIRE(f.bytes[0x10043] == 3);
 }
 
+TEST_CASE("A synced payload does not end an older deferred report's tracking",
+          "[buffer_ports]") {
+    Fixture f;
+    const Nx2TitleScope nx2_title;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    ReportOnReadBackPage(f, id);
+    WriteByDispatch(f, id, 0x20000, 0x100, 3);
+    // #874's synced payload runs now, ahead of the older report. CounterReport does not
+    // register or finish tracking for this callback, just as for an immediate payload.
+    WriteReportResult(f, 0x11111111, false);
+    REQUIRE_FALSE(ReadWord(f, 0x20040).preemtive);
+    REQUIRE(f.bytes[0x10040] == 3);
+    WriteReportResult(f, 0x22222222, true);
+    REQUIRE_FALSE(ReadWord(f, 0x20040).preemtive);
+    REQUIRE(f.bytes[0x10040] == 3);
+}
+
 TEST_CASE("A query result newer than the GPU writes under it stays in guest memory",
           "[buffer_ports]") {
     Fixture f;

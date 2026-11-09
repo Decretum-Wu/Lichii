@@ -113,7 +113,8 @@ not predict the gain of this partial port in Ocarina of Time.
   profiling or diagnostics. Its correctness fixes are retained: discard/DMA
   destinations first land overlapping read downloads, and older deferred query
   results cannot mark newer GPU writes clean. Synced #874 payload callbacks still
-  do not advance `fenced_landed`; `FencedPayloadLanding` remains authoritative.
+  do not advance `fenced_landed` or retire an older deferred report's tracking;
+  `FencedPayloadLanding` remains authoritative.
 - #979/#1014 retain every registered semaphore region and the direct-release
   shadow. Mirrored releases are emitted only when `ViewApplies()` is false
   (unsplit, back macros, or delayed/high-accuracy releases). The full #805 front
