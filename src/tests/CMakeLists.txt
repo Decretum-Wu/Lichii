@@ -187,6 +187,7 @@ add_executable(tests
     core/core_timing.cpp
     core/local_redirect.cpp
     core/nextendo_redirect.cpp
+    core/filesystem_rename.cpp
     core/thread_startup_policy.cpp
     core/nup_writer.cpp
     core/nup_metadata.cpp
