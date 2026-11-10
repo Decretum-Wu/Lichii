@@ -1473,8 +1473,14 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     };
                     // The split's method lane leaves the caches, and the guest memory writes it
                     // sent, to the preparation lane: the words are there once that lane ran them.
+                    // TEST (EDEN_NX2_PREP_TEST_DMA_NOWAIT=1): reads without waiting, to measure
+                    // what the wait costs (the words may be stale).
+                    static const bool test_no_wait =
+                        std::getenv("EDEN_NX2_PREP_TEST_DMA_NOWAIT") != nullptr;
                     if (VideoCommon::GpuSplit::OnMethodLane()) {
-                        VideoCommon::GpuSplit::Get().LaneRunSync(flush);
+                        if (!test_no_wait) {
+                            VideoCommon::GpuSplit::Get().LaneRunSync(flush);
+                        }
                     } else {
                         flush();
                     }

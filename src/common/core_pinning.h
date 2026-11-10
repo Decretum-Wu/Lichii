@@ -25,19 +25,24 @@ struct LogicalProcessor {
 /// Physical cores of the fastest class needed before the GPU threads are pinned.
 constexpr std::size_t MinCoresForGpuThreadPinning = 6;
 
-/// Logical processor ids for each pinned role. All three are empty when the host has fewer than
-/// MinCoresForGpuThreadPinning performance cores.
+/// Logical processor ids for each pinned role. All are empty when the host has fewer than
+/// MinCoresForGpuThreadPinning performance cores; `prep` also when it was not asked for or the
+/// host has one core fewer than it needs.
 struct GpuThreadPinning {
     std::size_t performance_cores{};
     std::vector<u32> front;
     std::vector<u32> back;
+    std::vector<u32> prep;
     std::vector<u32> guest;
 };
 
 /// The split GPU thread's front and back each get a whole physical performance core, so no SMT
 /// sibling shares it, and the guest cores get the remaining performance cores. Core 0 takes most
-/// interrupts, so the GPU threads get the next two.
-[[nodiscard]] GpuThreadPinning PlanGpuThreadPinning(std::span<const LogicalProcessor> processors);
+/// interrupts, so the GPU threads get the next two. With `prep_core`, the back's preparation lane
+/// (EDEN_NX2_PREP_LANE) gets the core after them, if the guest still keeps
+/// MinCoresForGpuThreadPinning - 2 cores.
+[[nodiscard]] GpuThreadPinning PlanGpuThreadPinning(std::span<const LogicalProcessor> processors,
+                                                    bool prep_core = false);
 
 /// The CPUs of a Linux sysfs CPU list such as "0-3,8,10-11", in order. Empty for an empty or
 /// malformed list.

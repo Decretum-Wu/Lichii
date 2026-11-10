@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <bitset>
 #include <memory>
 #include <span>
 #include <vector>
@@ -11,6 +13,14 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu_split.h"
 #include "video_core/rasterizer_interface.h"
+
+namespace Core {
+class System;
+}
+
+namespace Tegra {
+struct MacroEngine;
+}
 
 namespace VideoCommon {
 
@@ -38,6 +48,44 @@ public:
 
     /// Brings the mirror up to date (EngineInterface::lane_flush).
     void Flush();
+
+    /// Method lane: a macro that reads memory (Maxwell3D::FrontRunOnBack) runs on the
+    /// preparation lane, on the mirror, in order: its memory reads see what the work before it
+    /// wrote without the method lane waiting. The registers in `writes` are the mirror's until the
+    /// engine writes them again (their value here is MacroOwned); in a tracking shadow RAM mode
+    /// their shadow RAM entries too. Under Replay the macro runs on the engine while the method
+    /// lane waits. Returns whether it ran on the mirror.
+    bool RunMacro(Core::System& system, Tegra::MacroEngine& macro_engine, u32 start,
+                  std::span<const u32> writes, const std::bitset<Maxwell3D::Regs::NUM_REGS>* write_set,
+                  std::span<const u32> parameters, std::atomic<bool>* escaped,
+                  std::atomic<u32>* escapes);
+    /// The engine's register value as the method lane holds it: a register a macro the mirror
+    /// ran wrote has the mirror's value (any thread once the preparation lane ran the macro).
+    [[nodiscard]] u32 RegisterAfterMacro(u32 method, u32 value) const {
+        return value == MacroOwned ? mirror.regs.reg_array[method] : value;
+    }
+    /// As RegisterAfterMacro, a shadow RAM entry.
+    [[nodiscard]] u32 ShadowAfterMacro(u32 method, u32 value) const {
+        return mirror_shadows[method].load(std::memory_order_acquire)
+                   ? mirror.shadow_state.reg_array[method]
+                   : value;
+    }
+    /// Method lane (Maxwell3D::ProcessShadowRam): the engine tracked a write of `method` into its
+    /// shadow RAM, which is the engine's again.
+    void ShadowWritten(u32 method) {
+        mirror_shadows[method].store(false, std::memory_order_release);
+    }
+    /// Method lane, or the preparation lane while it waits (Maxwell3D::ProcessShadowRam under
+    /// Replay): the shadow RAM entry of `method`, from the mirror if a macro it ran wrote it.
+    [[nodiscard]] u32 TakeShadow(u32 method);
+    /// With nothing running on either lane: the registers and shadow RAM entries the mirror holds
+    /// newer values of (macros it ran) are the engine's again. `drained`: the preparation lane ran
+    /// everything the method lane sent (else the split stopped, and only those the macros wrote).
+    void Reclaim(bool drained);
+
+    /// The engine's value of a register a macro the mirror ran wrote, until the engine writes it
+    /// (no write of the register holds it: not a mode, an aligned address or a word count).
+    static constexpr u32 MacroOwned = 0xffffffff;
 
     /// The engine's work that writes guest memory, or runs on the mirror's state.
     void WriteConstantWords(GPUVAddr address, std::span<const u32> words);
@@ -171,6 +219,14 @@ private:
     Maxwell3D::EngineHint sent_engine_state{};
     ::Common::unordered_map<u64, Maxwell3D::HLEReplacementAttributeType> sent_replace_table;
     std::vector<u32> record;
+    /// Records Build made since it last compared every register block, and blocks that it found
+    /// changed then without a noted write.
+    static constexpr u32 FullScanEvery = 64;
+    u32 builds_since_full_scan{};
+    u64 missed_writes{};
+    /// Registers whose shadow RAM entry a macro the mirror ran wrote (RunMacro), read by the front
+    /// once the preparation lane ran it.
+    std::unique_ptr<std::atomic<bool>[]> mirror_shadows;
 
     // EDEN_NX2_PREP_ORDER_VERIFY: mirrors that differ from their engine after a record.
     bool verify{};

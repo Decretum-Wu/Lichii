@@ -321,6 +321,14 @@ size_t Maxwell3D::EstimateIndexBufferSize() {
     return std::min<size_t>(memory_manager.GetMemoryLayoutSize(start_address, byte_size * max_size) / byte_size, lower_cap);
 }
 
+void Maxwell3D::LaneShadowWritten(u32 method) {
+    lane->ShadowWritten(method);
+}
+
+u32 Maxwell3D::LaneShadow(u32 method) {
+    return lane->TakeShadow(method);
+}
+
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     const VideoCommon::Nx2Profile::FineScope profile_scope{VideoCommon::Nx2Profile::Zone::Sink};
     if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) {
@@ -337,12 +345,15 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     };
     if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
         for (auto [method, value] : method_sink) {
+            if (lane_shadows) [[unlikely]] {
+                LaneShadowWritten(method);
+            }
             shadow_state.reg_array[method] = value;
             process(method, value);
         }
     } else if (control == Regs::ShadowRamControl::Replay) {
         for (auto [method, value] : method_sink)
-            process(method, shadow_state.reg_array[method]);
+            process(method, lane_shadows ? LaneShadow(method) : shadow_state.reg_array[method]);
     } else {
         for (auto [method, value] : method_sink)
             process(method, value);
@@ -782,6 +793,7 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods,
         memory_manager.WriteWordsCached(address + offset, values.data(), count);
     }
     regs.const_buffer.offset += static_cast<u32>(bytes);
+    NoteRegisterWritten(MAXWELL3D_REG_INDEX(const_buffer.offset));
 }
 
 void Maxwell3D::CallMethodSlow(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
@@ -926,6 +938,7 @@ void Maxwell3D::ProcessFirmwareCall4() {
     // Firmware call 4 is a blob that changes some registers depending on its parameters.
     // These registers don't affect emulation and so are stubbed by setting 0xd00 to 1.
     regs.shadow_scratch[0] = 1;
+    NoteRegisterWritten(MAXWELL3D_REG_INDEX(shadow_scratch));
 }
 
 void Maxwell3D::StampQueryResult(Core::System& system, u64 payload, bool long_query) {
@@ -1191,6 +1204,7 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
 
     // Increment the current buffer position.
     regs.const_buffer.offset += static_cast<u32>(copy_size);
+    NoteRegisterWritten(MAXWELL3D_REG_INDEX(const_buffer.offset));
 }
 
 void Maxwell3D::ProcessCBData(u32 value) {
@@ -1537,6 +1551,9 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         // still holds in its method sink first).
         split.Drain(VideoCommon::DrainSite::FrontStart);
         ConsumeSink(system);
+        if (lane != nullptr) {
+            lane->Reclaim(true);
+        }
         front = std::make_unique<FrontState>();
         std::memcpy(front->regs.data(), regs.reg_array.data(), sizeof(front->regs));
         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
@@ -1571,6 +1588,10 @@ void Maxwell3D::ReleaseFront() {
     }
     executing_macro = front->executing_macro;
     macro_params = std::move(front->parameters);
+    // What macros the mirror ran wrote is the engine's again (nothing runs either now).
+    if (lane != nullptr) {
+        lane->Reclaim(false);
+    }
     // Entries macros the back ran may have written are the engine's already.
     for (u32 i = 0; i < Regs::NUM_REGS; ++i) {
         if (front->back_shadow[i] == 0) {
@@ -2003,6 +2024,15 @@ bool Maxwell3D::FrontRunOnBack(Core::System& system, VideoCommon::GpuSplit& spli
          escapes = &fs.back_escapes](std::span<const u32> parameters) {
             if (VideoCommon::GpuSplit::OnMethodLane()) {
                 VideoCommon::GpuSplit::Get().MarkLaneStale(this);
+                // On the preparation lane, after the work its memory reads wait for.
+                ConsumeSink(*system_ptr);
+                if (lane != nullptr &&
+                    lane->RunMacro(*system_ptr, *engine_ptr, macro->start, macro->writes,
+                                   &macro->write_set, parameters, &macro->escaped, escapes)) {
+                    return;
+                }
+                // Else here, once that lane ran the macros sent there before (one engine).
+                VideoCommon::GpuSplit::Get().LaneRunSync([] {});
             }
             // As ProcessMacro calls a macro, with the back's engine.
             ConsumeSink(*system_ptr);
@@ -2063,6 +2093,9 @@ bool Maxwell3D::FrontRunOnBack(Core::System& system, VideoCommon::GpuSplit& spli
 std::vector<std::pair<u32, u32>> Maxwell3D::FrontRunTheOldWay(VideoCommon::GpuSplit& split,
                                                               const FrontState& fs, u32 start) {
     split.Drain(VideoCommon::DrainSite::FrontVerify);
+    if (lane != nullptr) {
+        lane->Reclaim(true);
+    }
     std::vector<std::pair<u32, u32>> writes;
     std::unordered_map<u32, u32> values;
     std::unordered_map<u32, u32> entries;
@@ -2142,7 +2175,9 @@ u32 Maxwell3D::FrontRegister(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
             ++BackStats().reads;
             BackStats().read_waits += waited ? 1 : 0;
         }
-        fs.regs[method] = regs.reg_array[method];
+        fs.regs[method] = lane != nullptr
+                              ? lane->RegisterAfterMacro(method, regs.reg_array[method])
+                              : regs.reg_array[method];
         fs.back_regs[method] = 0;
         fs.back_owned[method] = fs.back_shadow[method] != 0;
     }
@@ -2163,7 +2198,9 @@ bool Maxwell3D::FrontTakeOver(VideoCommon::GpuSplit& split, FrontState& fs, u32 
             ++BackStats().replays;
             BackStats().replay_waits += waited ? 1 : 0;
         }
-        fs.shadow[method] = shadow_state.reg_array[method];
+        fs.shadow[method] = lane != nullptr
+                                ? lane->ShadowAfterMacro(method, shadow_state.reg_array[method])
+                                : shadow_state.reg_array[method];
         fs.back_shadow[method] = 0;
     }
     const bool differs = fs.back_regs[method] != 0 || (tracked && fs.back_shadow[method] != 0);
@@ -2382,6 +2419,9 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
 
 void Maxwell3D::FrontVerify(VideoCommon::GpuSplit& split, FrontState& fs) {
     split.Drain(VideoCommon::DrainSite::FrontVerify);
+    if (lane != nullptr) {
+        lane->Reclaim(true);
+    }
     static u64 checks{};
     static u64 differences{};
     ++checks;

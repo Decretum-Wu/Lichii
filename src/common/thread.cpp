@@ -729,14 +729,21 @@ void SetCurrentThreadToPerformanceCores() {
 }
 
 void PinCurrentThread(PinnedRole role) {
+    // The preparation lane's core is set aside only when the lane runs (video_core reads the same
+    // variable; the frontend sets it before the GPU threads start).
+    [[maybe_unused]] static const bool prep_core = [] {
+        const char* value = std::getenv("EDEN_NX2_PREP_LANE");
+        return value != nullptr && value[0] == '1';
+    }();
 #ifdef _WIN32
     struct PinnedCpuSets {
         std::vector<ULONG> front;
         std::vector<ULONG> back;
+        std::vector<ULONG> prep;
         std::vector<ULONG> guest;
     };
     static const PinnedCpuSets pinned = [] {
-        const GpuThreadPinning plan = PlanGpuThreadPinning(CpuSets().processors);
+        const GpuThreadPinning plan = PlanGpuThreadPinning(CpuSets().processors, prep_core);
         if (plan.front.empty()) {
             LOG_WARNING(Common,
                         "GPU thread pinning skipped: {} physical performance cores, needs {}",
@@ -744,36 +751,42 @@ void PinCurrentThread(PinnedRole role) {
             return PinnedCpuSets{};
         }
         LOG_INFO(Common,
-                 "GPU thread pinning: front and back on a physical core each, guest cores on the "
+                 "GPU thread pinning: front{} on a physical core each, guest cores on the "
                  "other {} performance cores ({} logical processors)",
-                 plan.performance_cores - 2, plan.guest.size());
+                 plan.prep.empty() ? " and back" : ", back and preparation lane",
+                 plan.performance_cores - (plan.prep.empty() ? 2 : 3), plan.guest.size());
         return PinnedCpuSets{{plan.front.begin(), plan.front.end()},
                              {plan.back.begin(), plan.back.end()},
+                             {plan.prep.begin(), plan.prep.end()},
                              {plan.guest.begin(), plan.guest.end()}};
     }();
     const std::vector<ULONG>& ids = role == PinnedRole::GpuFront  ? pinned.front
                                     : role == PinnedRole::GpuBack ? pinned.back
+                                    : role == PinnedRole::GpuPrep ? pinned.prep
                                                                   : pinned.guest;
     if (!ids.empty()) {
         SelectCurrentThreadCpuSets(ids);
     }
 #elif defined(__linux__) && !defined(__ANDROID__)
     static const GpuThreadPinning plan = [] {
-        GpuThreadPinning result = PlanGpuThreadPinning(LinuxProcessors());
+        GpuThreadPinning result = PlanGpuThreadPinning(LinuxProcessors(), prep_core);
         if (result.front.empty()) {
             LOG_WARNING(Common,
                         "GPU thread pinning skipped: {} physical performance cores, needs {}",
                         result.performance_cores, MinCoresForGpuThreadPinning);
         } else {
             LOG_INFO(Common,
-                     "GPU thread pinning: front and back on a physical core each, guest cores on "
-                     "the other {} performance cores ({} logical processors)",
-                     result.performance_cores - 2, result.guest.size());
+                     "GPU thread pinning: front{} on a physical core each, guest cores on the "
+                     "other {} performance cores ({} logical processors)",
+                     result.prep.empty() ? " and back" : ", back and preparation lane",
+                     result.performance_cores - (result.prep.empty() ? 2 : 3),
+                     result.guest.size());
         }
         return result;
     }();
     const std::vector<u32>& cpus = role == PinnedRole::GpuFront  ? plan.front
                                    : role == PinnedRole::GpuBack ? plan.back
+                                   : role == PinnedRole::GpuPrep ? plan.prep
                                                                  : plan.guest;
     if (!cpus.empty()) {
         SetCurrentThreadAffinity(cpus);

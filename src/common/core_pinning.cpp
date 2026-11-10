@@ -8,7 +8,8 @@
 
 namespace Common {
 
-GpuThreadPinning PlanGpuThreadPinning(std::span<const LogicalProcessor> processors) {
+GpuThreadPinning PlanGpuThreadPinning(std::span<const LogicalProcessor> processors,
+                                      bool prep_core) {
     GpuThreadPinning plan;
     if (processors.empty()) {
         return plan;
@@ -29,6 +30,8 @@ GpuThreadPinning PlanGpuThreadPinning(std::span<const LogicalProcessor> processo
     }
     const u32 front_core = cores[1];
     const u32 back_core = cores[2];
+    const bool has_prep = prep_core && cores.size() >= MinCoresForGpuThreadPinning + 1;
+    const u32 prep = has_prep ? cores[3] : ~0U;
     for (const LogicalProcessor& processor : processors) {
         if (processor.efficiency_class != fastest) {
             continue;
@@ -37,6 +40,8 @@ GpuThreadPinning PlanGpuThreadPinning(std::span<const LogicalProcessor> processo
             plan.front.push_back(processor.id);
         } else if (processor.core == back_core) {
             plan.back.push_back(processor.id);
+        } else if (processor.core == prep) {
+            plan.prep.push_back(processor.id);
         } else {
             plan.guest.push_back(processor.id);
         }

@@ -3,12 +3,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
 
 #include "common/logging.h"
 #include "common/settings.h"
+#include "video_core/macro.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/prep_lane.h"
@@ -62,11 +64,33 @@ constexpr size_t Words(size_t bytes) {
     return (bytes + sizeof(u32) - 1) / sizeof(u32);
 }
 
+/// Whether `bytes` bytes at a and b are equal, in one pass the compiler vectorizes. The C
+/// runtime's memcmp took most of the method lane's time on the register file (twice a draw).
+[[nodiscard]] bool SameBytes(const void* a, const void* b, size_t bytes) {
+    const auto* const left = static_cast<const u8*>(a);
+    const auto* const right = static_cast<const u8*>(b);
+    u64 difference = 0;
+    size_t at = 0;
+    for (; at + sizeof(u64) <= bytes; at += sizeof(u64)) {
+        u64 x;
+        u64 y;
+        std::memcpy(&x, left + at, sizeof(x));
+        std::memcpy(&y, right + at, sizeof(y));
+        difference |= x ^ y;
+    }
+    for (; at < bytes; ++at) {
+        difference |= left[at] ^ right[at];
+    }
+    return difference == 0;
+}
+
 constexpr size_t DrawStateWords = Words(sizeof(DrawState));
 constexpr size_t StageWords = Words(sizeof(Maxwell3D::State::ShaderStageInfo));
 constexpr size_t DeltaWords = Words(sizeof(Nx2FastDraw::Delta));
 constexpr size_t RegBlock = 64;
 static_assert(Maxwell3D::Regs::NUM_REGS % RegBlock == 0);
+/// Every block of the register file, as Maxwell3D::lane_written_blocks has them.
+constexpr u64 AllBlocks = ~u64{0} >> (64 - Maxwell3D::Regs::NUM_REGS / RegBlock);
 static_assert(std::is_trivially_copyable_v<Maxwell3D::State::ShaderStageInfo>);
 static_assert(std::is_trivially_copyable_v<Nx2FastDraw::Delta>);
 static_assert(std::is_trivially_copyable_v<Maxwell3D::DirtyState::Flags>);
@@ -153,7 +177,8 @@ bool PrepLaneEnabled() {
 }
 
 Maxwell3DLane::Maxwell3DLane(Maxwell3D& engine_, Maxwell3D& mirror_)
-    : engine{engine_}, mirror{mirror_}, sent_regs{std::make_unique<Maxwell3D::Regs>()} {
+    : engine{engine_}, mirror{mirror_}, sent_regs{std::make_unique<Maxwell3D::Regs>()},
+      mirror_shadows{std::make_unique<std::atomic<bool>[]>(Maxwell3D::Regs::NUM_REGS)} {
     // Both start at the register defaults, every dirty flag set.
     *sent_regs = engine.regs;
     mirror.regs = engine.regs;
@@ -171,30 +196,44 @@ Maxwell3DLane::~Maxwell3DLane() = default;
 
 void Maxwell3DLane::Build(Reads reads) {
     record.clear();
-    // Registers, by runs of changed words within blocks.
+    // Registers, by runs of changed words within the blocks the engine wrote. Every
+    // FullScanEvery records all blocks are compared, in case a write did not note its block
+    // (Maxwell3D::NoteRegisterWritten): such a write is logged.
     const u32* const now = engine.regs.reg_array.data();
     u32* const sent = sent_regs->reg_array.data();
-    if (std::memcmp(now, sent, sizeof(Maxwell3D::Regs)) != 0) {
-        for (size_t block = 0; block < Maxwell3D::Regs::NUM_REGS; block += RegBlock) {
-            if (std::memcmp(now + block, sent + block, RegBlock * sizeof(u32)) == 0) {
+    const u64 written = engine.lane_written_blocks & AllBlocks;
+    engine.lane_written_blocks = 0;
+    const bool full_scan = ++builds_since_full_scan >= FullScanEvery;
+    if (full_scan) {
+        builds_since_full_scan = 0;
+    }
+    for (u64 blocks = full_scan ? AllBlocks : written; blocks != 0; blocks &= blocks - 1) {
+        const size_t block = static_cast<size_t>(std::countr_zero(blocks)) * RegBlock;
+        if (SameBytes(now + block, sent + block, RegBlock * sizeof(u32))) {
+            continue;
+        }
+        if (full_scan && ((written >> (block / RegBlock)) & 1) == 0) [[unlikely]] {
+            if (missed_writes++ < 16) {
+                LOG_ERROR(HW_GPU, "Prep lane: a write to the 3D registers {:#x}-{:#x} noted no "
+                                  "block",
+                          block, block + RegBlock - 1);
+            }
+        }
+        for (size_t first = block; first < block + RegBlock;) {
+            if (now[first] == sent[first]) {
+                ++first;
                 continue;
             }
-            for (size_t first = block; first < block + RegBlock;) {
-                if (now[first] == sent[first]) {
-                    ++first;
-                    continue;
-                }
-                size_t last = first + 1;
-                while (last < block + RegBlock && now[last] != sent[last]) {
-                    ++last;
-                }
-                const size_t count = last - first;
-                record.push_back(TagRegs | static_cast<u32>(count << 8) |
-                                 static_cast<u32>(first << 16));
-                record.insert(record.end(), now + first, now + last);
-                std::memcpy(sent + first, now + first, count * sizeof(u32));
-                first = last;
+            size_t last = first + 1;
+            while (last < block + RegBlock && now[last] != sent[last]) {
+                ++last;
             }
+            const size_t count = last - first;
+            record.push_back(TagRegs | static_cast<u32>(count << 8) |
+                             static_cast<u32>(first << 16));
+            record.insert(record.end(), now + first, now + last);
+            std::memcpy(sent + first, now + first, count * sizeof(u32));
+            first = last;
         }
     }
     // The flags the engine set since the last record: the rasterizer clears the mirror's.
@@ -205,7 +244,7 @@ void Maxwell3DLane::Build(Reads reads) {
     }
     for (u32 stage = 0; stage < Maxwell3D::Regs::MaxShaderStage; ++stage) {
         const auto& info = engine.state.shader_stages[stage];
-        if (std::memcmp(&info, &sent_state.shader_stages[stage], sizeof(info)) != 0) {
+        if (!SameBytes(&info, &sent_state.shader_stages[stage], sizeof(info))) {
             record.push_back(TagStage | (stage << 8));
             Append(record, info);
             sent_state.shader_stages[stage] = info;
@@ -213,7 +252,8 @@ void Maxwell3DLane::Build(Reads reads) {
     }
     const auto& root = engine.root_tables;
     for (u32 table = 0; table < root.tables.size(); ++table) {
-        if (root.tables[table] != sent_root_tables[table]) {
+        if (!SameBytes(root.tables[table].data(), sent_root_tables[table].data(),
+                       sizeof(sent_root_tables[table]))) {
             record.push_back(TagRootTable | (table << 8));
             record.insert(record.end(), root.tables[table].begin(), root.tables[table].end());
             sent_root_tables[table] = root.tables[table];
@@ -352,7 +392,9 @@ void Maxwell3DLane::Apply(std::span<const u32> data) {
             constexpr u32 LogicOpEnable = MAXWELL3D_REG_INDEX(logic_op.enable);
             std::string difference;
             for (u32 reg = 0; reg < Maxwell3D::Regs::NUM_REGS && difference.empty(); ++reg) {
-                if (reg != LogicOpEnable && mirror.regs.reg_array[reg] != regs[reg]) {
+                // A register a macro the mirror ran wrote is the mirror's (RunMacro).
+                if (reg != LogicOpEnable && regs[reg] != MacroOwned &&
+                    mirror.regs.reg_array[reg] != regs[reg]) {
                     difference = fmt::format("register {:#x}: mirror {:#x}, engine {:#x}", reg,
                                              mirror.regs.reg_array[reg], regs[reg]);
                 }
@@ -418,6 +460,83 @@ void Maxwell3DLane::SyncMirror(Reads reads) {
 
 void Maxwell3DLane::Flush() {
     SyncMirror(ReadsState);
+}
+
+bool Maxwell3DLane::RunMacro(Core::System& system, Tegra::MacroEngine& macro_engine, u32 start,
+                             std::span<const u32> writes,
+                             const std::bitset<Maxwell3D::Regs::NUM_REGS>* write_set,
+                             std::span<const u32> parameters, std::atomic<bool>* escaped,
+                             std::atomic<u32>* escapes) {
+    using Control = Maxwell3D::Regs::ShadowRamControl;
+    const Control control = engine.shadow_state.shadow_ram_control;
+    if (control == Control::Replay) {
+        // Its writes would take the engine's shadow RAM entries.
+        return false;
+    }
+    // Its first write ends a deferred instanced draw (Maxwell3D::ProcessDirtyRegisters).
+    if (engine.draw_manager.HasDeferredDraw()) {
+        engine.draw_manager.DrawDeferred(engine, true);
+    }
+    SyncMirror(ReadsState);
+    GpuSplit::Get().LaneCall(
+        [this, system_ptr = &system, engine_ptr = &macro_engine, start, write_set, escaped, escapes,
+         control](std::span<const u32> data) {
+            mirror.shadow_state.shadow_ram_control = control;
+            // The mirror's draw manager holds the last draw's state, which ends no draw here.
+            mirror.draw_manager.draw_state.instance_count = 0;
+            engine_ptr->split_writes = write_set;
+            const u64 unexpected = engine_ptr->split_unexpected_writes;
+            engine_ptr->Execute(*system_ptr, mirror, start, data);
+            if (engine_ptr->split_unexpected_writes != unexpected) [[unlikely]] {
+                escaped->store(true, std::memory_order_relaxed);
+                escapes->fetch_add(1, std::memory_order_release);
+            }
+        },
+        parameters);
+    const bool tracked = control == Control::Track || control == Control::TrackWithFilter;
+    for (const u32 method : writes) {
+        engine.regs.reg_array[method] = MacroOwned;
+        sent_regs->reg_array[method] = MacroOwned;
+        if (tracked) {
+            mirror_shadows[method].store(true, std::memory_order_release);
+        }
+    }
+    if (tracked) {
+        engine.SetLaneShadows();
+    }
+    return true;
+}
+
+u32 Maxwell3DLane::TakeShadow(u32 method) {
+    if (!mirror_shadows[method].load(std::memory_order_acquire)) {
+        return engine.shadow_state.reg_array[method];
+    }
+    u32 value{};
+    const auto read = [this, method, &value] { value = mirror.shadow_state.reg_array[method]; };
+    if (GpuSplit::OnMethodLane()) {
+        GpuSplit::Get().LaneRunSync(read);
+    } else {
+        read();
+    }
+    mirror_shadows[method].store(false, std::memory_order_release);
+    return engine.shadow_state.reg_array[method] = value;
+}
+
+void Maxwell3DLane::Reclaim(bool drained) {
+    for (u32 method = 0; method < Maxwell3D::Regs::NUM_REGS; ++method) {
+        // Drained, the mirror holds everything the engine sent: where they differ, the
+        // preparation lane wrote the mirror (macros, the rasterizer's own changes).
+        const u32 mirrored = mirror.regs.reg_array[method];
+        if (engine.regs.reg_array[method] == MacroOwned ||
+            (drained && engine.regs.reg_array[method] != mirrored)) {
+            engine.regs.reg_array[method] = mirrored;
+            sent_regs->reg_array[method] = mirrored;
+        }
+        if (mirror_shadows[method].load(std::memory_order_acquire)) {
+            engine.shadow_state.reg_array[method] = mirror.shadow_state.reg_array[method];
+            mirror_shadows[method].store(false, std::memory_order_release);
+        }
+    }
 }
 
 template <typename Func>
