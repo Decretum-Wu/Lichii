@@ -516,6 +516,13 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.host_call_return = !config.enable_cycle_counting;
     }
 #endif
+    // The IR verification pass only checks dynarmic's own invariants (soft asserts), and builds
+    // a hash map of every instruction's uses for each compiled block. Debugging and Paranoid
+    // keep it.
+    if (Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Debugging &&
+        Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Paranoid) {
+        config.optimizations |= Dynarmic::OptimizationFlag::DisableVerification;
+    }
     m_jit.emplace(config);
 }
 
