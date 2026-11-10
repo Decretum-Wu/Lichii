@@ -1034,6 +1034,7 @@ void GpuSplit::FlushLaneEngines() {
 }
 
 void GpuSplit::LaneWait() {
+    lane_waits.fetch_add(1, std::memory_order_relaxed); // TEST (EDEN_NX2_PREP_LEAD_STATS)
     method_waiting.store(true, std::memory_order_seq_cst);
     LanePublish();
     const u64 target = prep_write;

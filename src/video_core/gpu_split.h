@@ -125,6 +125,11 @@ public:
     [[nodiscard]] bool Lane() const {
         return lane;
     }
+    /// TEST (EDEN_NX2_PREP_LEAD_STATS): the method lane's waits for the preparation lane since
+    /// the last call.
+    [[nodiscard]] u64 TakeLaneWaits() {
+        return lane_waits.exchange(0, std::memory_order_relaxed);
+    }
     static void MarkGpuThread() {
         on_gpu_thread = true;
     }
@@ -912,6 +917,8 @@ private:
     }
     /// Publishes and waits until the preparation lane ran everything sent.
     void LaneWait();
+    /// TEST (EDEN_NX2_PREP_LEAD_STATS): LaneWait calls since TakeLaneWaits last ran.
+    std::atomic<u64> lane_waits{};
     // Preparation lane side.
     Tegra::Engines::EngineInterface* prep_engine{};
 

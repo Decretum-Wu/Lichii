@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <type_traits>
 
 #include "common/logging.h"
@@ -13,6 +15,7 @@
 #include "video_core/macro.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_fast_draw.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/prep_lane.h"
 
 namespace VideoCommon {
@@ -25,14 +28,14 @@ using Maxwell3D = Tegra::Engines::Maxwell3D;
 enum Tag : u32 {
     TagRegs = 1,        ///< Bits 8-15 count, 16-31 first register; the values
     TagDirty,           ///< The dirty flags set since the last record
-    TagStage,           ///< Bits 8-15 stage; its constant buffer bindings
+    TagCBuf,            ///< Bits 8-15 stage, 16-23 slot; address low, high, size, enabled
     TagRootTable,       ///< Bits 8-15 table; its 64 words
     TagRootState,       ///< Selected table, offset, loaded
     TagEngineState,     ///< EngineHint
     TagReplaceTable,    ///< Count, then key low, key high, value of each entry
     TagDraw,            ///< DrawState's words, then the inline index bytes' count and bytes
     TagBreak,           ///< A fast draw break of the method lane's
-    TagFastDelta,       ///< The fast draw delta the method lane collected
+    TagFastDelta,       ///< Binds, counts, then the write ranges of the method lane's delta
     TagVerify,          ///< EDEN_NX2_PREP_ORDER_VERIFY: the engine's whole state
 };
 
@@ -85,8 +88,6 @@ constexpr size_t Words(size_t bytes) {
 }
 
 constexpr size_t DrawStateWords = Words(sizeof(DrawState));
-constexpr size_t StageWords = Words(sizeof(Maxwell3D::State::ShaderStageInfo));
-constexpr size_t DeltaWords = Words(sizeof(Nx2FastDraw::Delta));
 constexpr size_t RegBlock = 64;
 static_assert(Maxwell3D::Regs::NUM_REGS % RegBlock == 0);
 /// Every block of the register file, as Maxwell3D::lane_written_blocks has them.
@@ -94,6 +95,45 @@ constexpr u64 AllBlocks = ~u64{0} >> (64 - Maxwell3D::Regs::NUM_REGS / RegBlock)
 static_assert(std::is_trivially_copyable_v<Maxwell3D::State::ShaderStageInfo>);
 static_assert(std::is_trivially_copyable_v<Nx2FastDraw::Delta>);
 static_assert(std::is_trivially_copyable_v<Maxwell3D::DirtyState::Flags>);
+
+/// Field by field: the bindings' padding is not copied with them (TagCBuf).
+[[nodiscard]] bool SameBinding(const Tegra::Engines::ConstBufferInfo& a,
+                               const Tegra::Engines::ConstBufferInfo& b) {
+    return a.address == b.address && a.size == b.size && a.enabled == b.enabled;
+}
+
+[[nodiscard]] bool SameStages(const Maxwell3D::State& a, const Maxwell3D::State& b) {
+    for (size_t stage = 0; stage < a.shader_stages.size(); ++stage) {
+        for (size_t slot = 0; slot < a.shader_stages[stage].const_buffers.size(); ++slot) {
+            if (!SameBinding(a.shader_stages[stage].const_buffers[slot],
+                             b.shader_stages[stage].const_buffers[slot])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void AppendRanges(std::vector<u32>& out, const std::array<u64, Nx2FastDraw::Delta::MaxWrites>& begins,
+                  const std::array<u64, Nx2FastDraw::Delta::MaxWrites>& ends, u32 count) {
+    for (u32 i = 0; i < count; ++i) {
+        out.push_back(static_cast<u32>(begins[i]));
+        out.push_back(static_cast<u32>(begins[i] >> 32));
+        out.push_back(static_cast<u32>(ends[i]));
+        out.push_back(static_cast<u32>(ends[i] >> 32));
+    }
+}
+
+/// Adds the ranges AppendRanges wrote to a delta's list, as MergeDelta does.
+bool MergeRanges(const u32*& in, u32 count, std::array<u64, Nx2FastDraw::Delta::MaxWrites>& begins,
+                 std::array<u64, Nx2FastDraw::Delta::MaxWrites>& ends, u32& num) {
+    bool widened = false;
+    for (u32 i = 0; i < count; ++i, in += 4) {
+        widened |= Nx2FastDraw::AppendRange(begins, ends, num, u64{in[0]} | (u64{in[1]} << 32),
+                                            u64{in[2]} | (u64{in[3]} << 32));
+    }
+    return widened;
+}
 
 template <typename T>
 void Append(std::vector<u32>& out, const T& value) {
@@ -165,6 +205,78 @@ void RestoreDraw(Maxwell3D& mirror, const DrawState& captured) {
 [[nodiscard]] bool DeltaEmpty(const Nx2FastDraw::Delta& delta) {
     return delta.Empty() && delta.num_device_writes == 0 && !delta.no_uniform_keeps;
 }
+
+/// TEST (EDEN_NX2_PREP_LEAD_STATS=1): how long before the preparation lane runs a draw the
+/// method lane sent it, and how many draws it had sent ahead then: the time a worker planning
+/// draws ahead of the preparation lane would have.
+struct LeadStats {
+    static constexpr std::array<u64, 10> bounds_ns{1'000,  2'000,   5'000,   10'000,  20'000,
+                                                   50'000, 100'000, 200'000, 500'000, ~u64{0}};
+    static constexpr std::array<u64, 8> ahead_bounds{0, 1, 2, 4, 8, 16, 64, ~u64{0}};
+    std::array<u64, bounds_ns.size()> lead{};
+    std::array<u64, ahead_bounds.size()> ahead{};
+    u64 draws{};
+    u64 window_start{};
+    std::atomic<u64> sent{};
+    std::atomic<u64> macros{}; ///< Macros run on the mirror (RunMacro): their writes come from P
+    u64 run{};
+
+    [[nodiscard]] static bool Enabled() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_PREP_LEAD_STATS");
+            return value != nullptr && value[0] == '1';
+        }();
+        return enabled;
+    }
+
+    /// Preparation lane, as it runs a draw sent at `sent_ns`.
+    void Note(u64 sent_ns) {
+        const u64 now = Nx2Profile::Now();
+        const u64 lead_ns = now > sent_ns ? now - sent_ns : 0;
+        ++lead[static_cast<size_t>(std::ranges::lower_bound(bounds_ns, lead_ns) -
+                                   bounds_ns.begin())];
+        ++run;
+        const u64 in_flight = sent.load(std::memory_order_relaxed) - run;
+        ++ahead[static_cast<size_t>(std::ranges::lower_bound(ahead_bounds, in_flight) -
+                                    ahead_bounds.begin())];
+        ++draws;
+        if (window_start == 0) {
+            window_start = now;
+        }
+        if (now - window_start < 10'000'000'000ULL) {
+            return;
+        }
+        std::string text;
+        u64 below = 0;
+        for (size_t i = 0; i < lead.size(); ++i) {
+            below += lead[i];
+            text += fmt::format(" <{}us:{:.1f}%", bounds_ns[i] == ~u64{0} ? 0 : bounds_ns[i] / 1000,
+                                100.0 * static_cast<double>(below) / static_cast<double>(draws));
+        }
+        std::string ahead_text;
+        below = 0;
+        for (size_t i = 0; i < ahead.size(); ++i) {
+            below += ahead[i];
+            ahead_text += fmt::format(" <={}:{:.1f}%", ahead_bounds[i] == ~u64{0} ? 0 : ahead_bounds[i],
+                                      100.0 * static_cast<double>(below) / static_cast<double>(draws));
+        }
+        LOG_INFO(HW_GPU,
+                 "Prep lead: {} draws in {:.1f} s, {:.0f} macros on the mirror/s, {:.0f} method "
+                 "lane waits/s | sent before run (cumulative):{} | draws sent ahead "
+                 "(cumulative):{}",
+                 draws, static_cast<double>(now - window_start) / 1e9,
+                 static_cast<double>(macros.exchange(0, std::memory_order_relaxed)) * 1e9 /
+                     static_cast<double>(now - window_start),
+                 static_cast<double>(GpuSplit::Get().TakeLaneWaits()) * 1e9 /
+                     static_cast<double>(now - window_start),
+                 text, ahead_text);
+        lead = {};
+        ahead = {};
+        draws = 0;
+        window_start = now;
+    }
+};
+LeadStats g_lead_stats;
 
 } // Anonymous namespace
 
@@ -244,11 +356,22 @@ void Maxwell3DLane::Build(Reads reads) {
     }
     for (u32 stage = 0; stage < Maxwell3D::Regs::MaxShaderStage; ++stage) {
         const auto& info = engine.state.shader_stages[stage];
-        if (!SameBytes(&info, &sent_state.shader_stages[stage], sizeof(info))) {
-            record.push_back(TagStage | (stage << 8));
-            Append(record, info);
-            sent_state.shader_stages[stage] = info;
+        auto& sent_info = sent_state.shader_stages[stage];
+        if (SameBytes(&info, &sent_info, sizeof(info))) {
+            continue;
         }
+        // Only the bindings that changed (a draw rebinds one or two).
+        for (u32 slot = 0; slot < info.const_buffers.size(); ++slot) {
+            const auto& binding = info.const_buffers[slot];
+            if (!SameBinding(binding, sent_info.const_buffers[slot])) {
+                record.push_back(TagCBuf | (stage << 8) | (slot << 16));
+                record.push_back(static_cast<u32>(binding.address));
+                record.push_back(static_cast<u32>(binding.address >> 32));
+                record.push_back(binding.size);
+                record.push_back(binding.enabled ? 1U : 0U);
+            }
+        }
+        std::memcpy(&sent_info, &info, sizeof(info));
     }
     const auto& root = engine.root_tables;
     for (u32 table = 0; table < root.tables.size(); ++table) {
@@ -302,8 +425,13 @@ void Maxwell3DLane::Build(Reads reads) {
             record.push_back(last);
         }
         if (!DeltaEmpty(Nx2FastDraw::g_delta)) {
+            const Nx2FastDraw::Delta& delta = Nx2FastDraw::g_delta;
             record.push_back(TagFastDelta);
-            Append(record, Nx2FastDraw::g_delta);
+            record.insert(record.end(), delta.binds.begin(), delta.binds.end());
+            record.push_back(delta.num_writes | (delta.num_device_writes << 8) |
+                             (delta.no_uniform_keeps ? 1U << 16 : 0U));
+            AppendRanges(record, delta.write_begin, delta.write_end, delta.num_writes);
+            AppendRanges(record, delta.device_begin, delta.device_end, delta.num_device_writes);
             Nx2FastDraw::g_delta = {};
         }
     }
@@ -334,10 +462,15 @@ void Maxwell3DLane::Apply(std::span<const u32> data) {
         case TagDirty:
             mirror.dirty.flags |= Read<Maxwell3D::DirtyState::Flags>(in);
             break;
-        case TagStage:
-            mirror.state.shader_stages[(head >> 8) & 0xff] =
-                Read<Maxwell3D::State::ShaderStageInfo>(in);
+        case TagCBuf: {
+            auto& binding = mirror.state.shader_stages[(head >> 8) & 0xff]
+                                .const_buffers[(head >> 16) & 0xff];
+            binding.address = u64{in[0]} | (u64{in[1]} << 32);
+            binding.size = in[2];
+            binding.enabled = in[3] != 0;
+            in += 4;
             break;
+        }
         case TagRootTable: {
             auto& table = mirror.root_tables.tables[(head >> 8) & 0xff];
             std::memcpy(table.data(), in, sizeof(table));
@@ -377,9 +510,19 @@ void Maxwell3DLane::Apply(std::span<const u32> data) {
         case TagBreak:
             Nx2FastDraw::BreakAs(*in++);
             break;
-        case TagFastDelta:
-            Nx2FastDraw::MergeDelta(Read<Nx2FastDraw::Delta>(in));
+        case TagFastDelta: {
+            Nx2FastDraw::Delta& delta = Nx2FastDraw::g_delta;
+            for (size_t stage = 0; stage < delta.binds.size(); ++stage) {
+                delta.binds[stage] |= *in++;
+            }
+            const u32 counts = *in++;
+            delta.no_uniform_keeps |= ((counts >> 16) & 1) != 0;
+            delta.no_uniform_keeps |= MergeRanges(in, counts & 0xff, delta.write_begin,
+                                                  delta.write_end, delta.num_writes);
+            delta.no_uniform_keeps |= MergeRanges(in, (counts >> 8) & 0xff, delta.device_begin,
+                                                  delta.device_end, delta.num_device_writes);
             break;
+        }
         case TagVerify: {
             ++verify_checks;
             const u32* const regs = in;
@@ -400,7 +543,7 @@ void Maxwell3DLane::Apply(std::span<const u32> data) {
                 }
             }
             if (difference.empty() &&
-                std::memcmp(&mirror.state, &state, sizeof(state)) != 0) {
+                !SameStages(mirror.state, state)) {
                 difference = "constant buffer bindings";
             }
             for (size_t table = 0; table < mirror.root_tables.tables.size() && difference.empty();
@@ -478,6 +621,9 @@ bool Maxwell3DLane::RunMacro(Core::System& system, Tegra::MacroEngine& macro_eng
         engine.draw_manager.DrawDeferred(engine, true);
     }
     SyncMirror(ReadsState);
+    if (LeadStats::Enabled()) [[unlikely]] {
+        g_lead_stats.macros.fetch_add(1, std::memory_order_relaxed);
+    }
     GpuSplit::Get().LaneCall(
         [this, system_ptr = &system, engine_ptr = &macro_engine, start, write_set, escaped, escapes,
          control](std::span<const u32> data) {
@@ -541,14 +687,27 @@ void Maxwell3DLane::Reclaim(bool drained) {
 
 template <typename Func>
 void Maxwell3DLane::Send(Reads reads, const Func& func) {
+    if (GpuSplit::OnMethodLane()) {
+        // One call for the mirror's changes and the work that reads them.
+        if (reads != ReadsNothing) {
+            Build(reads);
+            if (!record.empty()) {
+                GpuSplit::Get().LaneCall(
+                    [this, func](std::span<const u32> data) {
+                        Apply(data);
+                        func();
+                    },
+                    record);
+                return;
+            }
+        }
+        GpuSplit::Get().LaneCall([func](std::span<const u32>) { func(); });
+        return;
+    }
     if (reads != ReadsNothing) {
         SyncMirror(reads);
     }
-    if (GpuSplit::OnMethodLane()) {
-        GpuSplit::Get().LaneCall([func](std::span<const u32>) { func(); });
-    } else {
-        func();
-    }
+    func();
 }
 
 template <typename Func>
@@ -626,6 +785,16 @@ void Maxwell3DLane::UploadData(std::span<const u32> data) {
 }
 
 void Maxwell3DLane::Draw(bool is_indexed, u32 instance_count) {
+    if (LeadStats::Enabled() && GpuSplit::OnMethodLane()) [[unlikely]] {
+        g_lead_stats.sent.fetch_add(1, std::memory_order_relaxed);
+        Send(ReadsDraw, [this, is_indexed, instance_count, sent_ns = Nx2Profile::Now()] {
+            g_lead_stats.Note(sent_ns);
+            if (mirror.ShouldExecute()) {
+                rasterizer->Draw(is_indexed, instance_count);
+            }
+        });
+        return;
+    }
     Send(ReadsDraw, [this, is_indexed, instance_count] {
         // The render enable condition is the mirror's (QueryCondition).
         if (mirror.ShouldExecute()) {
