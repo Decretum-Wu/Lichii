@@ -637,6 +637,8 @@ private:
     std::mutex queue_mutex;
     std::condition_variable_any event_cv;
     bool worker_waiting{}; ///< The worker is waiting for work (guarded by queue_mutex)
+    /// work_queue's size, set under queue_mutex: the worker watches it before it sleeps.
+    std::atomic<size_t> queued_chunks{};
     std::jthread worker_thread;
 
     std::chrono::steady_clock::duration frame_interval{};

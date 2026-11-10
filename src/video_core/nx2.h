@@ -504,7 +504,7 @@ public:
         std::scoped_lock lk{mutex};
         std::erase_if(waiters, [owner](const Waiter& w) { return w.owner == owner; });
         waiters.push_back({owner, device_address, value, operation, false, Source::Unknown});
-        count.store(waiters.size(), std::memory_order_release);
+        Publish();
         return true;
     }
 
@@ -514,11 +514,12 @@ public:
         }
         std::scoped_lock lk{mutex};
         std::erase_if(waiters, [owner](const Waiter& w) { return w.owner == owner; });
-        count.store(waiters.size(), std::memory_order_release);
+        Publish();
     }
 
     [[nodiscard]] bool Latched(const void* owner) {
-        if (count.load(std::memory_order_acquire) == 0) {
+        if (count.load(std::memory_order_acquire) == 0 ||
+            latched.load(std::memory_order_acquire) == 0) {
             return false;
         }
         std::scoped_lock lk{mutex};
@@ -538,14 +539,28 @@ public:
 
     /// A GPU write of value to the u32 at device_address.
     void OnWrite(u64 device_address, u32 value, Source source = Source::Unknown) {
-        if (count.load(std::memory_order_acquire) == 0) {
+        const size_t waiting = count.load(std::memory_order_acquire);
+        if (waiting == 0) {
             return;
+        }
+        // Report writes come by the thousand a frame while a channel waits on another address:
+        // only a watched address takes the lock the polling GPU thread also takes. As with
+        // `count`, a waiter added meanwhile is seen at its next poll of memory.
+        if (waiting <= WatchedSlots) {
+            bool watched_here = false;
+            for (size_t i = 0; i < waiting; ++i) {
+                watched_here |= watched[i].load(std::memory_order_relaxed) == device_address;
+            }
+            if (!watched_here) {
+                return;
+            }
         }
         std::scoped_lock lk{mutex};
         for (auto& w : waiters) {
             if (w.address == device_address && !w.latched && Matches(w, value)) {
                 w.latched = true;
                 w.source = source;
+                latched.fetch_add(1, std::memory_order_release);
             }
         }
     }
@@ -559,6 +574,21 @@ private:
         bool latched;
         Source source;
     };
+
+    static constexpr size_t WatchedSlots = 8;
+
+    /// Under `mutex`: the waiters' addresses, latched count and count for the unlocked checks.
+    void Publish() {
+        size_t latched_waiters = 0;
+        for (size_t i = 0; i < waiters.size(); ++i) {
+            if (i < WatchedSlots) {
+                watched[i].store(waiters[i].address, std::memory_order_relaxed);
+            }
+            latched_waiters += waiters[i].latched ? 1 : 0;
+        }
+        latched.store(latched_waiters, std::memory_order_relaxed);
+        count.store(waiters.size(), std::memory_order_release);
+    }
 
     static bool Matches(const Waiter& w, u32 current) {
         switch (w.operation) {
@@ -576,6 +606,8 @@ private:
     std::mutex mutex;
     std::vector<Waiter> waiters;
     std::atomic<size_t> count{};
+    std::atomic<size_t> latched{}; ///< Latched waiters
+    std::array<std::atomic<u64>, WatchedSlots> watched{}; ///< The first waiters' addresses
 };
 
 } // namespace Tegra
