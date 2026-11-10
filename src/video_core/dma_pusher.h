@@ -220,6 +220,10 @@ public:
     /// EDEN_NX2_DRAIN_CHECK: checks an entry on pages no GPU work had written against the compute
     /// and copy work it did not wait for (Nx2DrainCheck).
     void CheckUnwaitedWriters(GPUVAddr address, size_t size);
+    /// TEST (EDEN_NX2_GPU_PROFILE): the entry about to be parsed waited `ns` for the compute and
+    /// copy work before the last sync; counted by the method its words continue, logged every
+    /// 10 s.
+    void NoteListWriterWait(bool command_entry, bool gpu_written, u64 ns, u32 words);
     /// Keeps the front's copy of the copy and inline-to-memory engines' registers, with the split
     /// and without.
     void ShadowEngineMethod(Engines::EngineTypes type, u32 method, u32 argument);

@@ -466,6 +466,15 @@ u64 GpuSplit::MemoryWritesTarget(const Tegra::MemoryManager& memory, GPUVAddr ad
     return std::min(target, write_position);
 }
 
+u64 GpuSplit::PlacedWritesTarget(const Tegra::MemoryManager& memory, GPUVAddr address,
+                                 u64 size) const {
+    u64 target = 0;
+    ForEachDeviceRange(memory, address, size, [this, &target](DAddr device, u64 bytes) {
+        target = std::max(target, DeviceWritesTarget(device, bytes));
+    });
+    return std::min(target, write_position);
+}
+
 u64 GpuSplit::DeviceWritesTarget(DAddr address, u64 size) const {
     u64 target = 0;
     const u64 last = (address + size - 1) >> WriteGranuleBits;

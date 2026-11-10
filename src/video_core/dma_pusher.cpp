@@ -10,11 +10,17 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <optional>
 #include <span>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
+#include <fmt/format.h>
+
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -50,6 +56,9 @@ namespace {
 
 /// The split's position after the last copy engine method that may write memory (the front's).
 u64 g_last_copy_writer{};
+/// The split's position after the last copy launch whose destination the front could not place
+/// (GpuSplit::NoteWrite counted it as unplaced).
+u64 g_last_unplaced_copy{};
 
 /// Whether copy engine work sent so far may still be queued on the split's back. A new session
 /// starts the split's positions over: a position past the current one is from an older session.
@@ -58,6 +67,26 @@ u64 g_last_copy_writer{};
         g_last_copy_writer = 0;
     }
     return !split.Ran(g_last_copy_writer);
+}
+
+/// A command entry (one that begins between methods) on [address, address + size), while copy
+/// work is queued: only a copy can write command buffers the CPU wrote, and the front placed where
+/// each copy writes. The entry waits for the work before the last sync only when a write placed
+/// on its pages may still be queued, or a copy it could not place, or a mapping change (the
+/// placements use the device memory mapped when they were noted). Before, every command entry
+/// waited while any copy was queued: ~90 waits a second at Ocarina of Time's water (220 ms of
+/// every second of the front), none of them on a page a copy wrote.
+bool WaitForCopiesOnto(VideoCommon::GpuSplit& split, const MemoryManager& memory,
+                       GPUVAddr address, u64 size) {
+    if (g_last_unplaced_copy > split.Position()) {
+        g_last_unplaced_copy = 0;
+    }
+    const u64 synced = split.SyncedWriterPosition();
+    const bool conservative =
+        !split.Ran(g_last_unplaced_copy) || !split.Ran(split.LastMappingChange());
+    const u64 target =
+        conservative ? synced : (std::min)(split.PlacedWritesTarget(memory, address, size), synced);
+    return split.WaitForPosition(target, VideoCommon::DrainSite::ListWriters);
 }
 
 /// EDEN_NX2_LIST_STATS and _VERIFY: the front read `words` of a command list at `address`
@@ -366,12 +395,22 @@ bool DmaPusher::Step() {
         const bool waits_for_writers =
             !command_entry || CopyWritersPending(VideoCommon::GpuSplit::Get());
         if (!gpu_written && VideoCommon::GpuSplit::Get().Active()) {
-            if (waits_for_writers) {
-                VideoCommon::GpuSplit::Get().WaitForSyncedWriters();
-            }
+            auto& split = VideoCommon::GpuSplit::Get();
+            const bool profile = VideoCommon::Nx2Profile::Enabled();
+            const u64 wait_start = profile ? Nx2ListStats::NowNs() : 0;
+            const u64 bytes = size_t{header.size} * sizeof(u32);
+            const bool waited =
+                waits_for_writers &&
+                (command_entry
+                     ? WaitForCopiesOnto(split, memory_manager, dma_state.dma_get, bytes)
+                     : split.WaitForSyncedWriters());
             // A writer may have marked the page since the first check without making us wait.
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            if (profile && waited) [[unlikely]] {
+                NoteListWriterWait(command_entry, gpu_written, Nx2ListStats::NowNs() - wait_start,
+                                   static_cast<u32>(header.size));
+            }
         }
         if (VideoCommon::Nx2DrainCheck::g_enabled && !gpu_written && waits_for_writers)
             [[unlikely]] {
@@ -691,6 +730,10 @@ void DmaPusher::CallMethod(u32 argument) {
                 split.NoteWriter();
                 if (engine_type == Engines::EngineTypes::MaxwellDMA) {
                     g_last_copy_writer = split.Position();
+                    // Only launches have their writes placed (NoteEngineWrites).
+                    if (dma_state.method != Engines::MaxwellDMA::LaunchDmaMethod) {
+                        g_last_unplaced_copy = split.Position();
+                    }
                 }
             }
         };
@@ -755,6 +798,10 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                 split.NoteWriter();
                 if (engine_type == Engines::EngineTypes::MaxwellDMA) {
                     g_last_copy_writer = split.Position();
+                    // Only launches have their writes placed (NoteEngineWrites).
+                    if (dma_state.method != Engines::MaxwellDMA::LaunchDmaMethod) {
+                        g_last_unplaced_copy = split.Position();
+                    }
                 }
             }
         };
@@ -840,6 +887,10 @@ void DmaPusher::NoteEngineWrites(Engines::EngineTypes type, u32 method) {
     }
     const auto writes = MaxwellDMA::WritesOfLaunch(dma_registers);
     split.NoteWrite(memory_manager, writes.destination.address, writes.destination.size);
+    if (split.LastUnplacedWrite() == split.Position()) {
+        // Too large to place: command entries wait for it as for any copy (WaitForCopiesOnto).
+        g_last_unplaced_copy = split.Position();
+    }
     if (writes.semaphore.size == 0) {
         return;
     }
@@ -907,6 +958,49 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
         }
     }
     return false;
+}
+
+void DmaPusher::NoteListWriterWait(bool command_entry, bool gpu_written, u64 ns, u32 words) {
+    struct Totals {
+        u64 count{};
+        u64 ns{};
+        u64 words{};
+        u64 gpu_written{};
+    };
+    // The front's alone: no lock.
+    static std::map<std::tuple<u32, u32, bool>, Totals> totals;
+    static u64 window_start = Nx2ListStats::NowNs();
+    const u32 engine = dma_state.method_count != 0
+                           ? static_cast<u32>(subchannel_type[dma_state.subchannel])
+                           : ~0U;
+    Totals& entry = totals[{engine, command_entry ? ~0U : dma_state.method, command_entry}];
+    ++entry.count;
+    entry.ns += ns;
+    entry.words += words;
+    entry.gpu_written += gpu_written ? 1 : 0;
+    const u64 now = Nx2ListStats::NowNs();
+    if (now - window_start < 10'000'000'000ULL) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - window_start) / 1e9;
+    std::vector<std::pair<std::tuple<u32, u32, bool>, Totals>> sorted(totals.begin(), totals.end());
+    std::ranges::sort(sorted, [](const auto& a, const auto& b) { return a.second.ns > b.second.ns; });
+    std::string line;
+    for (size_t i = 0; i < (std::min)(sorted.size(), size_t{12}); ++i) {
+        const auto& [key, t] = sorted[i];
+        const auto [eng, method, command] = key;
+        line += fmt::format(" | {} {}: {:.1f} ms ({:.0f}/s, {:.1f} words, GPU-written after {:.0f}%)",
+                            command ? std::string{"commands"} : fmt::format("engine {}", eng),
+                            command ? std::string{} : fmt::format("method {:#x}", method),
+                            static_cast<double>(t.ns) / 1e6 / seconds,
+                            static_cast<double>(t.count) / seconds,
+                            static_cast<double>(t.words) / static_cast<double>(t.count),
+                            100.0 * static_cast<double>(t.gpu_written) /
+                                static_cast<double>(t.count));
+    }
+    LOG_INFO(HW_GPU, "List writer waits per second by the method the entry continues:{}", line);
+    totals.clear();
+    window_start = now;
 }
 
 void DmaPusher::CheckUnwaitedWriters(GPUVAddr address, size_t size) {

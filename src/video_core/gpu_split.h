@@ -465,6 +465,14 @@ public:
     /// memory then. Placed as WaitForWrites places writes.
     [[nodiscard]] u64 MemoryWritesTarget(const Tegra::MemoryManager& memory, GPUVAddr address,
                                          u64 size) const;
+    /// As MemoryWritesTarget, counting only the writes the front placed (NoteWrite): not the ones
+    /// that may land anywhere.
+    [[nodiscard]] u64 PlacedWritesTarget(const Tegra::MemoryManager& memory, GPUVAddr address,
+                                         u64 size) const;
+    /// The position after the compute and copy work sent before the last NoteSync.
+    [[nodiscard]] u64 SyncedWriterPosition() const {
+        return (std::min)(synced_writer_position, write_position);
+    }
     /// Waits until the back executed every entry sent so far that can write guest memory in
     /// [address, address + size) of `memory`, not the others. Returns whether one was queued.
     /// Writes are placed by the device memory the GPU addresses map to when noted and read: GPU
