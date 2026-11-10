@@ -448,6 +448,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
     VideoCommon::PlanWorkers::Get().SetPlanner(&pipeline_cache);
+    buffer_cache.SetQueryPages(&query_cache.page_filter);
 }
 
 RasterizerVulkan::~RasterizerVulkan() {

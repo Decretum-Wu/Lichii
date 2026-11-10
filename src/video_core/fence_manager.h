@@ -235,12 +235,19 @@ private:
                 }
             }
             VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Fence);
+            const bool downloads = pending_flushes.front() != 0;
+            if (downloads) {
+                VideoCommon::Nx2FastDraw::BumpPlanMemorySerial();
+            }
             PopAsyncFlushes(pending_flushes.front());
             pending_flushes.pop_front();
             auto operations = std::move(pending_operations.front());
             pending_operations.pop_front();
             for (auto& operation : operations) {
                 operation();
+            }
+            if (downloads) {
+                VideoCommon::Nx2FastDraw::BumpPlanMemorySerial();
             }
             {
                 std::unique_lock lock(ring_guard);
@@ -306,6 +313,12 @@ private:
                 texture_pops += (released.flushes & TextureFlushes) != 0 ? 1 : 0;
                 buffer_pops += (released.flushes & BufferFlushes) != 0 ? 1 : 0;
             }
+            // Downloads write guest memory plan workers may have read (query results land on
+            // pages the query cache marks, which their readers check).
+            const bool downloads = texture_pops != 0 || buffer_pops != 0;
+            if (downloads) {
+                VideoCommon::Nx2FastDraw::BumpPlanMemorySerial();
+            }
             if (texture_pops != 0) {
                 std::scoped_lock lock{texture_cache.mutex};
                 for (size_t i = 0; i < texture_pops; ++i) {
@@ -328,6 +341,9 @@ private:
             }
             if (!batch.empty()) {
                 VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Fence);
+            }
+            if (downloads) {
+                VideoCommon::Nx2FastDraw::BumpPlanMemorySerial();
             }
             {
                 std::scoped_lock lock{uncommitted_guard};

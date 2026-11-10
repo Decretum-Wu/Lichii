@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <span>
 #include <thread>
@@ -84,8 +85,11 @@ struct DrawPlan {
     std::array<const void*, 6> shader_infos{};
 
     /// Guest memory the plan read (PlanWorkers::ReadMemory) holds for the draw while
-    /// Nx2FastDraw::MemorySerial stays this.
+    /// Nx2FastDraw::PlanMemorySerial stays this, but on pages the query cache marks and where the
+    /// buffer cache logged writes since the preparation lane was done with this draw
+    /// (processed_at_read).
     u64 memory_serial{};
+    u64 processed_at_read{};
 
     /// A small uniform buffer's bytes for the draw, as a 128-bit hash.
     struct Uniform {
@@ -176,13 +180,24 @@ public:
     /// The plan for draw `seq`, if a worker finished it. It stays put until NoteProcessed(seq):
     /// no worker writes its slot again before.
     [[nodiscard]] const DrawPlan* TakePlan(u64 seq) const noexcept;
-    /// The preparation lane is done with draw `seq` (and its plan).
+    /// The preparation lane is done with draw `seq` (and its plan). Its progress (this and the
+    /// writes it did) is published every few draws: the workers only ever see it late, which
+    /// keeps them on the safe side, and the line it is on isn't pulled away from it every write.
     void NoteProcessed(u64 seq) noexcept {
-        processed_seq.store(seq, std::memory_order_release);
+        local_processed = seq;
+        if ((seq & (PublishProgressEvery - 1)) == 0) {
+            applied_writes.store(local_applied, std::memory_order_release);
+            processed_seq.store(seq, std::memory_order_release);
+        }
     }
-    /// The preparation lane wrote guest memory write `id` (PushWrite).
+    /// Any thread: the last draw the preparation lane published being done with.
+    [[nodiscard]] u64 ProcessedSeq() const noexcept {
+        return processed_seq.load(std::memory_order_acquire);
+    }
+    /// The preparation lane wrote guest memory write `id` (PushWrite); published with
+    /// NoteProcessed.
     void NoteApplied(u64 id) noexcept {
-        applied_writes.store(id, std::memory_order_release);
+        local_applied = id;
     }
     /// Counts a draw: whether its plan was there and, with EDEN_NX2_PREP_PLAN_VERIFY, whether its
     /// mirror digest matched the preparation lane's. Logs every 10 s.
@@ -270,8 +285,19 @@ private:
         u32 index{};
         u64 read_position{};
         std::vector<std::pair<const void*, std::unique_ptr<PlanMirror>>> mirrors;
-        std::vector<OverlayWrite> overlay;
+        std::deque<OverlayWrite> overlay;
         std::vector<u32> overlay_words;
+        /// The overlay by 256-byte block of GPU memory: absolute positions (overlay_base +
+        /// index) of the writes that reach the block, oldest first. Writes too long for it are in
+        /// overlay_wide instead.
+        static constexpr size_t OverlayBuckets = 1024;
+        static constexpr u32 OverlayBlockBits = 8;
+        static constexpr u32 MaxBlocksPerWrite = 32;
+        u64 overlay_base{};
+        std::array<std::vector<u64>, OverlayBuckets> overlay_buckets;
+        std::vector<u32> overlay_touched; ///< Buckets with positions in them
+        std::vector<u64> overlay_wide;
+        std::vector<u64> overlay_hits; ///< ReadMemory's scratch
         /// The overlay may lack writes sent before the first one it holds (the worker started,
         /// or fell a ring behind, after them): reads wait until the preparation lane did those.
         bool overlay_gap{true};
@@ -289,6 +315,8 @@ private:
     void WritePlan(Worker& worker, u64 seq, const PlanMirror& mirror);
     /// Drops the overlay writes the preparation lane did.
     void RetireOverlay(Worker& worker);
+    /// Forgets the whole overlay (it fell behind, or everything in it was written).
+    static void ClearOverlay(Worker& worker);
 
     std::atomic<bool> active{};
     u32 count{};
@@ -307,9 +335,13 @@ private:
     std::atomic<u32> wake{};
     /// Set by a worker that dropped its mirrors: the next draw of every engine has a checkpoint.
     alignas(64) std::atomic<bool> checkpoint_wanted{};
-    /// The preparation lane's progress: the last draw it is done with, the last write it did.
+    /// The preparation lane's progress: the last draw it is done with, the last write it did,
+    /// as published (NoteProcessed), and as it has them.
+    static constexpr u64 PublishProgressEvery = 8;
     alignas(64) std::atomic<u64> processed_seq{};
-    alignas(64) std::atomic<u64> applied_writes{};
+    std::atomic<u64> applied_writes{};
+    alignas(64) u64 local_processed{};
+    u64 local_applied{};
     static inline thread_local Worker* t_worker{};
 
     // Statistics (relaxed counters, logged with the preparation lane's verify counts).

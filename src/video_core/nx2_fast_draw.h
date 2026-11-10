@@ -94,6 +94,10 @@ inline std::atomic<u64> g_serial{1};
 /// Bumped by every break but a 3D register change: register writes change no memory, so draws
 /// with only those in between can keep uniforms as delta draws do (MemorySerial).
 inline std::atomic<u64> g_memory_serial{1};
+/// As g_memory_serial, for what plan workers' reads of guest memory hold under
+/// (PlanMemorySerial): only the breaks BumpsPlanMemory names, and fence releases that download
+/// buffers or images (BumpPlanMemorySerial).
+inline std::atomic<u64> g_plan_memory_serial{1};
 /// The last break's reason and, for Register and Method, its 3D method (diagnostics).
 inline std::atomic<u32> g_last_break{};
 
@@ -103,10 +107,48 @@ inline std::atomic<u32> g_last_break{};
 inline thread_local bool t_defer_breaks{};
 inline thread_local bool t_break_pending{};
 inline thread_local bool t_memory_break_pending{};
+inline thread_local bool t_plan_memory_break_pending{};
 inline thread_local u32 t_pending_break{};
 
 /// In a break sent on (TakePendingBreak): a break other than a register change was among them.
 inline constexpr u32 MemoryBreakBit = 0x8000'0000U;
+/// ...and one other than a fence release (g_plan_memory_serial).
+inline constexpr u32 PlanMemoryBreakBit = 0x4000'0000U;
+
+/// Breaks after which guest memory a plan worker read may differ in ways nothing else tells:
+/// 3D methods with side effects and inline uploads, deferred calls, GPU tick work (flushes),
+/// invalidations, indirect resets and unmaps. Not register changes, constant buffer data (the
+/// workers lay it over memory), fence releases (their downloads bump the serial themselves and
+/// query results land on pages the query cache marks), other engines (their memory writes reach
+/// the buffer cache, which logs them for the plans) or frames.
+[[nodiscard]] constexpr bool BumpsPlanMemory(Reason reason) {
+    switch (reason) {
+    case Reason::Method:
+    case Reason::InlineData:
+    case Reason::Call:
+    case Reason::TickWork:
+    case Reason::Invalidation:
+    case Reason::IndirectReset:
+    case Reason::Map:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// TEST: plan memory serial bumps by reason, and by 3D method for Method breaks.
+inline std::array<std::atomic<u64>, static_cast<size_t>(Reason::Count)> g_plan_bumps{};
+inline std::array<std::atomic<u32>, 0xe00> g_plan_bump_methods{};
+inline void CountPlanBump(u32 last) {
+    const u32 reason = last & 0xff;
+    if (reason < g_plan_bumps.size()) {
+        g_plan_bumps[reason].fetch_add(1, std::memory_order_relaxed);
+    }
+    const u32 method = (last >> 8) & 0x3fffff;
+    if (reason == static_cast<u32>(Reason::Method) && method < g_plan_bump_methods.size()) {
+        g_plan_bump_methods[method].fetch_add(1, std::memory_order_relaxed);
+    }
+}
 
 inline void Break(Reason reason, u32 method = 0) {
     if (Enabled()) {
@@ -114,11 +156,19 @@ inline void Break(Reason reason, u32 method = 0) {
         if (t_defer_breaks) {
             t_break_pending = true;
             t_memory_break_pending |= reason != Reason::Register;
+            if (BumpsPlanMemory(reason)) {
+                t_plan_memory_break_pending = true;
+                CountPlanBump(last);
+            }
             t_pending_break = last;
             return;
         }
         if (reason != Reason::Register) {
             g_memory_serial.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (BumpsPlanMemory(reason)) {
+            g_plan_memory_serial.fetch_add(1, std::memory_order_seq_cst);
+            CountPlanBump(last);
         }
         g_serial.fetch_add(1, std::memory_order_relaxed);
         g_last_break.store(last, std::memory_order_relaxed);
@@ -130,8 +180,22 @@ inline void BreakAs(u32 last) {
     if ((last & MemoryBreakBit) != 0) {
         g_memory_serial.fetch_add(1, std::memory_order_relaxed);
     }
+    if ((last & PlanMemoryBreakBit) != 0) {
+        g_plan_memory_serial.fetch_add(1, std::memory_order_seq_cst);
+    }
     g_serial.fetch_add(1, std::memory_order_relaxed);
-    g_last_break.store(last & ~MemoryBreakBit, std::memory_order_relaxed);
+    g_last_break.store(last & ~(MemoryBreakBit | PlanMemoryBreakBit), std::memory_order_relaxed);
+}
+
+/// A fence release that writes guest memory other than query results (buffer or image
+/// downloads), before and after it writes.
+inline void BumpPlanMemorySerial() {
+    g_plan_memory_serial.fetch_add(1, std::memory_order_seq_cst);
+    CountPlanBump(static_cast<u32>(Reason::Fence));
+}
+
+[[nodiscard]] inline u64 PlanMemorySerial() {
+    return g_plan_memory_serial.load(std::memory_order_seq_cst);
 }
 
 /// Method lane: the break waiting since the last call, if any.
@@ -140,8 +204,10 @@ inline void BreakAs(u32 last) {
         return false;
     }
     t_break_pending = false;
-    last = t_pending_break | (t_memory_break_pending ? MemoryBreakBit : 0);
+    last = t_pending_break | (t_memory_break_pending ? MemoryBreakBit : 0) |
+           (t_plan_memory_break_pending ? PlanMemoryBreakBit : 0);
     t_memory_break_pending = false;
+    t_plan_memory_break_pending = false;
     return true;
 }
 

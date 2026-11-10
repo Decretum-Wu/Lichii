@@ -270,6 +270,9 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         return;
     }
     DAddr cpu_addr = *cpu_addr_opt;
+    // Every report's page, the immediate and synced ones too: plan workers' reads of guest memory
+    // don't see report writes, and their readers check these pages (PlanWorkers).
+    page_filter.Mark(cpu_addr, has_timestamp ? 16 : 4);
     if (VideoCommon::GpuSplit::WatchesSemaphore(cpu_addr)) [[unlikely]] {
         LOG_INFO(HW_GPU,
                  "Semaphore watch: report {:#x} to {:#x} (gpu {:#x}, as {}, type {}, flags {:#x}) on {}",

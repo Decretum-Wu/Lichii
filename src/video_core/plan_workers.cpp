@@ -112,6 +112,8 @@ void PlanWorkers::Start(u32 count_) {
     next_write_id = 0;
     processed_seq.store(0, std::memory_order_relaxed);
     applied_writes.store(0, std::memory_order_relaxed);
+    local_processed = 0;
+    local_applied = 0;
     checkpoint_draws.clear();
     published.store(0, std::memory_order_relaxed);
     checkpoint_wanted.store(true, std::memory_order_relaxed);
@@ -311,8 +313,7 @@ void PlanWorkers::WorkerLoop(Worker& worker, std::stop_token stop_token) {
                 for (auto& [engine, mirror] : worker.mirrors) {
                     mirror->valid = false;
                 }
-                worker.overlay.clear();
-                worker.overlay_words.clear();
+                ClearOverlay(worker);
                 worker.overlay_gap = true;
                 worker.read_position = published.load(std::memory_order_acquire);
                 checkpoint_wanted.store(true, std::memory_order_relaxed);
@@ -398,8 +399,32 @@ size_t PlanWorkers::RunEntry(Worker& worker, u64 position) {
         }
         const size_t first = worker.overlay_words.size();
         worker.overlay_words.insert(worker.overlay_words.end(), entry + 7, entry + words);
-        worker.overlay.push_back(
-            OverlayWrite{id, GetEngine(entry), address, first, static_cast<u32>(words - 7)});
+        const u32 count = static_cast<u32>(words - 7);
+        const u64 position = worker.overlay_base + worker.overlay.size();
+        worker.overlay.push_back(OverlayWrite{id, GetEngine(entry), address, first, count});
+        if (count != 0) {
+            const u64 first_block = address >> Worker::OverlayBlockBits;
+            const u64 last_block = (address + u64{count} * sizeof(u32) - 1) >> Worker::OverlayBlockBits;
+            if (last_block - first_block >= Worker::MaxBlocksPerWrite) {
+                worker.overlay_wide.push_back(position);
+            } else {
+                for (u64 block = first_block; block <= last_block; ++block) {
+                    const u32 bucket = static_cast<u32>(block % Worker::OverlayBuckets);
+                    auto& positions = worker.overlay_buckets[bucket];
+                    if (positions.empty()) {
+                        worker.overlay_touched.push_back(bucket);
+                        if (worker.overlay_touched.size() > 4 * Worker::OverlayBuckets) {
+                            std::ranges::sort(worker.overlay_touched);
+                            worker.overlay_touched.erase(
+                                std::unique(worker.overlay_touched.begin(),
+                                            worker.overlay_touched.end()),
+                                worker.overlay_touched.end());
+                        }
+                    }
+                    positions.push_back(position);
+                }
+            }
+        }
         break;
     }
     case KindDraw: {
@@ -441,7 +466,8 @@ void PlanWorkers::WritePlan(Worker& worker, u64 seq, const PlanMirror& mirror) {
                                    std::span<const u16>{plan.unknown.data(), plan.num_unknown});
     }
     // Before any guest memory is read: a write the overlay doesn't hold bumps it after.
-    plan.memory_serial = Nx2FastDraw::MemorySerial();
+    plan.memory_serial = Nx2FastDraw::PlanMemorySerial();
+    plan.processed_at_read = processed_seq.load(std::memory_order_seq_cst);
     std::atomic_thread_fence(std::memory_order_acquire);
     planning.fetch_add(1, std::memory_order_seq_cst);
     if (DrawPlanner* const current = planner.load(std::memory_order_seq_cst)) {
@@ -475,6 +501,17 @@ void PlanWorkers::PushWrite(const void* engine, u64 id, GPUVAddr address,
     std::memcpy(out + 7, words.data(), words.size_bytes());
 }
 
+void PlanWorkers::ClearOverlay(Worker& worker) {
+    worker.overlay_base += worker.overlay.size();
+    worker.overlay.clear();
+    worker.overlay_words.clear();
+    for (const u32 bucket : worker.overlay_touched) {
+        worker.overlay_buckets[bucket].clear();
+    }
+    worker.overlay_touched.clear();
+    worker.overlay_wide.clear();
+}
+
 void PlanWorkers::RetireOverlay(Worker& worker) {
     const u64 applied = applied_writes.load(std::memory_order_acquire);
     size_t done = 0;
@@ -482,10 +519,22 @@ void PlanWorkers::RetireOverlay(Worker& worker) {
         ++done;
     }
     if (done == worker.overlay.size()) {
-        worker.overlay.clear();
-        worker.overlay_words.clear();
-    } else if (done != 0) {
-        worker.overlay.erase(worker.overlay.begin(), worker.overlay.begin() + done);
+        ClearOverlay(worker);
+        return;
+    }
+    // The buckets keep the retired positions until they are read (ReadMemory skips them).
+    worker.overlay.erase(worker.overlay.begin(), worker.overlay.begin() + done);
+    worker.overlay_base += done;
+    std::erase_if(worker.overlay_wide,
+                  [base = worker.overlay_base](u64 position) { return position < base; });
+    // The words of retired writes go once they are most of the store.
+    const size_t first_live = worker.overlay.front().first;
+    if (first_live > (size_t{1} << 20) && first_live * 2 > worker.overlay_words.size()) {
+        worker.overlay_words.erase(worker.overlay_words.begin(),
+                                   worker.overlay_words.begin() + first_live);
+        for (OverlayWrite& write : worker.overlay) {
+            write.first -= first_live;
+        }
     }
 }
 
@@ -503,8 +552,35 @@ bool PlanWorkers::ReadMemory(const PlanMirror& mirror, GPUVAddr address, std::sp
         return false;
     }
     mirror.memory->ReadBlockUnsafe(address, out.data(), out.size());
+    if (worker->overlay.empty()) {
+        return true;
+    }
     const GPUVAddr end = address + out.size();
-    for (const OverlayWrite& write : worker->overlay) {
+    // The writes that may reach the range, in the order they were sent.
+    auto& hits = worker->overlay_hits;
+    hits.clear();
+    const u64 base = worker->overlay_base;
+    const u64 first_block = address >> Worker::OverlayBlockBits;
+    const u64 last_block = (end - 1) >> Worker::OverlayBlockBits;
+    for (u64 block = first_block; block <= last_block; ++block) {
+        auto& bucket = worker->overlay_buckets[block % Worker::OverlayBuckets];
+        // Positions are oldest first: drop the retired ones here.
+        const auto live = std::ranges::lower_bound(bucket, base);
+        bucket.erase(bucket.begin(), live);
+        hits.insert(hits.end(), bucket.begin(), bucket.end());
+        if (block - first_block >= Worker::OverlayBuckets) {
+            break; // Every bucket seen
+        }
+    }
+    for (const u64 position : worker->overlay_wide) {
+        if (position >= base) {
+            hits.push_back(position);
+        }
+    }
+    std::ranges::sort(hits);
+    hits.erase(std::unique(hits.begin(), hits.end()), hits.end());
+    for (const u64 position : hits) {
+        const OverlayWrite& write = worker->overlay[position - base];
         if (write.id <= applied || write.engine != worker->planning_engine) {
             continue;
         }
@@ -582,6 +658,25 @@ void PlanWorkers::NoteDraw(bool found, bool matched) {
     window_start = now;
     draws_seen = plans_found = plans_matched = plans_differed = 0;
     pipeline_outcomes = {};
+    // TEST: what made plans' guest memory stale.
+    std::string bumps;
+    for (size_t reason = 0; reason < Nx2FastDraw::g_plan_bumps.size(); ++reason) {
+        if (const u64 count = Nx2FastDraw::g_plan_bumps[reason].exchange(0); count != 0) {
+            bumps += fmt::format(" {} {}", Nx2FastDraw::reason_names[reason], count);
+        }
+    }
+    std::vector<std::pair<u32, u32>> methods;
+    for (u32 method = 0; method < Nx2FastDraw::g_plan_bump_methods.size(); ++method) {
+        if (const u32 count = Nx2FastDraw::g_plan_bump_methods[method].exchange(0); count != 0) {
+            methods.emplace_back(count, method);
+        }
+    }
+    std::ranges::sort(methods, std::greater{});
+    std::string top;
+    for (size_t i = 0; i < methods.size() && i < 10; ++i) {
+        top += fmt::format(" {:#x}:{}", methods[i].second, methods[i].first);
+    }
+    LOG_INFO(HW_GPU, "Plan memory serial bumps in the window:{} | 3D methods:{}", bumps, top);
 }
 
 } // namespace VideoCommon
