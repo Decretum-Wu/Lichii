@@ -23,6 +23,7 @@
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/multi_range_refresh.h"
 #include "video_core/buffer_cache/uniform_stream_reuse.h"
+#include "video_core/gpu_split.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
@@ -2501,6 +2502,20 @@ void BufferCache<P>::WriteDownloadedMemory(const Common::RangeSet<DAddr>& cpu_wr
     // TEST (EDEN_NX2_READ_CHECK): newer GPU bytes than an early download brought before.
     if (!early_landed.empty()) [[unlikely]] {
         ForgetEarlyLanded(device_addr, size);
+    }
+    if (const u64 watch = VideoCommon::GpuSplit::WatchCovers(device_addr, size); watch != 0) [[unlikely]] {
+        // TEST (EDEN_NX2_SEM_WATCH_DEVICE)
+        u32 value{};
+        u32 old{};
+        if (watch + 4 <= device_addr + size) {
+            std::memcpy(&value, data + (watch - device_addr), 4);
+        }
+        device_memory.ReadBlockUnsafe(watch, &old, sizeof(old));
+        LOG_INFO(HW_GPU,
+                 "Semaphore watch: buffer download {:#x} over {:#x} at {:#x} ({:#x} bytes at "
+                 "{:#x}) on {}, CPU written {}",
+                 value, old, watch, size, device_addr, VideoCommon::GpuSplit::ThreadRole(),
+                 cpu_written.Intersects(watch, 4));
     }
     if (!cpu_written.Intersects(device_addr, size)) {
         device_memory.WriteBlockUnsafe(device_addr, data, size);

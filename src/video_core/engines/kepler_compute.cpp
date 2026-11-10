@@ -46,6 +46,13 @@
 
 namespace Tegra::Engines {
 
+namespace {
+// TEST (EDEN_NX2_SEM_WATCH_DEVICE): the QMDs that released into the watched word, and the QMD the
+// scheduler ran last (the back's schedulers run on one thread).
+std::unordered_set<u64> g_watched_qmds;
+u64 g_last_run_qmd{};
+} // namespace
+
 KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
     : memory_manager{memory_manager_}
     , upload_state{memory_manager, regs.upload}
@@ -55,6 +62,16 @@ KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
         native_qmd.trace = [this](std::string_view event, u64 address, s32 value) {
             LOG_INFO(HW_GPU, "QMD trace {} {:#x} {} (engine {} as {})", event, address, value,
                      fmt::ptr(this), memory_manager.GetID());
+        };
+    } else if (VideoCommon::GpuSplit::SemaphoreWatch() != 0) {
+        native_qmd.trace = [this](std::string_view event, u64 address, s32 value) {
+            if (event == "run") {
+                g_last_run_qmd = address;
+            }
+            LOG_INFO(HW_GPU, "Semaphore watch: QMD {:#x} {} {} (engine {}){} on {}", address,
+                     event, value, fmt::ptr(this),
+                     g_watched_qmds.contains(address) ? " watched" : "",
+                     VideoCommon::GpuSplit::ThreadRole());
         };
     }
     native_qmd.skipped_release = [](u64 address, std::size_t slot, std::span<const u32, 4> words) {
@@ -124,8 +141,17 @@ void KeplerCompute::ProcessNativeReportSemaphore(u32 argument) {
     if ((argument >> 3) & 1) {
         const u32 reduction = (argument >> 9) & 7;
         rasterizer->SignalFence([this, address, payload, reduction] {
-            memory_manager.Write<u32>(address, ReduceSemaphore(reduction, false,
-                                                               memory_manager.Read<u32>(address), payload));
+            const u32 guest = memory_manager.Read<u32>(address);
+            const u32 value = ReduceSemaphore(reduction, false, guest, payload);
+            memory_manager.Write<u32>(address, value);
+            if (VideoCommon::GpuSplit::SemaphoreWatch() != 0) [[unlikely]] {
+                // TEST (EDEN_NX2_SEM_WATCH_DEVICE)
+                if (VideoCommon::GpuSplit::WatchesSemaphore(
+                        memory_manager.GpuToCpuAddress(address).value_or(0))) {
+                    LOG_INFO(HW_GPU, "Semaphore watch: compute reduction {:#x} -> {:#x} on {}",
+                             guest, value, VideoCommon::GpuSplit::ThreadRole());
+                }
+            }
         });
         return;
     }
@@ -388,6 +414,18 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             [&](u64 address, u32 payload, u32 flags) {
                 const bool four_words = (flags >> 30) == 0;
                 if (!memory_manager.IsFullyMappedRange(address, four_words ? 16 : sizeof(payload))) return false;
+                if (VideoCommon::GpuSplit::SemaphoreWatch() != 0) [[unlikely]] {
+                    // TEST (EDEN_NX2_SEM_WATCH_DEVICE)
+                    if (const auto device = memory_manager.GpuToCpuAddress(address);
+                        device && VideoCommon::GpuSplit::WatchCovers(*device, 4)) {
+                        g_watched_qmds.insert(g_last_run_qmd);
+                        LOG_INFO(HW_GPU,
+                                 "Semaphore watch: QMD {:#x} releases {:#x} flags {:#x} (signal "
+                                 "{:#x} {:#x}) on {}",
+                                 g_last_run_qmd, payload, flags, qmd_address, argument,
+                                 VideoCommon::GpuSplit::ThreadRole());
+                    }
+                }
                 // TEST (EDEN_NX2_DRAIN_CHECK): what the front's QMD view compares its notes with.
                 const auto checked = [this, address](u32 offset, u32 value) {
                     if (VideoCommon::Nx2DrainCheck::g_enabled) [[unlikely]] {
@@ -465,6 +503,12 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
         if (VideoCommon::Nx2DrainCheck::g_enabled) [[unlikely]] {
             // TEST: where this signal's reads end, for the front's QMD view check.
             VideoCommon::Nx2DrainCheck::NoteQmdSignalEnd(VideoCommon::GpuSplit::OnBackThread());
+        }
+        if (VideoCommon::GpuSplit::SemaphoreWatch() != 0) [[unlikely]] {
+            // TEST (EDEN_NX2_SEM_WATCH_DEVICE)
+            LOG_INFO(HW_GPU, "Semaphore watch: QMD signal {:#x} {:#x} (engine {}, as {}) '{}' at {} on {}",
+                     qmd_address, argument, fmt::ptr(this), memory_manager.GetID(), error,
+                     VideoCommon::GpuSplit::EntryStart(), VideoCommon::GpuSplit::ThreadRole());
         }
         if (error.empty()) {
             LOG_DEBUG(HW_GPU, "Native QMD control action={:#x}, QMD={:#x}", argument, qmd_address);
@@ -1860,6 +1904,12 @@ void KeplerCompute::FrontNoteWrites(VideoCommon::GpuSplit& split, const FrontSta
     case 0xaf:
     case 0xb0:
         if (SignalsQmd(method, argument)) {
+            if (VideoCommon::GpuSplit::SemaphoreWatch() != 0) [[unlikely]] {
+                // TEST (EDEN_NX2_SEM_WATCH_DEVICE)
+                LOG_INFO(HW_GPU, "Semaphore watch: front QMD signal {:#x} {:#x} (engine {}) at {}",
+                         GPUVAddr{fs.registers[0xad]} << 8, argument, fmt::ptr(this),
+                         split.Position());
+            }
             GetFrontQmd().Signal(split, FrontQmdMemory{memory_manager},
                                  GPUVAddr{fs.registers[0xad]} << 8, argument, nullptr);
         }
@@ -1944,6 +1994,10 @@ void KeplerCompute::FrontInlineQmd(VideoCommon::GpuSplit& split, const FrontStat
         GetFrontQmd().NoteInlineWrite(split, *device, qmd);
     }
     if ((fs.registers[0xa7] & (1U << 24)) != 0 || (fs.registers[0xcc] & (1U << 12)) == 0) {
+        if (VideoCommon::GpuSplit::SemaphoreWatch() != 0) [[unlikely]] {
+            LOG_INFO(HW_GPU, "Semaphore watch: front inline QMD signal {:#x} 0x3 (engine {}) at {}",
+                     address, fmt::ptr(this), split.Position());
+        }
         GetFrontQmd().Signal(split, FrontQmdMemory{memory_manager}, address, 3, &qmd);
     }
 }

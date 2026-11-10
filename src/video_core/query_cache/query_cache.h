@@ -270,6 +270,12 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         return;
     }
     DAddr cpu_addr = *cpu_addr_opt;
+    if (VideoCommon::GpuSplit::WatchesSemaphore(cpu_addr)) [[unlikely]] {
+        LOG_INFO(HW_GPU,
+                 "Semaphore watch: report {:#x} to {:#x} (gpu {:#x}, as {}, type {}, flags {:#x}) on {}",
+                 payload, cpu_addr, addr, gpu_memory->GetID(), static_cast<u32>(counter_type),
+                 static_cast<u32>(flags), VideoCommon::GpuSplit::ThreadRole());
+    }
     const size_t new_query_id = streamer->WriteCounter(cpu_addr, has_timestamp, payload, subreport);
     auto* query = streamer->GetQuery(new_query_id);
     if (is_fence) {
@@ -407,6 +413,11 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             cpu_addr, static_cast<u32>(query_base->value),
             counter_type == QueryType::Payload ? Tegra::Nx2SemaphoreWaiters::Source::PayloadRelease
                                                : Tegra::Nx2SemaphoreWaiters::Source::QueryResult);
+        if (VideoCommon::GpuSplit::WatchesSemaphore(cpu_addr)) [[unlikely]] {
+            LOG_INFO(HW_GPU, "Semaphore watch: {:#x} written to {:#x} at its fence (mirrored {}) on {}",
+                     static_cast<u32>(query_base->value), cpu_addr, mirrored,
+                     VideoCommon::GpuSplit::ThreadRole());
+        }
         if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Write)) {
             const bool wide = True(query_base->flags & QueryFlagBits::HasTimestamp);
             LOG_INFO(HW_GPU,
@@ -452,6 +463,11 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             }
             Tegra::Nx2SemaphoreWaiters::Get().OnWrite(
                 cpu_addr, payload, Tegra::Nx2SemaphoreWaiters::Source::PayloadRelease);
+            if (VideoCommon::GpuSplit::WatchesSemaphore(cpu_addr)) [[unlikely]] {
+                LOG_INFO(HW_GPU, "Semaphore watch: {:#x} written to {:#x} at once (mirrored {}, diverted {}) on {}",
+                         payload, cpu_addr, mirrored, mirrored && shadow.Diverts(cpu_addr),
+                         VideoCommon::GpuSplit::ThreadRole());
+            }
             if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Write)) {
                 LOG_INFO(HW_GPU,
                          "DKB_QUERY write n={} path=immediate as={} gpu={:#x} device={:#x} type={} "

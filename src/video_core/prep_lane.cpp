@@ -529,6 +529,16 @@ void Maxwell3DLane::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                           VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
     // The query cache reads the topology and transform feedback state of the draws.
     Send(ReadsDraw, [this, gpu_addr, type, flags, payload, subreport] {
+        if (GpuSplit::SemaphoreWatch() != 0) [[unlikely]] {
+            // TEST (EDEN_NX2_SEM_WATCH_DEVICE): the address space the report is meant for.
+            auto& memory = engine.GetMemoryManager();
+            if (const auto device = memory.GpuToCpuAddress(gpu_addr);
+                device && GpuSplit::WatchesSemaphore(*device)) {
+                LOG_INFO(HW_GPU,
+                         "Semaphore watch: lane report {:#x} to {:#x} (gpu {:#x}, engine as {}) on {}",
+                         payload, *device, gpu_addr, memory.GetID(), GpuSplit::ThreadRole());
+            }
+        }
         rasterizer->Query(gpu_addr, type, flags, payload, subreport);
     });
 }

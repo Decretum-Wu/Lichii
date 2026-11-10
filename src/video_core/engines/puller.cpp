@@ -720,6 +720,12 @@ bool Puller::AcquireWithoutDrain(DmaPusher& dma_pusher, PendingAcquire& acquire)
     acquire.writers_before = split.LastWriterPosition();
     acquire.sent_at = split.Position();
     ViewAnswer answer = AskView(dma_pusher, acquire, *device);
+    if (VideoCommon::GpuSplit::WatchesSemaphore(*device)) [[unlikely]] {
+        LOG_INFO(HW_GPU, "Semaphore watch: channel {} acquire op {} {:#x} at {:#x}: memory {:#x}, view {}",
+                 dma_pusher.channel_state.bind_id, acquire.operation, acquire.value, *device,
+                 dma_pusher.memory_manager.Read<u32>(acquire.address),
+                 static_cast<int>(answer.kind));
+    }
     // The value is in memory once the back ran that work, before what was sent after it. A
     // release the front can't value, then the writers before the acquire: two waits at most.
     u32 waits = 0;

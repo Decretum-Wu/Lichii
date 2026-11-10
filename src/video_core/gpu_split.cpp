@@ -348,6 +348,18 @@ GpuSplit::Landing GpuSplit::FencedPayloadLanding() {
 
 void GpuSplit::NoteSemaphoreWrite(u64 device_address, u32 payload, bool known, bool at_least,
                                   Landing landing) {
+    // TEST (EDEN_NX2_SEM_WATCH_DEVICE): every release sent to the watched word.
+    if (WatchesSemaphore(device_address)) [[unlikely]] {
+        LOG_INFO(HW_GPU,
+                 "Semaphore watch: release {:#x} to {:#x} sent at {} by {} (known {}, at least {}, "
+                 "{}); ran {}",
+                 payload, device_address, write_position,
+                 front_engine != nullptr && front_engine->bound_type
+                     ? EngineName(front_engine->bound_type)
+                     : std::string_view{"the puller"},
+                 known, at_least, landing == Landing::Fenced ? "fenced" : "at run",
+                 consumed.load(std::memory_order_acquire));
+    }
     if (semaphore_writes.size() >= semaphore_writes_limit) {
         // The words of releases in memory hold their values.
         std::erase_if(semaphore_writes,
@@ -1074,9 +1086,12 @@ u64* GpuSplit::LaneReserve(size_t words) {
 
 void GpuSplit::LaneForward(const u64* entry, size_t words, u64 position) {
     // Entries that follow each other in the ring go in one batch while it fits before the end.
-    const bool extend = prep_batch != NoBatch && position == prep_batch_end &&
-                        (prep_write & PrepMask) + words <= PrepWords &&
-                        prep_write + words - prep_consumed_cache <= PrepWords;
+    // The preparation lane reads a batch as one run of words from its head: one that reached
+    // the end of the ring is closed (its next word, at the ring's start, is not after it).
+    const bool extend =
+        prep_batch != NoBatch && position == prep_batch_end &&
+        (prep_batch & PrepMask) + (prep_write - prep_batch) + words <= PrepWords &&
+        prep_write + words - prep_consumed_cache <= PrepWords;
     if (!extend) {
         u64* const head = LaneReserve(2 + words);
         head[0] = position;
@@ -1172,6 +1187,11 @@ void GpuSplit::PrepLoop(std::stop_token stop_token) {
             if ((head & PrepRecord) == 0) {
                 const u64 origin = head;
                 const size_t words = static_cast<size_t>(prep_ring[index + 1]);
+                if (index + 2 + words > PrepWords) [[unlikely]] {
+                    LOG_CRITICAL(HW_GPU, "GPU split preparation lane: batch at {:#x} runs past "
+                                         "the ring's end ({} words)",
+                                 read_position, words);
+                }
                 const u64* const entries = &prep_ring[index + 2];
                 for (size_t offset = 0; offset < words;) {
                     t_entry_start = origin + offset;
@@ -1186,7 +1206,7 @@ void GpuSplit::PrepLoop(std::stop_token stop_token) {
                 }
                 read_position += 2 + words;
             } else {
-                switch (static_cast<PrepKind>(head & ~PrepRecord)) {
+                switch (static_cast<PrepKind>(head & 0xff)) {
                 case PrepKind::Wrap:
                     read_position += PrepWords - index;
                     break;
@@ -1227,6 +1247,10 @@ void GpuSplit::PrepLoop(std::stop_token stop_token) {
                 case PrepKind::Sync:
                     read_position += 1;
                     prep_consumed.store(read_position, std::memory_order_seq_cst);
+                    break;
+                default:
+                    LOG_CRITICAL(HW_GPU, "GPU split preparation lane: bad record {:#x}", head);
+                    read_position = available;
                     break;
                 }
             }
