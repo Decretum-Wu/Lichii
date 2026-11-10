@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <utility>
 
 #include "common/dkb_frame_trace.h"
@@ -48,20 +47,6 @@ constexpr auto PROBE_STEP_DELAY = std::chrono::milliseconds(250);
     }
 }
 
-/// EDEN_NX2_OPT_FG_UNBLOCK=0: generations are planned against the measured frame interval alone
-/// (the old behaviour), see FrameGenPacer::PlanningInterval.
-[[nodiscard]] bool PlanUnblocked() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("EDEN_NX2_OPT_FG_UNBLOCK");
-        const bool on = value == nullptr || value[0] != '0';
-        LOG_INFO(Render_Vulkan, "EDEN_NX2_OPT_FG_UNBLOCK: frame generation plans {}",
-                 on ? "without the time its own presents held the renderer"
-                    : "against the measured frame interval");
-        return on;
-    }();
-    return enabled;
-}
-
 } // Anonymous namespace
 
 // With a target rate, the generations of a frame fill its interval at that rate. The display
@@ -76,7 +61,7 @@ f32 FrameGenPacer::PlanningInterval(f32 interval_seconds, f32 blocked_seconds) {
     const f32 guest_interval =
         static_cast<f32>(Tegra::g_nx2_guest_frame_interval_ns.load(std::memory_order_relaxed)) *
         1.0e-9f;
-    if (!PlanUnblocked() || guest_interval <= 0.0f || blocked_seconds <= 0.0f) {
+    if (guest_interval <= 0.0f || blocked_seconds <= 0.0f) {
         return interval_seconds;
     }
     const f32 unblocked = interval_seconds - std::min(blocked_seconds, interval_seconds);
