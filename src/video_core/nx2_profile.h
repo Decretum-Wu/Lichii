@@ -12,8 +12,11 @@
 #endif
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <string>
+#include <tuple>
 #include <unordered_set>
+#include <vector>
 
 #include "common/common_types.h"
 #include "video_core/gpu_split.h"
@@ -602,6 +605,32 @@ inline void Report(const char* thread_name = "GPU thread", bool report_all_conte
             static_cast<double>(own.count) * 1e9 / window, static_cast<double>(own.ns) / 1e6 * 1e9 / window,
             static_cast<double>(own.sleeps) * 1e9 / window);
         own = {};
+        // The largest waits by lock and by the thread that held it.
+        static constexpr std::array<const char*, 3> lock_names{"other", "buffer", "texture"};
+        std::vector<std::tuple<u64, size_t, size_t>> holders;
+        auto& by_holder = Common::t_contention_by_holder;
+        for (size_t lock = 0; lock < by_holder.size(); ++lock) {
+            for (size_t holder = 0; holder < by_holder[lock].size(); ++holder) {
+                if (by_holder[lock][holder].count != 0) {
+                    holders.emplace_back(by_holder[lock][holder].ns, lock, holder);
+                }
+            }
+        }
+        std::ranges::sort(holders, std::greater{});
+        std::string held;
+        for (size_t i = 0; i < (std::min)(holders.size(), size_t{8}); ++i) {
+            const auto [ns, lock, holder] = holders[i];
+            const char* name = Common::g_contention_holder_names[holder].load(std::memory_order_acquire);
+            held += fmt::format(" {}/{} {:.1f} ms ({:.0f}/s),", lock_names[lock],
+                                name != nullptr ? name : "unnamed",
+                                static_cast<double>(ns) / 1e6 * 1e9 / window,
+                                static_cast<double>(by_holder[lock][holder].count) * 1e9 / window);
+        }
+        if (!held.empty()) {
+            held.pop_back();
+            line += ", held by:" + held;
+        }
+        by_holder = {};
         if (report_all_contention) {
             const u64 count = all.count.exchange(0, std::memory_order_relaxed);
             const u64 ns = all.ns.exchange(0, std::memory_order_relaxed);

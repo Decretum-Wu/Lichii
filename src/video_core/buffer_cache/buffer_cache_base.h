@@ -548,7 +548,7 @@ public:
     /// nullptr.
     void BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta);
 
-    Common::SpinRecursiveMutex mutex;
+    Common::SpinRecursiveMutex mutex{Common::ContentionLock::BufferCache};
     Runtime& runtime;
     bool any_buffer_uploaded = false;
     /// Indirectly read banks of native programs already uploaded this frame.
