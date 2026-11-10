@@ -255,10 +255,14 @@ void StateTracker::SetupTables(Tegra::Control::ChannelState& channel_state) {
     SetupDirtyVertexBindings(tables);
     SetupDirtySpecialOps(tables);
     SetupRasterModes(tables);
+    if (auto& mirror = channel_state.payload->prep_maxwell_3d) {
+        // The engine sets the flags, the mirror gets them (VideoCommon::Maxwell3DLane).
+        mirror->dirty.tables = tables;
+    }
 }
 
 void StateTracker::ChangeChannel(Tegra::Control::ChannelState& channel_state) {
-    flags = &channel_state.payload->maxwell_3d.dirty.flags;
+    flags = &channel_state.payload->PrepMaxwell3D().dirty.flags;
 }
 
 void StateTracker::InvalidateState() {

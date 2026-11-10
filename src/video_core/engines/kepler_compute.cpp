@@ -1617,7 +1617,7 @@ struct ListCallContext {
     void SendOwed(u64 device, u32 value) const {
         split.Defer([rasterizer_ = rasterizer, device,
                      value] { rasterizer_->Nx2NoteOwedListWord(device, value); },
-                    VideoCommon::GpuSplit::Writes::Noted);
+                    VideoCommon::GpuSplit::Writes::Noted, VideoCommon::GpuSplit::LanePrep);
     }
     void Release(u32 slot) const {
         Nx2ListIndirect::ReleaseSlot(split, rasterizer, slot);
@@ -1826,7 +1826,7 @@ void KeplerCompute::FrontQmdCheck(VideoCommon::GpuSplit& split) {
                                                           table->StateCount(), after_late);
             }
         },
-        VideoCommon::GpuSplit::Writes::Noted);
+        VideoCommon::GpuSplit::Writes::Noted, VideoCommon::GpuSplit::LanePrep);
 }
 
 // What the back writes to guest memory running `method` with `argument`, just sent as

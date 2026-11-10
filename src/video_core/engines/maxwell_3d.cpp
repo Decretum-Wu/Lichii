@@ -35,6 +35,7 @@
 #include "video_core/nx2_list_indirect_stats.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/prep_lane.h"
 #include "video_core/query_cache/frame_trace.h"
 #include "video_core/query_dma.h"
 #include "video_core/rasterizer_interface.h"
@@ -519,14 +520,27 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
     case MAXWELL3D_REG_INDEX(report_semaphore.query):
         return ProcessQueryGet();
     case MAXWELL3D_REG_INDEX(render_enable.mode):
+        // With the preparation lane, the condition is the mirror's: it reads guest memory and
+        // the query cache, and the draws check it there (Maxwell3DLane::Draw).
+        if (lane != nullptr) {
+            return lane->QueryCondition();
+        }
         return ProcessQueryCondition();
     case MAXWELL3D_REG_INDEX(clear_report_value):
         return ProcessCounterReset();
     case MAXWELL3D_REG_INDEX(sync_info):
         return ProcessSyncPoint();
     case MAXWELL3D_REG_INDEX(launch_dma):
+        if (lane != nullptr) {
+            return lane->UploadExec(regs.launch_dma.memory_layout.Value() ==
+                                    Regs::LaunchDMA::Layout::Pitch);
+        }
         return upload_state.ProcessExec(regs.launch_dma.memory_layout.Value() == Regs::LaunchDMA::Layout::Pitch);
     case MAXWELL3D_REG_INDEX(inline_data):
+        if (lane != nullptr) {
+            lane->UploadData(argument, is_last_call);
+            return;
+        }
         upload_state.ProcessData(argument, is_last_call);
         return;
     case MAXWELL3D_REG_INDEX(fragment_barrier):
@@ -762,7 +776,11 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods,
     if (VideoCommon::Nx2FastDraw::Enabled()) {
         NoteFastDrawConstantData(address + offset, address + offset + bytes);
     }
-    memory_manager.WriteWordsCached(address + offset, values.data(), count);
+    if (lane != nullptr) {
+        lane->WriteConstantWords(address + offset, std::span<const u32>{values.data(), count});
+    } else {
+        memory_manager.WriteWordsCached(address + offset, values.data(), count);
+    }
     regs.const_buffer.offset += static_cast<u32>(bytes);
 }
 
@@ -867,6 +885,10 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     case MAXWELL3D_REG_INDEX(inline_data): {
         ASSERT(methods_pending == amount);
         VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::InlineData);
+        if (lane != nullptr) {
+            lane->UploadData(std::span<const u32>{base_start, amount});
+            return;
+        }
         upload_state.ProcessData(base_start, amount);
         return;
     }
@@ -1150,7 +1172,12 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
         if (VideoCommon::Nx2FastDraw::Enabled()) {
             NoteFastDrawConstantData(address, address + write_size);
         }
-        memory_manager.WriteBlockCached(address, start_base, write_size);
+        if (lane != nullptr) {
+            lane->WriteConstantBlock(address,
+                                     std::span<const u32>{start_base, write_size / sizeof(u32)});
+        } else {
+            memory_manager.WriteBlockCached(address, start_base, write_size);
+        }
     }
     if (write_size != copy_size) {
         static std::atomic<bool> warned{};
@@ -1851,8 +1878,15 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     if (fs.draw_pending) {
         fs.draw_pending = false;
         // A deferred draw.
-        split.Defer([this, system_ptr = &system] { FinishFrontMacro(*system_ptr); },
-                    VideoCommon::GpuSplit::Writes::Caches, VideoCommon::GpuSplit::FastDrawNeutral);
+        split.Defer(
+            [this, system_ptr = &system] {
+                if (VideoCommon::GpuSplit::OnMethodLane()) {
+                    VideoCommon::GpuSplit::Get().MarkLaneStale(this);
+                }
+                FinishFrontMacro(*system_ptr);
+            },
+            VideoCommon::GpuSplit::Writes::Caches,
+            VideoCommon::GpuSplit::FastDrawNeutral | VideoCommon::GpuSplit::LaneMethod);
     }
     if (FrontVerifyEnabled() && (++fs.calls & 4095) == 0) [[unlikely]] {
         FrontVerify(split, fs);
@@ -1967,6 +2001,9 @@ bool Maxwell3D::FrontRunOnBack(Core::System& system, VideoCommon::GpuSplit& spli
     split.DeferWords(
         [this, system_ptr = &system, engine_ptr = &back, macro = known.get(),
          escapes = &fs.back_escapes](std::span<const u32> parameters) {
+            if (VideoCommon::GpuSplit::OnMethodLane()) {
+                VideoCommon::GpuSplit::Get().MarkLaneStale(this);
+            }
             // As ProcessMacro calls a macro, with the back's engine.
             ConsumeSink(*system_ptr);
             engine_ptr->split_writes = &macro->write_set;
@@ -1980,9 +2017,10 @@ bool Maxwell3D::FrontRunOnBack(Core::System& system, VideoCommon::GpuSplit& spli
         // Its writes (BackWritable) touch registers and the caches, not guest memory. The call
         // doesn't end fast draw reuse itself: the macro's methods and register writes go through
         // ProcessMethodCall and ProcessDirtyRegisters, which end it when they change what a draw
-        // resolves to, and the caches end it on their own invalidations.
+        // resolves to, and the caches end it on their own invalidations. With the preparation
+        // lane the method lane runs it; its memory reads wait for that lane (MacroEngine).
         fs.parameters, VideoCommon::GpuSplit::Writes::Caches,
-        VideoCommon::GpuSplit::FastDrawNeutral);
+        VideoCommon::GpuSplit::FastDrawNeutral | VideoCommon::GpuSplit::LaneMethod);
     fs.sink_pending = false; // The back macro consumes the sink before it runs.
     const u64 position = split.Position();
     fs.back_last = position;

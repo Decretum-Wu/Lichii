@@ -61,7 +61,8 @@ template <typename Func>
 void OnBack(const Func& func,
             VideoCommon::GpuSplit::Writes writes = VideoCommon::GpuSplit::Writes::Anywhere) {
     if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-        split.Defer(func, writes);
+        // Only the rasterizer: with the preparation lane, that lane runs it.
+        split.Defer(func, writes, VideoCommon::GpuSplit::LanePrep);
     } else {
         func();
     }
@@ -231,7 +232,7 @@ void RequestFlush(DmaPusher& dma_pusher, Puller::PendingAcquire& acquire, u64 de
         [rasterizer = dma_pusher.rasterizer, device] {
             rasterizer->FlushRegion(device, sizeof(u32), VideoCommon::CacheType::BufferCache);
         },
-        VideoCommon::GpuSplit::Writes::Caches);
+        VideoCommon::GpuSplit::Writes::Caches, VideoCommon::GpuSplit::LanePrep);
     acquire.flush_position = split.Position();
     acquire.flushed = true;
 }
@@ -354,6 +355,10 @@ void ReportLongWait(DmaPusher& dma_pusher, Puller::PendingAcquire& acquire,
         dma_pusher.memory_manager.Read<u32>(words), dma_pusher.memory_manager.Read<u32>(words + 4),
         dma_pusher.memory_manager.Read<u32>(words + 8),
         dma_pusher.memory_manager.Read<u32>(words + 12));
+    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active() && device) {
+        LOG_WARNING(HW_GPU, "Channel {} waits: {}", dma_pusher.channel_state.bind_id,
+                    split.DescribeState(*device));
+    }
 }
 
 } // Anonymous namespace

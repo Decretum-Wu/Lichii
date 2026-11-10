@@ -25,6 +25,10 @@ namespace VideoCore {
 class RasterizerInterface;
 }
 
+namespace VideoCommon {
+class Maxwell3DLane;
+}
+
 namespace Tegra {
 
 class GPU;
@@ -41,9 +45,18 @@ struct ChannelState {
 
     struct Payload {
         explicit Payload(Core::System& system, MemoryManager& memory_manager, ChannelState& channel_state);
+        ~Payload();
+
+        /// The 3D engine the rasterizer and its caches read: with the split's preparation lane
+        /// (EDEN_NX2_PREP_LANE), a mirror of maxwell_3d's state (VideoCommon::Maxwell3DLane).
+        [[nodiscard]] Engines::Maxwell3D& PrepMaxwell3D() {
+            return prep_maxwell_3d ? *prep_maxwell_3d : maxwell_3d;
+        }
 
         /// 3D engine
         Engines::Maxwell3D maxwell_3d;
+        std::optional<Engines::Maxwell3D> prep_maxwell_3d;
+        std::unique_ptr<VideoCommon::Maxwell3DLane> maxwell_3d_lane;
         /// 2D engine
         Engines::Fermi2D fermi_2d;
         /// Compute engine

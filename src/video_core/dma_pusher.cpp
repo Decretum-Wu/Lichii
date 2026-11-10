@@ -180,7 +180,7 @@ void DmaPusher::DispatchCalls() {
                 gpu->FlushCommands();
                 gpu->OnCommandListEnd();
             },
-            VideoCommon::GpuSplit::Writes::Caches);
+            VideoCommon::GpuSplit::Writes::Caches, VideoCommon::GpuSplit::LanePrep);
         split.Publish();
         return;
     }
@@ -332,14 +332,21 @@ bool DmaPusher::Step() {
                 const size_t words = std::min<size_t>(dma_state.method_count, header.size);
                 auto* const engine_state = subchannels[dma_state.subchannel];
                 if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-                    // The caches behind IsMemoryDirty belong to the split's back thread.
-                    split.Defer(
-                        [engine_state, memory = &memory_manager,
-                         address = GPUVAddr{dma_state.dma_get}, bytes = words * sizeof(u32)] {
-                            engine_state->current_dirty = memory->IsMemoryDirty(address, bytes);
-                        },
-                        VideoCommon::GpuSplit::Writes::Noted,
-                        VideoCommon::GpuSplit::FastDrawNeutral);
+                    // The caches behind IsMemoryDirty belong to the split's back thread. The 3D
+                    // engine reads current_dirty only in HLE macros and at High GPU accuracy
+                    // (RefreshParameters), neither of which the split runs (Switch 2 macros are
+                    // native): with the preparation lane, which leaves that engine to the method
+                    // lane, only the compute engine's is kept.
+                    if (!macro_payload || !split.Lane()) {
+                        split.Defer(
+                            [engine_state, memory = &memory_manager,
+                             address = GPUVAddr{dma_state.dma_get}, bytes = words * sizeof(u32)] {
+                                engine_state->current_dirty = memory->IsMemoryDirty(address, bytes);
+                            },
+                            VideoCommon::GpuSplit::Writes::Noted,
+                            VideoCommon::GpuSplit::FastDrawNeutral |
+                                VideoCommon::GpuSplit::LanePrep);
+                    }
                 } else {
                     engine_state->current_dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
                 }
@@ -1021,7 +1028,7 @@ void DmaPusher::CheckUnwaitedWriters(GPUVAddr address, size_t size) {
             }
             VideoCommon::Nx2DrainCheck::NoteListChecked(written);
         },
-        VideoCommon::GpuSplit::Writes::Noted);
+        VideoCommon::GpuSplit::Writes::Noted, VideoCommon::GpuSplit::LanePrep);
 }
 
 bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pending) {
@@ -1115,7 +1122,8 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pendin
                                 Nx2CmdPageDiag::CheckMissedWrite(page, begin, end);
                             },
                             VideoCommon::GpuSplit::Writes::Anywhere,
-                            VideoCommon::GpuSplit::FastDrawNeutral);
+                            VideoCommon::GpuSplit::FastDrawNeutral |
+                                VideoCommon::GpuSplit::LanePrep);
                     }
                 } else {
                     diag.reads_unknown.fetch_add(1, std::memory_order_relaxed);
@@ -1215,7 +1223,7 @@ bool DmaPusher::TakeGpuWrittenListWords(const CommandListHeader& header) {
                 rasterizer_->Nx2CheckListSlot(slot_, std::span{expected}.first(count));
             }
         },
-        VideoCommon::GpuSplit::Writes::Noted);
+        VideoCommon::GpuSplit::Writes::Noted, VideoCommon::GpuSplit::LanePrep);
     command_headers.resize_destructive(count);
     for (u32 k = 0; k < count; ++k) {
         command_headers[k].argument = Nx2ListIndirect::Placeholder(*slot, k);

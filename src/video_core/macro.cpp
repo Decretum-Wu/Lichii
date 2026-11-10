@@ -1448,22 +1448,35 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     // fence: write them out, or occlusion predicates read stale values.
                     const bool owns_caches = !VideoCommon::GpuSplit::Get().Active() ||
                                              VideoCommon::GpuSplit::OnBackThread();
-                    if (owns_caches && VideoCommon::QueryDma::TraceEnabled() &&
-                        VideoCommon::QueryDma::HasPendingQueries(memory, maxwell3d.Rasterizer(),
-                                                                 source, read_bytes)) {
-                        VideoCommon::QueryDma::Trace(memory, maxwell3d.Rasterizer(), method, address,
-                                                     source, read_bytes);
-                    }
-                    if (owns_caches) {
-                        VideoCommon::QueryDma::FlushPending(memory, maxwell3d.Rasterizer(), source,
-                                                            read_bytes);
-                    }
-                    if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
-                        memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
-                        static u64 flushes{};
-                        if (++flushes % 2000 == 1) {
-                            LOG_INFO(HW_GPU, "Native MME DMA read flushed GPU-written memory ({} times)", flushes);
+                    const auto flush = [&] {
+                        if (owns_caches && VideoCommon::QueryDma::TraceEnabled() &&
+                            VideoCommon::QueryDma::HasPendingQueries(memory, maxwell3d.Rasterizer(),
+                                                                     source, read_bytes)) {
+                            VideoCommon::QueryDma::Trace(memory, maxwell3d.Rasterizer(), method,
+                                                         address, source, read_bytes);
                         }
+                        if (owns_caches) {
+                            VideoCommon::QueryDma::FlushPending(memory, maxwell3d.Rasterizer(),
+                                                                source, read_bytes);
+                        }
+                        if (memory.IsMemoryDirty(source, read_bytes,
+                                                 VideoCommon::CacheType::BufferCache)) {
+                            memory.FlushRegion(source, read_bytes,
+                                               VideoCommon::CacheType::BufferCache);
+                            static u64 flushes{};
+                            if (++flushes % 2000 == 1) {
+                                LOG_INFO(HW_GPU,
+                                         "Native MME DMA read flushed GPU-written memory ({} times)",
+                                         flushes);
+                            }
+                        }
+                    };
+                    // The split's method lane leaves the caches, and the guest memory writes it
+                    // sent, to the preparation lane: the words are there once that lane ran them.
+                    if (VideoCommon::GpuSplit::OnMethodLane()) {
+                        VideoCommon::GpuSplit::Get().LaneRunSync(flush);
+                    } else {
+                        flush();
                     }
                     static u32 dma_logs{};
                     if (dma_logs < 400) {

@@ -94,11 +94,40 @@ inline std::atomic<u64> g_serial{1};
 /// The last break's reason and, for Register and Method, its 3D method (diagnostics).
 inline std::atomic<u32> g_last_break{};
 
+/// The split's method lane (EDEN_NX2_PREP_LANE, gpu_split.h) runs the 3D engine ahead of the
+/// rasterizer: there a break waits until the lane sends the state it changed (TakePendingBreak),
+/// so it lands in order before the draws after it.
+inline thread_local bool t_defer_breaks{};
+inline thread_local bool t_break_pending{};
+inline thread_local u32 t_pending_break{};
+
 inline void Break(Reason reason, u32 method = 0) {
     if (Enabled()) {
+        const u32 last = static_cast<u32>(reason) | (method << 8);
+        if (t_defer_breaks) {
+            t_break_pending = true;
+            t_pending_break = last;
+            return;
+        }
         g_serial.fetch_add(1, std::memory_order_relaxed);
-        g_last_break.store(static_cast<u32>(reason) | (method << 8), std::memory_order_relaxed);
+        g_last_break.store(last, std::memory_order_relaxed);
     }
+}
+
+/// A break that landed elsewhere (TakePendingBreak), as Break with its reason and method.
+inline void BreakAs(u32 last) {
+    g_serial.fetch_add(1, std::memory_order_relaxed);
+    g_last_break.store(last, std::memory_order_relaxed);
+}
+
+/// Method lane: the break waiting since the last call, if any.
+[[nodiscard]] inline bool TakePendingBreak(u32& last) {
+    if (!t_break_pending) {
+        return false;
+    }
+    t_break_pending = false;
+    last = t_pending_break;
+    return true;
 }
 
 inline u64 Serial() {
@@ -140,7 +169,8 @@ private:
 };
 
 /// Light changes since the last draw that can reach texture handles. Written and read on the
-/// thread that runs the 3D engine and the rasterizer (the split's back).
+/// thread that runs the 3D engine and the rasterizer (the split's back); with its preparation lane
+/// the method lane collects them and sends them on with its draws (MergeDelta).
 struct Delta {
     static constexpr size_t MaxWrites = 16;
 
@@ -208,7 +238,7 @@ struct Delta {
     }
 };
 
-inline Delta g_delta;
+inline thread_local Delta g_delta;
 
 /// Adds [begin, end) to a delta's range list: extends a range it touches or overlaps, else
 /// appends it. A full list widens the range that grows least instead (true then), which only
@@ -269,6 +299,25 @@ inline void NoteDeviceData(DAddr begin, DAddr end) {
         delta.no_uniform_keeps |= AppendRange(delta.device_begin, delta.device_end,
                                               delta.num_device_writes, begin, end);
     }
+}
+
+/// Adds the changes another thread collected (the method lane's) to this thread's.
+inline void MergeDelta(const Delta& other) {
+    Delta& delta = g_delta;
+    for (size_t stage = 0; stage < delta.binds.size(); ++stage) {
+        delta.binds[stage] |= other.binds[stage];
+    }
+    for (u32 i = 0; i < other.num_writes; ++i) {
+        delta.no_uniform_keeps |= AppendRange(delta.write_begin, delta.write_end,
+                                              delta.num_writes, other.write_begin[i],
+                                              other.write_end[i]);
+    }
+    for (u32 i = 0; i < other.num_device_writes; ++i) {
+        delta.no_uniform_keeps |= AppendRange(delta.device_begin, delta.device_end,
+                                              delta.num_device_writes, other.device_begin[i],
+                                              other.device_end[i]);
+    }
+    delta.no_uniform_keeps |= other.no_uniform_keeps;
 }
 
 } // namespace VideoCommon::Nx2FastDraw

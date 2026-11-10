@@ -41,6 +41,7 @@ class MemoryManager;
 
 namespace VideoCommon {
 class GpuSplit;
+class Maxwell3DLane;
 }
 
 namespace VideoCore {
@@ -3221,6 +3222,22 @@ public:
         return execute_on;
     }
 
+    /// EDEN_NX2_PREP_LANE: the engine the split's method lane runs, with its preparation lane's
+    /// side (prep_lane.h), or null (the mirror, or no lane).
+    [[nodiscard]] VideoCommon::Maxwell3DLane* Lane() const {
+        return lane;
+    }
+    void SetLane(VideoCommon::Maxwell3DLane* lane_) {
+        lane = lane_;
+    }
+    /// The mirror's side of the methods the preparation lane runs on it (Maxwell3DLane).
+    void LaneQueryCondition() {
+        ProcessQueryCondition();
+    }
+    Upload::State& LaneUpload() {
+        return upload_state;
+    }
+
     VideoCore::RasterizerInterface& Rasterizer() {
         return *rasterizer;
     }
@@ -3412,6 +3429,7 @@ private:
     VideoCommon::Nx2FastDraw::DeviceSpans fast_draw_sampler_spans;
 
     VideoCore::RasterizerInterface* rasterizer = nullptr;
+    VideoCommon::Maxwell3DLane* lane{};
 
     /// Start offsets of each macro in macro_memory
     std::array<u32, 0x80> macro_positions{};

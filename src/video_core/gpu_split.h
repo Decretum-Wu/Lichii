@@ -16,8 +16,10 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 #include "common/common_types.h"
+#include "video_core/engines/engine_interface.h"
 
 namespace Core {
 class System;
@@ -109,22 +111,36 @@ public:
         return front_macros;
     }
 
-    /// Whether the calling thread is the back.
+    /// Whether the calling thread is the back (either lane of it, EDEN_NX2_PREP_LANE).
     [[nodiscard]] static bool OnBackThread() {
         return on_back_thread;
+    }
+    /// Whether the calling thread is the back's preparation lane (GPUPrep).
+    [[nodiscard]] static bool OnPrepThread() {
+        return on_prep_thread;
+    }
+    /// Whether the back runs as two lanes (EDEN_NX2_PREP_LANE=1): GPUBack takes the ring and
+    /// hands what it does not run itself, in order, to GPUPrep, which owns the rasterizer, its
+    /// caches and the Vulkan scheduler. Fixed while the split runs.
+    [[nodiscard]] bool Lane() const {
+        return lane;
     }
     static void MarkGpuThread() {
         on_gpu_thread = true;
     }
     [[nodiscard]] static bool OwnsScheduler() {
-        return Get().BackRunning() ? on_back_thread : on_gpu_thread;
+        const GpuSplit& split = Get();
+        if (!split.BackRunning()) {
+            return on_gpu_thread;
+        }
+        return split.lane ? on_prep_thread : on_back_thread;
     }
     /// Back thread: the entry it runs, as NoteFencedWrite takes it; elsewhere nothing.
     [[nodiscard]] std::optional<u64> BackEntry() const {
         if (!on_back_thread) {
             return std::nullopt;
         }
-        return EntryTag(back_entry_start);
+        return EntryTag(t_entry_start);
     }
     /// Any thread: the operation of a report the back sent in `entry` (BackEntry) ran with its
     /// fence, so the report is in memory, and those of the entries before it: fences run their
@@ -148,6 +164,11 @@ public:
     /// Any thread: has the back call the idle hook soon, between entries or at once if it sleeps.
     void RequestIdleHook() {
         hook_requested.store(true, std::memory_order_seq_cst);
+        if (lane) {
+            prep_wake.fetch_add(1, std::memory_order_seq_cst);
+            prep_wake.notify_one();
+            return;
+        }
         wake.fetch_add(1, std::memory_order_seq_cst);
         wake.notify_one();
     }
@@ -165,6 +186,13 @@ public:
         }
         // The back checks tick_requested after setting back_waiting: one of the two sees the other.
         tick_requested.store(true, std::memory_order_seq_cst);
+        if (lane) {
+            if (prep_waiting.load(std::memory_order_seq_cst)) {
+                prep_wake.fetch_add(1, std::memory_order_seq_cst);
+                prep_wake.notify_one();
+            }
+            return;
+        }
         if (back_waiting.load(std::memory_order_seq_cst)) {
             wake.fetch_add(1, std::memory_order_seq_cst);
             wake.notify_one();
@@ -229,6 +257,66 @@ public:
 
     /// Defer flag: the call doesn't end fast draw reuse (nx2_fast_draw.h).
     static constexpr u64 FastDrawNeutral = 1 << 7;
+    /// Defer flags for a back of two lanes (EDEN_NX2_PREP_LANE): where a call runs. LaneMethod:
+    /// it touches only the 3D engine's own state (registers, draw manager, macros) and reaches the
+    /// rasterizer through the engine: the method lane runs it (it calls MarkLaneStale). LanePrep:
+    /// it touches only the rasterizer, its caches, guest memory or the other engines: the
+    /// preparation lane runs it and the method lane goes on. Without either, the preparation lane
+    /// runs it while the method lane waits.
+    static constexpr u64 LaneMethod = u64{1} << 32;
+    static constexpr u64 LanePrep = u64{1} << 33;
+
+    /// Whether the calling thread is the method lane of a back of two lanes.
+    [[nodiscard]] static bool OnMethodLane() {
+        return on_method_lane;
+    }
+    /// Any thread: whether the method lane waits for the preparation lane to run what it sent
+    /// (a call that may touch what the method lane runs on runs only then).
+    [[nodiscard]] bool MethodLaneWaiting() const {
+        return method_waiting.load(std::memory_order_acquire);
+    }
+    /// Method lane: the engine's state changed since its mirror was brought up to date
+    /// (EngineInterface::lane_flush), so it is before the preparation lane runs anything else.
+    void MarkLaneStale(Tegra::Engines::EngineInterface* engine) {
+        if (!engine->lane_stale) {
+            engine->lane_stale = true;
+            lane_stale_engines.push_back(engine);
+        }
+    }
+
+    /// Method lane only: has the preparation lane run `func(data)`, with a copy of `data`, after
+    /// everything sent before it (as part of the entry the method lane runs); with `sync`, waits
+    /// for it. `func` must be trivially copyable.
+    template <typename Func>
+    void LaneCall(const Func& func, std::span<const u32> data = {}, bool sync = false) {
+        static_assert(std::is_trivially_copyable_v<Func> && alignof(Func) <= alignof(u64));
+        constexpr size_t function_words = (sizeof(Func) + sizeof(u64) - 1) / sizeof(u64);
+        const size_t words = 5 + function_words + (data.size() + 1) / 2;
+        u64* const record = LaneReserve(words);
+        record[0] = PrepRecord | static_cast<u64>(PrepKind::Call) | (sync ? PrepSync : 0);
+        record[1] = words;
+        record[2] = t_entry_start;
+        record[3] = reinterpret_cast<u64>(&LaneThunk<Func>);
+        record[4] = data.size();
+        std::memcpy(record + 5, &func, sizeof(Func));
+        if (!data.empty()) {
+            record[words - 1] = 0; // Padding after an odd count
+            std::memcpy(record + 5 + function_words, data.data(), data.size_bytes());
+        }
+        prep_write += words;
+        prep_batch = NoBatch;
+        if (sync) {
+            LaneWait();
+        } else if (LanePublishDue()) {
+            LanePublish();
+        }
+    }
+    /// Method lane only: runs `func()` on the preparation lane after everything sent before it
+    /// and waits for it (`func` may refer to the caller's stack).
+    template <typename Func>
+    void LaneRunSync(const Func& func) {
+        LaneCall([pointer = &func](std::span<const u32>) { (*pointer)(); }, {}, true);
+    }
 
     /// Runs `func` on the back after everything sent before it. Must be trivially copyable.
     /// `flags`: FastDrawNeutral when `func` can't change what a draw resolves to.
@@ -262,12 +350,17 @@ public:
         Commit(2 + payload);
         NoteWrites(writes);
     }
-    void DeferFunction(std::function<void()>&& func, Writes writes = Writes::Anywhere);
+    void DeferFunction(std::function<void()>&& func, Writes writes = Writes::Anywhere,
+                       u64 flags = 0);
     /// Runs `func` on the back and waits for it: for work on back-owned state, such as a buffer
     /// cache download that records into the Vulkan scheduler. A drained back still submits from
     /// its idle hook, so the front never touches that state itself.
     template <typename Func>
     void Run(const Func& func, DrainSite site = DrainSite::Other) {
+        if (on_method_lane) {
+            LaneRunSync(func);
+            return;
+        }
         if (on_back_thread || !active) {
             func();
             return;
@@ -386,6 +479,9 @@ public:
         u64 device_address) const;
     /// Whether compute or copy work sent so far is still queued (EDEN_NX2_DRAIN_CHECK).
     [[nodiscard]] bool WritersPending() const;
+    /// Front thread, diagnostics: the ring's positions on both sides (and the preparation lane's),
+    /// with what was last sent to the semaphore word at `device_address`.
+    [[nodiscard]] std::string DescribeState(u64 device_address) const;
     /// TEST (EDEN_NX2_ACQUIRE_STATS): the engine and method of the method entry that ends at
     /// `end`, among the last LoggedMethods sent, as "KeplerCompute 0x6d"; empty if none.
     [[nodiscard]] std::string MethodEndingAt(u64 end) const;
@@ -641,8 +737,26 @@ private:
     }
 
     void BackLoop(std::stop_token stop_token);
-    /// Runs the entry at `entry` (of the `words` published before the ring's end), returns its size.
-    size_t Execute(const u64* entry, size_t words);
+    /// Runs the entry at `entry` (of the `words` published before the ring's end) on `engine`'s
+    /// lane, returns its size.
+    size_t Execute(const u64* entry, size_t words, Tegra::Engines::EngineInterface*& engine);
+    /// The size of the entry at `entry`, without running it.
+    [[nodiscard]] static size_t EntrySize(const u64* entry);
+    /// The back's method lane with EDEN_NX2_PREP_LANE (GPUBack): takes the ring's entries and
+    /// sends them on, in order, to the preparation lane.
+    void MethodLoop(std::stop_token stop_token);
+    /// The back's preparation lane (GPUPrep): runs what the method lane sends, stores `consumed`.
+    void PrepLoop(std::stop_token stop_token);
+    /// Method lane: sends the ring entry at `entry` (`words` long, at ring `position`) on.
+    void LaneForward(const u64* entry, size_t words, u64 position);
+    /// Method lane: once the preparation lane ran everything sent so far, the back ran the ring
+    /// up to `position` (it stores `consumed`).
+    void LaneProgress(u64 position);
+    /// Method lane: makes what it sent visible to the preparation lane.
+    void LanePublish();
+    /// Method lane: room for `words` contiguous words at prep_write (never across the end).
+    u64* LaneReserve(size_t words);
+    void LaneWaitForSpace(size_t words);
     /// The back, between entries: runs the tick hook if a thread asked for it.
     void MaybeTick() {
         if (tick_requested.load(std::memory_order_relaxed) &&
@@ -703,7 +817,49 @@ private:
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};
-    u64 back_entry_start{}; ///< Where the entry the back runs starts (BackEntry)
+
+    // Preparation lane (EDEN_NX2_PREP_LANE=1). Its ring holds batches of ring entries, each
+    // [ring position of the first, words, entries...], and records with PrepRecord set in their
+    // first word: [PrepRecord | PrepKind, payload...].
+    static constexpr size_t PrepWords = size_t{1} << 20; // 8 MiB
+    static constexpr size_t PrepMask = PrepWords - 1;
+    static constexpr u64 PrepRecord = u64{1} << 63;
+    enum class PrepKind : u64 {
+        Wrap,     ///< The rest of the ring is unused: continue at its start
+        Progress, ///< Word 1: store it in `consumed`
+        /// LaneCall: word 1 size, 2 entry (BackEntry), 3 thunk, 4 data words; function, data
+        Call,
+        Sync, ///< The method lane waits until the preparation lane ran what came before
+    };
+    static constexpr u64 PrepSync = u64{1} << 8; ///< Call: the method lane waits for it
+    static constexpr u64 NoBatch = ~u64{0};
+    template <typename Func>
+    static void LaneThunk(const u64* payload, std::span<const u32> data) {
+        (*reinterpret_cast<const Func*>(payload))(data);
+    }
+    bool lane{};
+    std::unique_ptr<u64[]> prep_ring;
+    // Method lane side.
+    u64 prep_write{};
+    u64 prep_published_local{};
+    u64 prep_consumed_cache{};
+    u64 prep_batch{NoBatch};  ///< Where the open batch's first word is (closed once published)
+    u64 prep_batch_end{};     ///< The ring position after the open batch's last entry
+    /// Engines whose mirrors may be out of date (MarkLaneStale).
+    std::vector<Tegra::Engines::EngineInterface*> lane_stale_engines;
+    /// Brings the mirrors of lane_stale_engines up to date.
+    void FlushLaneEngines();
+    /// Whether the method lane should publish what it sent (as PublishDue).
+    [[nodiscard]] bool LanePublishDue() const {
+        const u64 unpublished = prep_write - prep_published_local;
+        return unpublished >= PublishEvery ||
+               (unpublished != 0 &&
+                prep_idle_at.load(std::memory_order_relaxed) == prep_published_local);
+    }
+    /// Publishes and waits until the preparation lane ran everything sent.
+    void LaneWait();
+    // Preparation lane side.
+    Tegra::Engines::EngineInterface* prep_engine{};
 
     /// An entry's position as fenced writes name it: with this start of the split in the high
     /// bits, so a fence of an earlier start that runs late lands nothing of this one (positions
@@ -720,7 +876,11 @@ private:
 
     static GpuSplit instance;
     static inline thread_local bool on_back_thread{};
+    static inline thread_local bool on_prep_thread{};
+    static inline thread_local bool on_method_lane{};
     static inline thread_local bool on_gpu_thread{};
+    /// Where the entry the calling back lane runs starts (BackEntry).
+    static inline thread_local u64 t_entry_start{};
     void (*idle_hook)(void*){};
     void* idle_argument{};
     void (*tick_hook)(void*){};
@@ -749,7 +909,18 @@ private:
     alignas(128) std::atomic<u64> back_idle_at{~u64{0}};
     /// TEST (profile_publishes): when the back last ran out of work, 0 while it runs.
     alignas(128) std::atomic<u64> back_idle_since{};
+    /// The preparation lane's ring: published by the method lane, consumed by the preparation
+    /// lane, which sleeps on prep_wake once prep_waiting is set (as `wake`, `back_waiting`).
+    alignas(128) std::atomic<u64> prep_published{};
+    alignas(128) std::atomic<u64> prep_consumed{};
+    /// The preparation lane's position when it last ran out of work (as back_idle_at).
+    alignas(128) std::atomic<u64> prep_idle_at{~u64{0}};
+    alignas(128) std::atomic<bool> prep_waiting{};
+    std::atomic<u32> prep_wake{};
+    /// The method lane waits for the preparation lane (LaneWait).
+    alignas(128) std::atomic<bool> method_waiting{};
     std::jthread back_thread;
+    std::jthread prep_thread;
 };
 
 } // namespace VideoCommon
