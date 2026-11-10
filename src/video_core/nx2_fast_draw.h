@@ -91,6 +91,9 @@ inline void SetEnabledForTest(bool on) {
 }
 
 inline std::atomic<u64> g_serial{1};
+/// Bumped by every break but a 3D register change: register writes change no memory, so draws
+/// with only those in between can keep uniforms as delta draws do (MemorySerial).
+inline std::atomic<u64> g_memory_serial{1};
 /// The last break's reason and, for Register and Method, its 3D method (diagnostics).
 inline std::atomic<u32> g_last_break{};
 
@@ -99,15 +102,23 @@ inline std::atomic<u32> g_last_break{};
 /// so it lands in order before the draws after it.
 inline thread_local bool t_defer_breaks{};
 inline thread_local bool t_break_pending{};
+inline thread_local bool t_memory_break_pending{};
 inline thread_local u32 t_pending_break{};
+
+/// In a break sent on (TakePendingBreak): a break other than a register change was among them.
+inline constexpr u32 MemoryBreakBit = 0x8000'0000U;
 
 inline void Break(Reason reason, u32 method = 0) {
     if (Enabled()) {
         const u32 last = static_cast<u32>(reason) | (method << 8);
         if (t_defer_breaks) {
             t_break_pending = true;
+            t_memory_break_pending |= reason != Reason::Register;
             t_pending_break = last;
             return;
+        }
+        if (reason != Reason::Register) {
+            g_memory_serial.fetch_add(1, std::memory_order_relaxed);
         }
         g_serial.fetch_add(1, std::memory_order_relaxed);
         g_last_break.store(last, std::memory_order_relaxed);
@@ -116,8 +127,11 @@ inline void Break(Reason reason, u32 method = 0) {
 
 /// A break that landed elsewhere (TakePendingBreak), as Break with its reason and method.
 inline void BreakAs(u32 last) {
+    if ((last & MemoryBreakBit) != 0) {
+        g_memory_serial.fetch_add(1, std::memory_order_relaxed);
+    }
     g_serial.fetch_add(1, std::memory_order_relaxed);
-    g_last_break.store(last, std::memory_order_relaxed);
+    g_last_break.store(last & ~MemoryBreakBit, std::memory_order_relaxed);
 }
 
 /// Method lane: the break waiting since the last call, if any.
@@ -126,12 +140,27 @@ inline void BreakAs(u32 last) {
         return false;
     }
     t_break_pending = false;
-    last = t_pending_break;
+    last = t_pending_break | (t_memory_break_pending ? MemoryBreakBit : 0);
+    t_memory_break_pending = false;
     return true;
 }
 
 inline u64 Serial() {
     return g_serial.load(std::memory_order_relaxed);
+}
+
+inline u64 MemorySerial() {
+    return g_memory_serial.load(std::memory_order_relaxed);
+}
+
+/// Whether full draws keep uniforms when only 3D register changes came since the previous draw.
+/// EDEN_NX2_TEST_FULL_KEEPS=0 (TEST): only delta draws keep them.
+[[nodiscard]] inline bool FullDrawKeeps() {
+    static const bool keeps = [] {
+        const char* value = std::getenv("EDEN_NX2_TEST_FULL_KEEPS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return keeps;
 }
 
 /// The device memory a GPU range maps to. A write through another GPU address that maps the

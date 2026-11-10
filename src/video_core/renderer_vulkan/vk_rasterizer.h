@@ -469,6 +469,11 @@ private:
         handle_spans;
     /// The constant buffer binds and data since the previous draw.
     VideoCommon::Nx2FastDraw::Delta taken_delta;
+    /// Nx2FastDraw::MemorySerial and the GPU memory map when the previous draw locked the caches:
+    /// a full draw keeps uniforms as a delta draw when neither changed since.
+    u64 uniform_memory_serial{~u64{0}};
+    u64 uniform_map_serial{~u64{0}};
+    const Tegra::MemoryManager* uniform_gpu_memory{};
     FastDrawStats fast_draw_stats;
     /// Nx2FastDraw::Enabled and VerifyEnabled as the drawing thread last read them.
     bool fast_draw_on{};

@@ -827,6 +827,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         reusable_draw = {};
         FastDraw::g_delta = {};
         fast_draw_stats = {};
+        uniform_memory_serial = ~u64{0};
     }
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
     const u64 fast_draw_start = fast_draw_on ? Profile::Now() : 0;
@@ -1049,6 +1050,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     // What the next draw's TakeReusableDraw compares with, read once the caches are locked: a
     // break from here on, this draw's own resolve included, ends the delta chain.
     const u64 draw_serial = FastDraw::Serial();
+    const u64 draw_memory_serial = FastDraw::MemorySerial();
     const u64 draw_map_serial = gpu_memory->MapSerial();
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
@@ -1068,7 +1070,18 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     const bool delta_holds =
         delta_pipeline != nullptr && DeltaStillHolds(draw_serial, draw_map_serial);
     const DrawPath path = delta_holds && !verify_pipeline ? DrawPath::Delta : DrawPath::Full;
-    buffer_cache.BeginGraphicsUniforms(path == DrawPath::Delta ? &taken_delta : nullptr);
+    // Between the previous draw and this one only 3D registers changed besides what the delta
+    // and the buffer cache note (BeginGraphicsUniforms): no memory was written behind them.
+    const bool full_keeps = path == DrawPath::Full && fast_draw_on &&
+                            FastDraw::FullDrawKeeps() &&
+                            draw_memory_serial == uniform_memory_serial &&
+                            draw_map_serial == uniform_map_serial &&
+                            gpu_memory == uniform_gpu_memory;
+    uniform_memory_serial = fast_draw_on ? draw_memory_serial : ~u64{0};
+    uniform_map_serial = draw_map_serial;
+    uniform_gpu_memory = gpu_memory;
+    buffer_cache.BeginGraphicsUniforms(path == DrawPath::Delta || full_keeps ? &taken_delta
+                                                                             : nullptr);
     if (path == DrawPath::Delta) {
         if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->ConfigureDelta(is_indexed)) {
             report_failure("configure failed");
