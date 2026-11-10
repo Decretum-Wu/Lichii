@@ -621,13 +621,17 @@ void RasterizerVulkan::ReportFastDraws() {
              "different kind, {:.0f} state changed, {:.0f} after a submit, {:.0f} render pass or "
              "pipeline changed, {:.0f} pipeline takes no delta draws, {:.0f} handle buffer bound, "
              "{:.0f} handle data written, {:.0f} sampled image to prepare, {:.0f} computed handle "
-             "changed, {:.0f} vertex attribute types changed",
+             "changed, {:.0f} vertex attribute types changed | constant buffer writes that "
+             "changed nothing {:.0f}",
              static_cast<double>(stats.delta) / seconds, per_second(FullDraw::NoCandidate),
              per_second(FullDraw::Kind), per_second(FullDraw::StateChanged),
              per_second(FullDraw::Submitted), per_second(FullDraw::RenderPass),
              per_second(FullDraw::DeltaPipeline), per_second(FullDraw::HandleBind),
              per_second(FullDraw::HandleData), per_second(FullDraw::SampledImages),
-             per_second(FullDraw::ComputedHandles), per_second(FullDraw::VertexInput));
+             per_second(FullDraw::ComputedHandles), per_second(FullDraw::VertexInput),
+             static_cast<double>(VideoCommon::Nx2FastDraw::g_unchanged_writes.exchange(
+                 0, std::memory_order_relaxed)) /
+                 seconds);
     static constexpr std::array<const char*, static_cast<size_t>(Ineligible::Count)>
         ineligible_names{"indirect",       "mesh",          "not built",     "writes images",
                          "transform feedback", "inline index", "quads",       "repacked vertices",

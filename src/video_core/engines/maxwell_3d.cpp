@@ -784,13 +784,18 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods,
         ProcessDirtyRegisters(methods[i], ProcessShadowRam(methods[i], arguments[i]));
     }
     const VideoCommon::Nx2Profile::FineScope upload_scope{VideoCommon::Nx2Profile::Zone::CbUpload};
-    if (VideoCommon::Nx2FastDraw::Enabled()) {
-        NoteFastDrawConstantData(address + offset, address + offset + bytes);
-    }
+    // Noted where the words are written, after everything sent before: words memory holds
+    // already change nothing a draw reads.
+    const bool note = VideoCommon::Nx2FastDraw::Enabled() &&
+                      !FastDrawHeaderWrite(address + offset, address + offset + bytes);
     if (lane != nullptr) {
-        lane->WriteConstantWords(address + offset, std::span<const u32>{values.data(), count});
+        lane->WriteConstantWords(address + offset, std::span<const u32>{values.data(), count},
+                                 note);
     } else {
-        memory_manager.WriteWordsCached(address + offset, values.data(), count);
+        if (!note || !VideoCommon::Nx2FastDraw::WriteData(memory_manager, address + offset,
+                                                          values.data(), bytes)) {
+            memory_manager.WriteWordsCached(address + offset, values.data(), count);
+        }
     }
     regs.const_buffer.offset += static_cast<u32>(bytes);
     NoteRegisterWritten(MAXWELL3D_REG_INDEX(const_buffer.offset));
@@ -1132,6 +1137,12 @@ void Maxwell3D::ProcessCBBind(size_t stage_index) {
 }
 
 void Maxwell3D::NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end) {
+    if (!FastDrawHeaderWrite(begin, end)) {
+        VideoCommon::Nx2FastDraw::NoteWrittenData(memory_manager, begin, nullptr, end - begin);
+    }
+}
+
+bool Maxwell3D::FastDrawHeaderWrite(GPUVAddr begin, GPUVAddr end) {
     namespace FastDraw = VideoCommon::Nx2FastDraw;
     // Texture and sampler headers are read when image views are resolved, which delta draws skip.
     constexpr u64 HeaderSize = 0x20;
@@ -1146,9 +1157,8 @@ void Maxwell3D::NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end) {
                          HeaderSize;
     if ((begin < tic + tic_size && tic < end) || (begin < tsc + tsc_size && tsc < end)) {
         FastDraw::Break(FastDraw::Reason::TextureHeaders);
-        return;
+        return true;
     }
-    FastDraw::NoteConstantData(begin, end);
     // The same device memory can be mapped at other GPU addresses: compare where it lands.
     fast_draw_header_spans.Update(memory_manager, tic, tic_size);
     fast_draw_sampler_spans.Update(memory_manager, tsc, tsc_size);
@@ -1160,12 +1170,12 @@ void Maxwell3D::NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end) {
             if (fast_draw_header_spans.Intersects(*device, device_end) ||
                 fast_draw_sampler_spans.Intersects(*device, device_end)) {
                 FastDraw::Break(FastDraw::Reason::TextureHeaders);
-                return;
+                return true;
             }
-            FastDraw::NoteDeviceData(*device, device_end);
         }
         page = page_end;
     }
+    return false;
 }
 
 void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
@@ -1182,14 +1192,16 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
     const size_t write_size = std::min(copy_size, room / sizeof(u32) * sizeof(u32));
     if (write_size != 0) {
         const GPUVAddr address{buffer_address + regs.const_buffer.offset};
-        if (VideoCommon::Nx2FastDraw::Enabled()) {
-            NoteFastDrawConstantData(address, address + write_size);
-        }
+        const bool note = VideoCommon::Nx2FastDraw::Enabled() &&
+                          !FastDrawHeaderWrite(address, address + write_size);
         if (lane != nullptr) {
-            lane->WriteConstantBlock(address,
-                                     std::span<const u32>{start_base, write_size / sizeof(u32)});
+            lane->WriteConstantBlock(
+                address, std::span<const u32>{start_base, write_size / sizeof(u32)}, note);
         } else {
-            memory_manager.WriteBlockCached(address, start_base, write_size);
+            if (!note || !VideoCommon::Nx2FastDraw::WriteData(memory_manager, address,
+                                                              start_base, write_size)) {
+                memory_manager.WriteBlockCached(address, start_base, write_size);
+            }
         }
     }
     if (write_size != copy_size) {

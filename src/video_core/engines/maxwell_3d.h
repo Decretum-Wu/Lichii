@@ -3309,6 +3309,9 @@ public:
     /// A vertex attribute format, when vertex input is dynamic state.
     static bool IsFastDrawVertexFormat(u32 method);
     void NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end);
+    /// Whether data written to [begin, end) reaches the texture or sampler headers, which ends
+    /// fast draw reuse (it breaks it then).
+    bool FastDrawHeaderWrite(GPUVAddr begin, GPUVAddr end);
 
     /// Handles a write to the CB_DATA[i] register.
     void ProcessCBData(u32 value);

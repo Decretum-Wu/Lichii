@@ -573,18 +573,36 @@ void Maxwell3DLane::Wait(const Func& func) {
     }
 }
 
-void Maxwell3DLane::WriteConstantWords(GPUVAddr address, std::span<const u32> words) {
-    SendWords(ReadsNothing, words, [memory = &engine.GetMemoryManager(), address](
-                                       std::span<const u32> data) {
+void Maxwell3DLane::WriteConstantWords(GPUVAddr address, std::span<const u32> words, bool note) {
+    const auto write = [memory = &engine.GetMemoryManager(), address](std::span<const u32> data) {
         memory->WriteWordsCached(address, data.data(), static_cast<u32>(data.size()));
-    });
+    };
+    const auto noted = [memory = &engine.GetMemoryManager(), address](std::span<const u32> data) {
+        if (!Nx2FastDraw::WriteData(*memory, address, data.data(), data.size_bytes())) {
+            memory->WriteWordsCached(address, data.data(), static_cast<u32>(data.size()));
+        }
+    };
+    if (note) {
+        SendWords(ReadsNothing, words, noted);
+    } else {
+        SendWords(ReadsNothing, words, write);
+    }
 }
 
-void Maxwell3DLane::WriteConstantBlock(GPUVAddr address, std::span<const u32> words) {
-    SendWords(ReadsNothing, words, [memory = &engine.GetMemoryManager(), address](
-                                       std::span<const u32> data) {
+void Maxwell3DLane::WriteConstantBlock(GPUVAddr address, std::span<const u32> words, bool note) {
+    const auto write = [memory = &engine.GetMemoryManager(), address](std::span<const u32> data) {
         memory->WriteBlockCached(address, data.data(), data.size_bytes());
-    });
+    };
+    const auto noted = [memory = &engine.GetMemoryManager(), address](std::span<const u32> data) {
+        if (!Nx2FastDraw::WriteData(*memory, address, data.data(), data.size_bytes())) {
+            memory->WriteBlockCached(address, data.data(), data.size_bytes());
+        }
+    };
+    if (note) {
+        SendWords(ReadsNothing, words, noted);
+    } else {
+        SendWords(ReadsNothing, words, write);
+    }
 }
 
 void Maxwell3DLane::QueryCondition() {

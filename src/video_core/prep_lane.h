@@ -87,9 +87,10 @@ public:
     /// (no write of the register holds it: not a mode, an aligned address or a word count).
     static constexpr u32 MacroOwned = 0xffffffff;
 
-    /// The engine's work that writes guest memory, or runs on the mirror's state.
-    void WriteConstantWords(GPUVAddr address, std::span<const u32> words);
-    void WriteConstantBlock(GPUVAddr address, std::span<const u32> words);
+    /// The engine's work that writes guest memory, or runs on the mirror's state. `note`: the
+    /// written words go in the fast draw delta (Nx2FastDraw::NoteWrittenData), there.
+    void WriteConstantWords(GPUVAddr address, std::span<const u32> words, bool note);
+    void WriteConstantBlock(GPUVAddr address, std::span<const u32> words, bool note);
     void QueryCondition();
     void UploadExec(bool is_linear);
     void UploadData(u32 data, bool is_last_call);

@@ -301,6 +301,32 @@ inline void NoteDeviceData(DAddr begin, DAddr end) {
     }
 }
 
+/// Inline constant buffer writes left out of the delta because they wrote the words memory
+/// held (EDEN_NX2_GPU_PROFILE logs them).
+inline std::atomic<u64> g_unchanged_writes{};
+
+/// Whether inline constant buffer data written with the words memory holds is left out of the
+/// delta (memory, and so every handle and uniform read from it, stays the same).
+/// EDEN_NX2_TEST_CB_SAME=0 (TEST): it is noted as any write.
+[[nodiscard]] inline bool SkipsUnchangedWrites() {
+    static const bool skip = [] {
+        const char* value = std::getenv("EDEN_NX2_TEST_CB_SAME");
+        return value == nullptr || value[0] != '0';
+    }();
+    return skip;
+}
+
+/// Notes data about to be written to [begin, begin + bytes) in GPU memory: inline constant buffer
+/// `words`, unless memory holds those words already (on the thread that writes them, after
+/// everything sent before), or with `words` null data not known yet (reports). Texture and sampler
+/// headers are checked by the caller.
+void NoteWrittenData(Tegra::MemoryManager& memory, GPUVAddr begin, const void* words, u64 bytes);
+/// NoteWrittenData for inline constant buffer `words` the caller is about to write: true when
+/// the write changes nothing and can be left out (memory holds the words, and neither the GPU
+/// caches nor a download for a guest read may hold others there). Fast draws off: false.
+[[nodiscard]] bool WriteData(Tegra::MemoryManager& memory, GPUVAddr begin, const void* words,
+                             u64 bytes);
+
 /// Adds the changes another thread collected (the method lane's) to this thread's.
 inline void MergeDelta(const Delta& other) {
     Delta& delta = g_delta;
