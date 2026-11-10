@@ -39,11 +39,14 @@ std::filesystem::path WarmCountPath(const std::filesystem::path& warm_file);
 u64 ReadWarmCount(const std::filesystem::path& warm_file);
 
 /// What a marker records: the precache file's size and content hash, its entry count, the GPU
-/// driver version and device ID, the pipeline cache version and the shader lowering's stamp.
+/// driver version and device ID, the pipeline cache version and the variant: a hash of the build's
+/// SPIR-V emission sources (EmissionStamp) and of the settings that change the SPIR-V or pipeline
+/// state of the precache builds (resolution scaling, for one).
 /// The content, not the last-write time: building the file again with the same shaders ("Precache
 /// Shaders" by hand) rebuilt every compute program (~3000, 8.5 min on a Ryzen 5 5600X). The
-/// lowering stamp: after an update that changes the shader recompiler the programs are built
-/// again at boot, where before the marker still said "done" and they were built during play.
+/// variant: after an update that changes the SPIR-V, or a change to one of those settings, the
+/// programs are built again at boot, where before the marker still said "done" and they were
+/// built during play.
 struct WarmStamp {
     u64 size{};
     u64 content_hash{};
@@ -51,21 +54,26 @@ struct WarmStamp {
     u32 driver{};
     u32 device_id{};
     u32 cache_version{};
-    u64 lowering{};
+    u64 variant{};
 
     /// True when `other` was written for the same file contents, driver, device, cache version
-    /// and lowering (the entry count is informative).
+    /// and variant (the entry count is informative).
     [[nodiscard]] bool Matches(const WarmStamp& other) const noexcept {
         return size == other.size && content_hash == other.content_hash &&
                driver == other.driver && device_id == other.device_id &&
-               cache_version == other.cache_version && lowering == other.lowering;
+               cache_version == other.cache_version && variant == other.variant;
     }
 };
+
+/// A hash of this build's sources that shape the SPIR-V of guest shaders (the recompiler without
+/// its OpenGL backends and the native lowering), made when it is built. It changes only with a
+/// build that may emit other SPIR-V, unlike the revision.
+[[nodiscard]] u64 EmissionStamp();
 
 /// The stamp of `warm_file` as it is now, empty when it cannot be read.
 std::optional<WarmStamp> CurrentWarmStamp(const std::filesystem::path& warm_file, u64 entries,
                                           u32 driver, u32 device_id, u32 cache_version,
-                                          u64 lowering = 0);
+                                          u64 variant = 0);
 
 /// The marker of `warm_file`, empty when there is none or it cannot be read.
 std::optional<WarmStamp> ReadWarmMarker(const std::filesystem::path& warm_file);

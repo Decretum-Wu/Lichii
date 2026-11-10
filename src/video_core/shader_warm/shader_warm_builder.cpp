@@ -29,6 +29,7 @@
 #include "core/file_sys/vfs/vfs.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/loader.h"
+#include "video_core/shader_warm/emission_stamp.h"
 #include "video_core/shader_warm/shader_archives.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
 #include "video_core/shader_warm/warm_records.h"
@@ -320,8 +321,12 @@ u64 ReadWarmCount(const fs::path& warm_file) {
     return !ec && actual == size ? entries : 0;
 }
 
+u64 EmissionStamp() {
+    return GeneratedEmissionStamp;
+}
+
 std::optional<WarmStamp> CurrentWarmStamp(const fs::path& warm_file, u64 entries, u32 driver,
-                                          u32 device_id, u32 cache_version, u64 lowering) {
+                                          u32 device_id, u32 cache_version, u64 variant) {
     std::error_code ec;
     const auto size = fs::file_size(warm_file, ec);
     if (ec) {
@@ -353,18 +358,18 @@ std::optional<WarmStamp> CurrentWarmStamp(const fs::path& warm_file, u64 entries
                      .driver = driver,
                      .device_id = device_id,
                      .cache_version = cache_version,
-                     .lowering = lowering};
+                     .variant = variant};
 }
 
 std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
     std::ifstream in(WarmMarkerPath(warm_file));
     WarmStamp stamp;
-    // A marker of the older format (last-write time, no lowering) fails here: the compute
+    // A marker of the older format (last-write time, no variant) fails here: the compute
     // programs not in the cache are built once more.
     std::string format;
     if (!(in >> format) || format != "v2" ||
         !(in >> stamp.size >> stamp.content_hash >> stamp.entries >> stamp.driver >>
-          stamp.device_id >> stamp.cache_version >> stamp.lowering)) {
+          stamp.device_id >> stamp.cache_version >> stamp.variant)) {
         return std::nullopt;
     }
     return stamp;
@@ -374,7 +379,7 @@ bool WriteWarmMarker(const fs::path& warm_file, const WarmStamp& stamp) {
     std::ofstream out(WarmMarkerPath(warm_file), std::ios::trunc);
     out << "v2 " << stamp.size << ' ' << stamp.content_hash << ' ' << stamp.entries << ' '
         << stamp.driver << ' ' << stamp.device_id << ' ' << stamp.cache_version << ' '
-        << stamp.lowering << '\n';
+        << stamp.variant << '\n';
     out.close();
     return static_cast<bool>(out);
 }

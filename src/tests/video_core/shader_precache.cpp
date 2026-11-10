@@ -91,7 +91,7 @@ TEST_CASE("ShaderPrecache: the marker matches only the same file and driver", "[
     REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1235, 0x2206, 53)));
     REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2207, 53)));
     REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2206, 54)));
-    // Another shader lowering (an update that changed the recompiler) builds the programs again.
+    // Another variant (an update that changed the SPIR-V) builds the programs again.
     REQUIRE_FALSE(
         marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2206, 53, 0x77)));
 
@@ -121,6 +121,34 @@ TEST_CASE("ShaderPrecache: a rebuild with the same contents keeps the marker", "
 
     // No marker left and nothing to replace the file with: nothing to do.
     ShaderWarm::DropStaleWarmMarker(warm, dir.path / "missing.tmp");
+    REQUIRE_FALSE(ShaderWarm::ReadWarmMarker(warm).has_value());
+}
+
+TEST_CASE("ShaderPrecache: the marker matches only the same variant", "[video_core]") {
+    TempDir dir;
+    const auto warm = dir.path / "warm-compute.bin";
+    WriteBytes(warm, "precache");
+    const u64 variant = 0xfedcba9876543210ULL;
+    const auto stamp = ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2206, 53, variant);
+    REQUIRE(stamp.has_value());
+    REQUIRE(ShaderWarm::WriteWarmMarker(warm, *stamp));
+
+    const auto marker = ShaderWarm::ReadWarmMarker(warm);
+    REQUIRE(marker.has_value());
+    REQUIRE(marker->variant == variant);
+    REQUIRE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 0, 0x1234, 0x2206, 53, variant)));
+    REQUIRE_FALSE(
+        marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2206, 53, variant + 1)));
+    REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2206, 53)));
+    REQUIRE(ShaderWarm::EmissionStamp() != 0);
+}
+
+TEST_CASE("ShaderPrecache: a marker of an older format is not read", "[video_core]") {
+    TempDir dir;
+    const auto warm = dir.path / "warm-compute.bin";
+    WriteBytes(warm, "precache");
+    // Size, last-write time, entries, driver, device and cache version, then the line end.
+    WriteBytes(ShaderWarm::WarmMarkerPath(warm), "8 133981234567890000 12 4660 8710 53\n");
     REQUIRE_FALSE(ShaderWarm::ReadWarmMarker(warm).has_value());
 }
 
