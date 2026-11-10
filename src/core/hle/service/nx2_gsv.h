@@ -2356,6 +2356,7 @@ private:
         const bool speed_limited = !timer_paced && Settings::values.use_speed_limit.GetValue() &&
                                    Settings::SpeedLimit() != 0;
         if (!speed_limited && fps_limit == 0) {
+            Tegra::g_nx2_guest_frame_interval_ns.store(0, std::memory_order_relaxed);
             return;
         }
         if (timing != std::exchange(m_swap_word, timing)) {
@@ -2369,6 +2370,10 @@ private:
                                                    refresh_rate /
                                                    (speed_limited ? Settings::SpeedLimit() : 100)};
         const auto interval = PacedInterval(vblank_interval, fps_limit);
+        Tegra::g_nx2_guest_frame_interval_ns.store(
+            static_cast<u64>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(interval).count()),
+            std::memory_order_relaxed);
         if (trace) {
             m_frame_trace.target_ms = std::chrono::duration<double, std::milli>(interval).count();
         }

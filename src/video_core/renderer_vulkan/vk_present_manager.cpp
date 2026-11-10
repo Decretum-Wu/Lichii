@@ -230,6 +230,7 @@ Frame* PresentManager::GetRenderFrame() {
 
     VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::PresentWait};
     // Wait for free presentation frames
+    const auto waiting = std::chrono::steady_clock::now();
     std::unique_lock lock{free_mutex};
     free_cv.wait(lock, [this] { return !free_queue.empty(); });
 
@@ -239,6 +240,7 @@ Frame* PresentManager::GetRenderFrame() {
 
     // Wait for the presentation to be finished so all frame resources are free
     frame->present_done.Wait();
+    blocked_time += std::chrono::steady_clock::now() - waiting;
     frame->present_done.Reset();
     frame->color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     frame->present_spacing = {};

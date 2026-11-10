@@ -287,7 +287,8 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     if (output.IsHdr()) {
         frame_gen.Pause();
     } else {
-        void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
+        void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames(),
+                                         present_manager.TakeBlockedTime()));
 
         frame_gen.Process(device, frame, frame->image_format, GuestExtent(framebuffers));
 

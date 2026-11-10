@@ -30,7 +30,9 @@ public:
     /// Retains resources while invalidating pacing and history across a presentation gap.
     void Pause();
 
-    [[nodiscard]] size_t WantedGenerations(size_t capacity);
+    /// blocked: the time the renderer waited for the present thread since the last call.
+    [[nodiscard]] size_t WantedGenerations(size_t capacity,
+                                           std::chrono::steady_clock::duration blocked = {});
 
     [[nodiscard]] size_t GeneratedFrameCount() const;
 
