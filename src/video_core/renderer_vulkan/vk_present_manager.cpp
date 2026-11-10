@@ -240,7 +240,8 @@ Frame* PresentManager::GetRenderFrame() {
 
     // Wait for the presentation to be finished so all frame resources are free
     frame->present_done.Wait();
-    blocked_time += std::chrono::steady_clock::now() - waiting;
+    blocked_time.fetch_add((std::chrono::steady_clock::now() - waiting).count(),
+                           std::memory_order_relaxed);
     frame->present_done.Reset();
     frame->color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     frame->present_spacing = {};
