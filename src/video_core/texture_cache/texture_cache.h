@@ -183,7 +183,11 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             const auto copies = FullDownloadCopies(image.info);
             image.DownloadMemory(map, copies);
             runtime.Finish();
+            VideoCommon::Nx2FastDraw::BumpPlanMemorySerial(
+                VideoCommon::Nx2FastDraw::Reason::Download);
             SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span, swizzle_data_buffer);
+            VideoCommon::Nx2FastDraw::BumpPlanMemorySerial(
+                VideoCommon::Nx2FastDraw::Reason::Download);
             ++gc_download_deletes;
             ClearStaleImage(image);
         } else {
@@ -1301,6 +1305,11 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
     if (images.empty()) {
         return;
     }
+    // Plan workers' reads of the memory these downloads write no longer hold.
+    VideoCommon::Nx2FastDraw::BumpPlanMemorySerial(VideoCommon::Nx2FastDraw::Reason::Download);
+    SCOPE_EXIT {
+        VideoCommon::Nx2FastDraw::BumpPlanMemorySerial(VideoCommon::Nx2FastDraw::Reason::Download);
+    };
     const StutterTrace::SiteScope site{StutterTrace::Site::TextureDownload};
     std::ranges::sort(images, [this](ImageId lhs, ImageId rhs) {
         return slot_images[lhs].modification_tick < slot_images[rhs].modification_tick;

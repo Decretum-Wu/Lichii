@@ -262,6 +262,12 @@ public:
 
     /// Defer flag: the call doesn't end fast draw reuse (nx2_fast_draw.h).
     static constexpr u64 FastDrawNeutral = 1 << 7;
+    /// Defer sets it from `writes` (Caches, Noted): the call writes guest memory only where its
+    /// readers learn of it otherwise (Nx2FastDraw::Reason::HostWork).
+    static constexpr u64 TrackedWrites = u64{1} << 34;
+    [[nodiscard]] static constexpr u64 TrackedFlag(Writes writes) {
+        return writes == Writes::Caches || writes == Writes::Noted ? TrackedWrites : 0;
+    }
     /// Defer flags for a back of two lanes (EDEN_NX2_PREP_LANE): where a call runs. LaneMethod:
     /// it touches only the 3D engine's own state (registers, draw manager, macros) and reaches the
     /// rasterizer through the engine: the method lane runs it (it calls MarkLaneStale). LanePrep:
@@ -330,7 +336,7 @@ public:
         static_assert(std::is_trivially_copyable_v<Func> && alignof(Func) <= alignof(u64));
         constexpr size_t payload = (sizeof(Func) + sizeof(u64) - 1) / sizeof(u64);
         u64* const entry = Reserve(2 + payload);
-        entry[0] = static_cast<u64>(Kind::Call) | flags | (u64{payload} << 8);
+        entry[0] = static_cast<u64>(Kind::Call) | flags | TrackedFlag(writes) | (u64{payload} << 8);
         entry[1] = reinterpret_cast<u64>(&CallThunk<Func>);
         std::memcpy(entry + 2, &func, sizeof(Func));
         Commit(2 + payload);
@@ -344,7 +350,7 @@ public:
         constexpr size_t function_words = (sizeof(Func) + sizeof(u64) - 1) / sizeof(u64);
         const size_t payload = function_words + 1 + (words.size() + 1) / 2;
         u64* const entry = Reserve(2 + payload);
-        entry[0] = static_cast<u64>(Kind::Call) | flags | (u64{payload} << 8);
+        entry[0] = static_cast<u64>(Kind::Call) | flags | TrackedFlag(writes) | (u64{payload} << 8);
         entry[1] = reinterpret_cast<u64>(&CallWordsThunk<Func>);
         std::memcpy(entry + 2, &func, sizeof(Func));
         entry[2 + function_words] = words.size();

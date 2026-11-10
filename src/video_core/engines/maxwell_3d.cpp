@@ -464,7 +464,24 @@ bool Maxwell3D::IsFastDrawDeltaMethod(u32 method) {
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
     if (!DrawManager::IsInstanceLoopMethod(method) && !IsFastDrawDeltaMethod(method) &&
         !IsFastDrawNeutralMethod(method)) {
-        VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Method, method);
+        // Waits, barriers, clears and host cache invalidations write no guest memory.
+        const auto reason = [method] {
+            switch (method) {
+            case MAXWELL3D_REG_INDEX(wait_for_idle):
+            case MAXWELL3D_REG_INDEX(shadow_ram_control):
+            case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
+            case MAXWELL3D_REG_INDEX(load_mme.instruction):
+            case MAXWELL3D_REG_INDEX(load_mme.start_address):
+            case MAXWELL3D_REG_INDEX(clear_surface):
+            case MAXWELL3D_REG_INDEX(fragment_barrier):
+            case MAXWELL3D_REG_INDEX(invalidate_texture_data_cache):
+            case MAXWELL3D_REG_INDEX(tiled_cache_barrier):
+                return VideoCommon::Nx2FastDraw::Reason::HostWork;
+            default:
+                return VideoCommon::Nx2FastDraw::Reason::Method;
+            }
+        }();
+        VideoCommon::Nx2FastDraw::Break(reason, method);
     }
     if (GetNativeMacroEngine().native_turing && method == MAXWELL3D_REG_INDEX(clear_surface)) {
         LOG_DEBUG(HW_GPU, "Native GPU surface clear: value={:#x}", argument);

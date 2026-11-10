@@ -53,6 +53,13 @@ enum class Reason : u8 {
     Frame,
     TextureHeaders,
     Map,
+    /// Around a macro: what it runs breaks for itself (HLE programs write registers directly).
+    Macro,
+    /// 3D methods and deferred calls that write guest memory only where its readers learn of it
+    /// otherwise (barriers, waits, clears, host cache invalidations, fence work, releases).
+    HostWork,
+    /// Texture downloads into guest memory (BumpPlanMemorySerial only).
+    Download,
     Count,
 };
 
@@ -60,7 +67,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
     "register",      "method",    "constant buffer data", "inline data",
     "other engine",  "deferred call", "tick work",        "invalidation",
     "fence release", "indirect reset", "frame",           "texture header data",
-    "memory map",
+    "memory map",    "macro",     "host work",            "download",
 };
 
 inline std::atomic<bool> g_enabled{true};
@@ -96,7 +103,7 @@ inline std::atomic<u64> g_serial{1};
 inline std::atomic<u64> g_memory_serial{1};
 /// As g_memory_serial, for what plan workers' reads of guest memory hold under
 /// (PlanMemorySerial): only the breaks BumpsPlanMemory names, and fence releases that download
-/// buffers or images (BumpPlanMemorySerial).
+/// buffers or images and texture downloads (BumpPlanMemorySerial).
 inline std::atomic<u64> g_plan_memory_serial{1};
 /// The last break's reason and, for Register and Method, its 3D method (diagnostics).
 inline std::atomic<u32> g_last_break{};
@@ -120,7 +127,9 @@ inline constexpr u32 PlanMemoryBreakBit = 0x4000'0000U;
 /// invalidations, indirect resets and unmaps. Not register changes, constant buffer data (the
 /// workers lay it over memory), fence releases (their downloads bump the serial themselves and
 /// query results land on pages the query cache marks), other engines (their memory writes reach
-/// the buffer cache, which logs them for the plans) or frames.
+/// the buffer cache, which logs them for the plans), macros, host work (buffer downloads are
+/// logged, texture and fence downloads bump the serial, query results land on marked pages) or
+/// frames.
 [[nodiscard]] constexpr bool BumpsPlanMemory(Reason reason) {
     switch (reason) {
     case Reason::Method:
@@ -187,11 +196,11 @@ inline void BreakAs(u32 last) {
     g_last_break.store(last & ~(MemoryBreakBit | PlanMemoryBreakBit), std::memory_order_relaxed);
 }
 
-/// A fence release that writes guest memory other than query results (buffer or image
-/// downloads), before and after it writes.
-inline void BumpPlanMemorySerial() {
+/// A fence release or texture download that writes guest memory other than query results,
+/// before and after it writes.
+inline void BumpPlanMemorySerial(Reason counted_as = Reason::Fence) {
     g_plan_memory_serial.fetch_add(1, std::memory_order_seq_cst);
-    CountPlanBump(static_cast<u32>(Reason::Fence));
+    CountPlanBump(static_cast<u32>(counted_as));
 }
 
 [[nodiscard]] inline u64 PlanMemorySerial() {

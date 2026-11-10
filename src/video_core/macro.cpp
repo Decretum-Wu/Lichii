@@ -1641,9 +1641,9 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
     // HLE programs write registers directly, without the 3D engine's fast draw breaks.
     namespace FastDraw = VideoCommon::Nx2FastDraw;
     if (auto const it = macro_cache.find(method); it != macro_cache.end()) {
-        FastDraw::Break(FastDraw::Reason::Method, method);
+        FastDraw::Break(FastDraw::Reason::Macro, method);
         execute_variant(it->second.program);
-        FastDraw::Break(FastDraw::Reason::Method, method);
+        FastDraw::Break(FastDraw::Reason::Macro, method);
         return;
     }
 
@@ -1684,9 +1684,9 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         ci.program = Compile(system, maxwell3d, code);
     }
 
-    FastDraw::Break(FastDraw::Reason::Method, method);
+    FastDraw::Break(FastDraw::Reason::Macro, method);
     execute_variant(ci.program);
-    FastDraw::Break(FastDraw::Reason::Method, method);
+    FastDraw::Break(FastDraw::Reason::Macro, method);
     if (Settings::values.dump_macros) {
         Dump(ci.hash, code, !std::holds_alternative<std::monostate>(ci.program));
     }
