@@ -16,6 +16,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/plan_workers.h"
 #include "video_core/prep_lane.h"
 
 namespace VideoCommon {
@@ -444,6 +445,20 @@ void Maxwell3DLane::Build(Reads reads) {
         }
         Append(record, CaptureDraw(engine));
     }
+    if (auto& workers = PlanWorkers::Get(); workers.Active() && GpuSplit::OnMethodLane()) {
+        if (!record.empty()) {
+            workers.PushRecord(this, record);
+        }
+        if (workers.CheckpointDue(this)) {
+            const DrawState draw = CaptureDraw(engine);
+            std::array<u32, Words(sizeof(DrawState))> draw_words{};
+            std::memcpy(draw_words.data(), &draw, sizeof(draw));
+            workers.PushCheckpoint(
+                this, *sent_regs, sent_state, sent_root_tables, sent_root_selected,
+                sent_root_offset, sent_root_loaded, draw_words,
+                static_cast<u32>(engine.draw_manager.draw_state.inline_index_draw_indexes.size()));
+        }
+    }
 }
 
 void Maxwell3DLane::Apply(std::span<const u32> data) {
@@ -579,6 +594,82 @@ void Maxwell3DLane::Apply(std::span<const u32> data) {
     }
 }
 
+void ApplyPlanRecord(PlanMirror& mirror, std::span<const u32> data) {
+    const u32* in = data.data();
+    const u32* const end = in + data.size();
+    while (in < end) {
+        const u32 head = *in++;
+        switch (head & 0xff) {
+        case TagRegs: {
+            const u32 count = (head >> 8) & 0xff;
+            const u32 first = head >> 16;
+            std::memcpy(mirror.regs.reg_array.data() + first, in, count * sizeof(u32));
+            mirror.Known(first, count);
+            in += count;
+            break;
+        }
+        case TagDirty:
+            in += Words(sizeof(Maxwell3D::DirtyState::Flags));
+            break;
+        case TagCBuf: {
+            auto& binding = mirror.state.shader_stages[(head >> 8) & 0xff]
+                                .const_buffers[(head >> 16) & 0xff];
+            binding.address = u64{in[0]} | (u64{in[1]} << 32);
+            binding.size = in[2];
+            binding.enabled = in[3] != 0;
+            in += 4;
+            break;
+        }
+        case TagRootTable:
+            std::memcpy(mirror.root_tables[(head >> 8) & 0xff].data(), in, 64 * sizeof(u32));
+            in += 64;
+            break;
+        case TagRootState:
+            mirror.root_selected = in[0];
+            mirror.root_offset = in[1];
+            mirror.root_loaded = in[2];
+            in += 3;
+            break;
+        case TagEngineState:
+            in += 1;
+            break;
+        case TagReplaceTable:
+            in += 1 + size_t{*in} * 3;
+            break;
+        case TagDraw: {
+            mirror.draw.assign(in, in + Words(sizeof(DrawState)));
+            in += Words(sizeof(DrawState));
+            mirror.inline_index_bytes = *in++;
+            in += Words(mirror.inline_index_bytes);
+            break;
+        }
+        case TagBreak:
+            in += 1;
+            break;
+        case TagFastDelta: {
+            in += 5;
+            const u32 counts = *in++;
+            in += size_t{4} * ((counts & 0xff) + ((counts >> 8) & 0xff));
+            break;
+        }
+        case TagVerify:
+            in += Maxwell3D::Regs::NUM_REGS + Words(sizeof(Maxwell3D::State)) + 8 * 64 +
+                  Words(sizeof(DrawState));
+            break;
+        default:
+            mirror.valid = false;
+            return;
+        }
+    }
+}
+
+static u64 MirrorDigestOf(const Maxwell3D& mirror, std::span<const u16> unknown) {
+    const DrawState draw = CaptureDraw(mirror);
+    std::array<u32, Words(sizeof(DrawState))> draw_words{};
+    std::memcpy(draw_words.data(), &draw, sizeof(draw));
+    return MirrorDigest(mirror.regs, mirror.state, mirror.root_tables.tables, draw_words, unknown);
+}
+
 void Maxwell3DLane::SyncMirror(Reads reads) {
     if (GpuSplit::OnMethodLane()) {
         Build(reads);
@@ -623,6 +714,9 @@ bool Maxwell3DLane::RunMacro(Core::System& system, Tegra::MacroEngine& macro_eng
     SyncMirror(ReadsState);
     if (LeadStats::Enabled()) [[unlikely]] {
         g_lead_stats.macros.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (auto& workers = PlanWorkers::Get(); workers.Active() && GpuSplit::OnMethodLane()) {
+        workers.PushMacro(this, writes);
     }
     GpuSplit::Get().LaneCall(
         [this, system_ptr = &system, engine_ptr = &macro_engine, start, write_set, escaped, escapes,
@@ -795,12 +889,35 @@ void Maxwell3DLane::Draw(bool is_indexed, u32 instance_count) {
         });
         return;
     }
+    if (auto& workers = PlanWorkers::Get(); workers.Active() && GpuSplit::OnMethodLane()) {
+        const u64 seq = workers.NextSeq();
+        Send(ReadsDraw, [this, is_indexed, instance_count, seq] {
+            CheckPlan(seq);
+            if (mirror.ShouldExecute()) {
+                rasterizer->Draw(is_indexed, instance_count);
+            }
+        });
+        workers.PushDraw(this, seq);
+        return;
+    }
     Send(ReadsDraw, [this, is_indexed, instance_count] {
         // The render enable condition is the mirror's (QueryCondition).
         if (mirror.ShouldExecute()) {
             rasterizer->Draw(is_indexed, instance_count);
         }
     });
+}
+
+void Maxwell3DLane::CheckPlan(u64 seq) {
+    auto& workers = PlanWorkers::Get();
+    DrawPlan plan;
+    const bool found = workers.TakePlan(seq, plan);
+    bool matched = false;
+    if (found && PlanWorkers::Verify()) {
+        matched = plan.digest ==
+                  MirrorDigestOf(mirror, std::span<const u16>{plan.unknown.data(), plan.num_unknown});
+    }
+    workers.NoteDraw(found, matched);
 }
 
 void Maxwell3DLane::DrawIndirect() {

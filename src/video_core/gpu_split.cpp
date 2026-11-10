@@ -32,6 +32,7 @@
 #include "video_core/nx2.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/plan_workers.h"
 
 namespace VideoCommon {
 
@@ -154,6 +155,8 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     if (lane) {
         prep_ring = std::make_unique<u64[]>(PrepWords);
         prep_thread = std::jthread([this](std::stop_token stop_token) { PrepLoop(stop_token); });
+        // Before the method lane starts: it sends them its changes from its first record on.
+        PlanWorkers::Get().Start(PlanWorkers::Configured());
     }
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
@@ -178,6 +181,7 @@ void GpuSplit::Stop() {
         prep_wake.fetch_add(1, std::memory_order_seq_cst);
         prep_wake.notify_one();
         prep_thread.join();
+        PlanWorkers::Get().Stop();
     }
     active = false;
     // The split is static and outlives the emulation session. The next session's back thread

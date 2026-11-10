@@ -137,6 +137,8 @@ add_library(video_core STATIC
     nx2_download_trace.h
     nx2_read_trace.h
     pending_maps.h
+    plan_workers.cpp
+    plan_workers.h
     prep_lane.cpp
     prep_lane.h
     present.h

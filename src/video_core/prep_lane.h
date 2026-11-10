@@ -205,6 +205,9 @@ private:
     void Build(Reads reads);
     /// Brings the mirror up to `record` (preparation lane, or the thread that built it).
     void Apply(std::span<const u32> record);
+    /// Preparation lane: counts whether a plan worker planned draw `seq` (PlanWorkers) and, with
+    /// EDEN_NX2_PREP_PLAN_VERIFY, whether its mirror matched this one.
+    void CheckPlan(u64 seq);
 
     Maxwell3D& engine;
     Maxwell3D& mirror;
