@@ -2214,6 +2214,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     }
 
     PrepareShaderPrecache(title_id, std::filesystem::path{filename.toStdU16String()});
+    use_speed_limit_at_boot = Settings::values.use_speed_limit.GetValue();
     Settings::LogSettings();
 
     if (UISettings::values.select_user_on_boot && !user_flag_cmd_line) {
@@ -2484,8 +2485,10 @@ bool MainWindow::OnShutdownBegin() {
 
     AllowOSSleep();
 
-    // Disable unlimited frame rate and turbo/slow modes
-    Settings::values.use_speed_limit.SetValue(true);
+    // Undo the session's frame rate limit toggle and turbo/slow modes. Restore the limit the game
+    // started with instead of forcing it on: forcing it saved "Limit Speed Percent" as checked
+    // after every game, whatever the user had chosen.
+    Settings::values.use_speed_limit.SetValue(use_speed_limit_at_boot);
     Settings::values.current_speed_mode = Settings::SpeedMode::Standard;
 
     if (QtCommon::system->IsShuttingDown()) {
