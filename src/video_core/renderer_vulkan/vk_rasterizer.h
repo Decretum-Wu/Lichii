@@ -452,6 +452,9 @@ private:
         std::array<u32, Maxwell::NUM_REGS> break_methods{};
         u64 window_start{};
     };
+    /// The pipeline of a draw resolved in full: a plan worker's (PlanWorkers) when it still holds,
+    /// else CurrentGraphicsPipeline.
+    GraphicsPipeline* LookUpPipeline();
     /// The pipeline the draw can take the delta path with, or null for a full resolve. Clears
     /// the remembered draw either way: only a recorded draw remembers one again.
     GraphicsPipeline* TakeReusableDraw(bool is_indexed, bool is_indirect);

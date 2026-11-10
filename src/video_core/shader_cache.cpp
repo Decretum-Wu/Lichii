@@ -374,6 +374,19 @@ ShaderInfo* ShaderCache::TryGet(VAddr addr) const {
     return it->second->data;
 }
 
+bool ShaderCache::LookupShared(VAddr addr, const ShaderInfo*& info, u64& unique_hash,
+                               u64& generation) const {
+    std::scoped_lock lock{lookup_mutex};
+    generation = removal_generation.load(std::memory_order_relaxed);
+    const auto it = lookup_cache.find(addr);
+    if (it == lookup_cache.end()) {
+        return false;
+    }
+    info = it->second->data;
+    unique_hash = info->unique_hash;
+    return true;
+}
+
 void ShaderCache::Register(std::unique_ptr<ShaderInfo> data, VAddr addr, size_t size) {
     std::scoped_lock lock{invalidation_mutex, lookup_mutex};
 
@@ -423,6 +436,7 @@ void ShaderCache::RemovePendingShaders() {
     // Linear growth anyways - maybe consider static_vector instead?
     boost::container::small_vector<ShaderInfo*, 16> removed_shaders;
     std::scoped_lock lock{lookup_mutex};
+    removal_generation.fetch_add(1, std::memory_order_release);
     for (Entry* const entry : marked_for_removal) {
         removed_shaders.push_back(entry->data);
         auto const it = lookup_cache.find(entry->addr_start);

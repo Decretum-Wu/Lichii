@@ -34,10 +34,6 @@ void Pause() {
 #endif
 }
 
-/// Maxwell3DLane::MacroOwned: what the method lane's engine holds for a register a macro the
-/// preparation lane runs wrote.
-constexpr u32 MacroOwned = 0xffffffff;
-
 /// Draws between an engine's checkpoints, so a worker that dropped its mirrors catches up.
 constexpr u64 CheckpointEvery = 4096;
 
@@ -221,12 +217,15 @@ void PlanWorkers::PushCheckpoint(const void* engine, const Maxwell3D::Regs& regs
                                  const Maxwell3D::State& state,
                                  const std::array<std::array<u32, 64>, 8>& root_tables,
                                  u32 root_selected, u32 root_offset, bool root_loaded,
-                                 std::span<const u32> draw, u32 inline_index_bytes) {
+                                 std::span<const u32> draw, u32 inline_index_bytes,
+                                 u32 engine_state, const Tegra::MemoryManager* memory,
+                                 bool native, std::span<const u16> unknown) {
     constexpr size_t RegWords = Maxwell3D::Regs::NUM_REGS;
     constexpr size_t BindingWords = Maxwell3D::Regs::MaxShaderStage *
                                     Maxwell3D::Regs::MaxConstBuffers * 4;
     constexpr size_t RootWords = 8 * 64;
-    const size_t words = 3 + RegWords + BindingWords + RootWords + 3 + 2 + draw.size();
+    const size_t words =
+        3 + RegWords + BindingWords + RootWords + 3 + 2 + 4 + 1 + unknown.size() + draw.size();
     u32* const out = Reserve(words);
     out[0] = KindCheckpoint | static_cast<u32>(words << 8);
     PutEngine(out, engine);
@@ -250,6 +249,16 @@ void PlanWorkers::PushCheckpoint(const void* engine, const Maxwell3D::Regs& regs
     at[3] = static_cast<u32>(draw.size());
     at[4] = inline_index_bytes;
     at += 5;
+    const u64 memory_bits = reinterpret_cast<u64>(memory);
+    at[0] = engine_state;
+    at[1] = static_cast<u32>(memory_bits);
+    at[2] = static_cast<u32>(memory_bits >> 32);
+    at[3] = native ? 1U : 0U;
+    at += 4;
+    *at++ = static_cast<u32>(unknown.size());
+    for (const u16 reg : unknown) {
+        *at++ = reg;
+    }
     std::memcpy(at, draw.data(), draw.size_bytes());
     Publish();
 }
@@ -342,12 +351,6 @@ size_t PlanWorkers::RunEntry(Worker& worker, u64 position) {
         constexpr size_t RegWords = Maxwell3D::Regs::NUM_REGS;
         const u32* at = entry + 3;
         std::memcpy(mirror.regs.reg_array.data(), at, RegWords * sizeof(u32));
-        mirror.unknown.clear();
-        for (size_t reg = 0; reg < RegWords; ++reg) {
-            if (at[reg] == MacroOwned) {
-                mirror.SetUnknown(static_cast<u32>(reg));
-            }
-        }
         at += RegWords;
         for (auto& stage : mirror.state.shader_stages) {
             for (auto& binding : stage.const_buffers) {
@@ -365,7 +368,15 @@ size_t PlanWorkers::RunEntry(Worker& worker, u64 position) {
         const u32 draw_words = at[3];
         mirror.inline_index_bytes = at[4];
         at += 5;
+        mirror.engine_state = at[0];
+        mirror.memory =
+            reinterpret_cast<const Tegra::MemoryManager*>(u64{at[1]} | (u64{at[2]} << 32));
+        mirror.native = at[3] != 0;
+        at += 4;
+        mirror.unknown.assign(at + 1, at + 1 + at[0]);
+        at += 1 + at[0];
         mirror.draw.assign(at, at + draw_words);
+        mirror.topology = draw_words != 0 ? at[0] : 0;
         mirror.valid = !fell_behind();
         break;
     }
@@ -400,6 +411,11 @@ void PlanWorkers::WritePlan(u64 seq, const PlanMirror& mirror) {
         plan.digest = MirrorDigest(mirror.regs, mirror.state, mirror.root_tables, mirror.draw,
                                    std::span<const u16>{plan.unknown.data(), plan.num_unknown});
     }
+    planning.fetch_add(1, std::memory_order_seq_cst);
+    if (DrawPlanner* const current = planner.load(std::memory_order_seq_cst)) {
+        current->Plan(mirror, plan);
+    }
+    planning.fetch_sub(1, std::memory_order_release);
     Slot& slot = slots[seq & (NumSlots - 1)];
     const u64 done = (seq + 1) * 2;
     slot.version.store(done + 1, std::memory_order_relaxed);
@@ -420,6 +436,15 @@ bool PlanWorkers::TakePlan(u64 seq, DrawPlan& plan) {
     return slot.version.load(std::memory_order_relaxed) == done;
 }
 
+void PlanWorkers::SetPlanner(DrawPlanner* planner_) {
+    planner.store(planner_, std::memory_order_seq_cst);
+    if (planner_ == nullptr) {
+        while (planning.load(std::memory_order_seq_cst) != 0) {
+            std::this_thread::yield();
+        }
+    }
+}
+
 void PlanWorkers::NoteDraw(bool found, bool matched) {
     ++draws_seen;
     plans_found += found ? 1 : 0;
@@ -433,21 +458,37 @@ void PlanWorkers::NoteDraw(bool found, bool matched) {
     if (now - window_start < 10'000'000'000ULL) {
         return;
     }
+    const auto outcome = [this](PipelineOutcome which) {
+        return pipeline_outcomes[static_cast<size_t>(which)];
+    };
+    const auto result = [this](PlannerResult which) {
+        return planner_results[static_cast<size_t>(which)].exchange(0, std::memory_order_relaxed);
+    };
     LOG_INFO(HW_GPU,
              "Plan workers in {:.1f} s: {} draws, plans ready for {:.1f}% ({} written, {} "
-             "without a synced mirror, {} overruns){}",
+             "without a synced mirror, {} overruns) | planned pipelines: {} used, {} stale, {} "
+             "matched the lookup, {} differed; unplanned with the lookup's key {}, another key {} "
+             "| planner: {} found, no memory {}, unknown registers {}, mesh {}, unmapped {}, "
+             "shader not registered {}, not in the index {}{}",
              static_cast<double>(now - window_start) / 1e9, draws_seen,
              draws_seen == 0 ? 0.0
                              : 100.0 * static_cast<double>(plans_found) /
                                    static_cast<double>(draws_seen),
              plans_written.exchange(0, std::memory_order_relaxed),
              plans_unsynced.exchange(0, std::memory_order_relaxed),
-             overruns.exchange(0, std::memory_order_relaxed),
+             overruns.exchange(0, std::memory_order_relaxed), outcome(PipelineOutcome::Used),
+             outcome(PipelineOutcome::Stale), outcome(PipelineOutcome::Matched),
+             outcome(PipelineOutcome::Differed), outcome(PipelineOutcome::SameKeyUnplanned),
+             outcome(PipelineOutcome::OtherKeyUnplanned), result(PlannerResult::Found),
+             result(PlannerResult::NoMemory), result(PlannerResult::UnknownRegisters),
+             result(PlannerResult::Mesh), result(PlannerResult::Unmapped),
+             result(PlannerResult::NotRegistered), result(PlannerResult::NotInIndex),
              Verify() ? fmt::format(" | verify: {} mirrors matched, {} differed", plans_matched,
                                     plans_differed)
                       : std::string{});
     window_start = now;
     draws_seen = plans_found = plans_matched = plans_differed = 0;
+    pipeline_outcomes = {};
 }
 
 } // namespace VideoCommon

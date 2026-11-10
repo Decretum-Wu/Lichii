@@ -12,6 +12,7 @@
 #include "common/common_types.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu_split.h"
+#include "video_core/plan_workers.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Core {
@@ -205,9 +206,10 @@ private:
     void Build(Reads reads);
     /// Brings the mirror up to `record` (preparation lane, or the thread that built it).
     void Apply(std::span<const u32> record);
-    /// Preparation lane: counts whether a plan worker planned draw `seq` (PlanWorkers) and, with
-    /// EDEN_NX2_PREP_PLAN_VERIFY, whether its mirror matched this one.
-    void CheckPlan(u64 seq);
+    /// Preparation lane: takes the plan a worker made for draw `seq` (PlanWorkers) into
+    /// current_plan and counts it; with EDEN_NX2_PREP_PLAN_VERIFY, checks its mirror against this
+    /// one. Returns whether there was one.
+    bool CheckPlan(u64 seq);
 
     Maxwell3D& engine;
     Maxwell3D& mirror;
@@ -236,6 +238,12 @@ private:
     bool verify{};
     u64 verify_checks{};
     u64 verify_differences{};
+    /// Preparation lane: the plan of the draw it runs (CheckPlan).
+    DrawPlan current_plan;
+    /// Registers a macro run on the mirror wrote (RunMacro) and the engine hasn't written since:
+    /// the plan workers don't know their values.
+    std::bitset<Maxwell3D::Regs::NUM_REGS> macro_owned;
+    u32 macro_owned_count{};
 };
 
 } // namespace VideoCommon

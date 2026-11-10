@@ -14,6 +14,10 @@
 #include "common/common_types.h"
 #include "video_core/engines/maxwell_3d.h"
 
+namespace Tegra {
+class MemoryManager;
+}
+
 namespace VideoCommon {
 
 /// Plan workers (EDEN_NX2_PREP_WORKERS=n, with the preparation lane): threads that follow the
@@ -38,6 +42,12 @@ struct PlanMirror {
     /// The last draw's DrawState words (prep_lane.cpp) and inline index byte count.
     std::vector<u32> draw;
     u32 inline_index_bytes{};
+    u32 topology{}; ///< The draw state's (its first word)
+    u32 engine_state{};
+    /// The engine's GPU memory and whether it runs native (Switch 2) programs, as of the last
+    /// checkpoint.
+    const Tegra::MemoryManager* memory{};
+    bool native{};
     /// Registers a macro run on the preparation lane's mirror wrote since the method lane last
     /// wrote them (few at a time: the macros that read memory write a handful).
     std::vector<u16> unknown;
@@ -62,6 +72,25 @@ struct DrawPlan {
     u64 digest{}; ///< EDEN_NX2_PREP_PLAN_VERIFY: the mirror's (MirrorDigest)
     u32 num_unknown{};
     std::array<u16, MaxUnknown> unknown{};
+
+    // The graphics pipeline (the renderer's DrawPlanner), with what it holds while unchanged.
+    const void* pipeline{}; ///< The renderer's entry for it; null: none planned
+    u64 key_hash{};         ///< EDEN_NX2_PREP_PLAN_VERIFY: the key it looked up (0: none)
+    u64 pipeline_generation{};
+    u64 shader_generation{};
+    u64 map_serial{};
+    const Tegra::MemoryManager* memory{};
+    bool native{};
+    std::array<const void*, 6> shader_infos{};
+};
+
+/// The renderer's part of planning: what it can work out for a draw from a worker's mirror
+/// alone, with lookups that only read what it publishes for the workers.
+class DrawPlanner {
+public:
+    virtual ~DrawPlanner() = default;
+    /// A worker thread, any time: fills in `plan` for the draw `mirror` is at.
+    virtual void Plan(const PlanMirror& mirror, DrawPlan& plan) = 0;
 };
 
 class PlanWorkers {
@@ -95,13 +124,19 @@ public:
     void PushDraw(const void* engine, u64 seq);
     /// Whether a checkpoint is due for `engine` (PushCheckpoint).
     [[nodiscard]] bool CheckpointDue(const void* engine);
+    /// Any thread: every engine's next record comes with a checkpoint.
+    void RequestCheckpoints() noexcept {
+        checkpoint_wanted.store(true, std::memory_order_relaxed);
+    }
     /// The whole state a worker's mirror of `engine` starts from (`regs` with MacroOwned values
     /// for registers a macro owns), with the draw state words of the last draw.
     void PushCheckpoint(const void* engine, const Maxwell3D::Regs& regs,
                         const Maxwell3D::State& state,
                         const std::array<std::array<u32, 64>, 8>& root_tables, u32 root_selected,
                         u32 root_offset, bool root_loaded, std::span<const u32> draw,
-                        u32 inline_index_bytes);
+                        u32 inline_index_bytes, u32 engine_state,
+                        const Tegra::MemoryManager* memory, bool native,
+                        std::span<const u16> unknown);
 
     // Preparation lane.
     /// The plan for draw `seq`, if a worker finished it; copied into `plan`.
@@ -109,6 +144,48 @@ public:
     /// Counts a draw: whether its plan was there and, with EDEN_NX2_PREP_PLAN_VERIFY, whether its
     /// mirror digest matched the preparation lane's. Logs every 10 s.
     void NoteDraw(bool found, bool matched);
+
+    /// The plan of the draw the preparation lane runs now (Maxwell3DLane::CheckPlan), or null.
+    [[nodiscard]] static const DrawPlan* CurrentPlan() noexcept {
+        return t_current_plan;
+    }
+    static void SetCurrentPlan(const DrawPlan* plan) noexcept {
+        t_current_plan = plan;
+    }
+
+    enum class PipelineOutcome : u32 {
+        Used,     ///< The planned pipeline stood for the lookup
+        Stale,    ///< Something it depends on changed since it was planned
+        Matched,  ///< EDEN_NX2_PREP_PLAN_VERIFY: the lookup found the planned one
+        Differed, ///< EDEN_NX2_PREP_PLAN_VERIFY: the lookup found another one
+        SameKeyUnplanned,  ///< EDEN_NX2_PREP_PLAN_VERIFY: none planned, the key was the lookup's
+        OtherKeyUnplanned, ///< EDEN_NX2_PREP_PLAN_VERIFY: none planned, another key
+        Count,
+    };
+    /// Preparation lane: what became of a draw's planned pipeline (logged with NoteDraw).
+    void NotePipeline(PipelineOutcome outcome) noexcept {
+        ++pipeline_outcomes[static_cast<size_t>(outcome)];
+    }
+
+    /// Why a worker planned no pipeline (or Found).
+    enum class PlannerResult : u32 {
+        Found,
+        NoMemory,
+        UnknownRegisters,
+        Mesh,
+        Unmapped,
+        NotRegistered,
+        NotInIndex,
+        Count,
+    };
+    /// Worker threads.
+    void NotePlanner(PlannerResult result) noexcept {
+        planner_results[static_cast<size_t>(result)].fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /// The renderer's planner (null: plans carry only the mirror's digest). Setting null waits
+    /// until no worker is inside the old one.
+    void SetPlanner(DrawPlanner* planner);
 
 private:
     static constexpr size_t RingWords = size_t{1} << 21; // 8 MiB
@@ -172,6 +249,12 @@ private:
     u64 plans_found{};
     u64 plans_matched{};
     u64 plans_differed{};
+    std::array<u64, static_cast<size_t>(PipelineOutcome::Count)> pipeline_outcomes{};
+    std::array<std::atomic<u64>, static_cast<size_t>(PlannerResult::Count)> planner_results{};
+
+    std::atomic<DrawPlanner*> planner{};
+    std::atomic<u32> planning{}; ///< Workers inside the planner
+    static inline thread_local const DrawPlan* t_current_plan{};
 };
 
 /// A digest of a 3D engine's state as a plan sees it: registers (those in `unknown` and the

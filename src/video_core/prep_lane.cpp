@@ -342,6 +342,14 @@ void Maxwell3DLane::Build(Reads reads) {
                 ++last;
             }
             const size_t count = last - first;
+            if (macro_owned_count != 0) [[unlikely]] {
+                for (size_t reg = first; reg < last; ++reg) {
+                    if (macro_owned.test(reg)) {
+                        macro_owned.reset(reg);
+                        --macro_owned_count;
+                    }
+                }
+            }
             record.push_back(TagRegs | static_cast<u32>(count << 8) |
                              static_cast<u32>(first << 16));
             record.insert(record.end(), now + first, now + last);
@@ -453,10 +461,18 @@ void Maxwell3DLane::Build(Reads reads) {
             const DrawState draw = CaptureDraw(engine);
             std::array<u32, Words(sizeof(DrawState))> draw_words{};
             std::memcpy(draw_words.data(), &draw, sizeof(draw));
+            std::vector<u16> unknown;
+            for (size_t reg = 0; macro_owned_count != 0 && reg < macro_owned.size(); ++reg) {
+                if (macro_owned.test(reg)) {
+                    unknown.push_back(static_cast<u16>(reg));
+                }
+            }
             workers.PushCheckpoint(
                 this, *sent_regs, sent_state, sent_root_tables, sent_root_selected,
                 sent_root_offset, sent_root_loaded, draw_words,
-                static_cast<u32>(engine.draw_manager.draw_state.inline_index_draw_indexes.size()));
+                static_cast<u32>(engine.draw_manager.draw_state.inline_index_draw_indexes.size()),
+                static_cast<u32>(sent_engine_state), &engine.GetMemoryManager(),
+                engine.GetNativeMacroEngine().native_turing, unknown);
         }
     }
 }
@@ -631,13 +647,14 @@ void ApplyPlanRecord(PlanMirror& mirror, std::span<const u32> data) {
             in += 3;
             break;
         case TagEngineState:
-            in += 1;
+            mirror.engine_state = *in++;
             break;
         case TagReplaceTable:
             in += 1 + size_t{*in} * 3;
             break;
         case TagDraw: {
             mirror.draw.assign(in, in + Words(sizeof(DrawState)));
+            mirror.topology = in[0];
             in += Words(sizeof(DrawState));
             mirror.inline_index_bytes = *in++;
             in += Words(mirror.inline_index_bytes);
@@ -737,6 +754,10 @@ bool Maxwell3DLane::RunMacro(Core::System& system, Tegra::MacroEngine& macro_eng
     for (const u32 method : writes) {
         engine.regs.reg_array[method] = MacroOwned;
         sent_regs->reg_array[method] = MacroOwned;
+        if (!macro_owned.test(method)) {
+            macro_owned.set(method);
+            ++macro_owned_count;
+        }
         if (tracked) {
             mirror_shadows[method].store(true, std::memory_order_release);
         }
@@ -777,6 +798,11 @@ void Maxwell3DLane::Reclaim(bool drained) {
             mirror_shadows[method].store(false, std::memory_order_release);
         }
     }
+    // The registers the mirror held newer values of are known again: the plan workers' mirrors
+    // take them from a checkpoint.
+    macro_owned.reset();
+    macro_owned_count = 0;
+    PlanWorkers::Get().RequestCheckpoints();
 }
 
 template <typename Func>
@@ -892,10 +918,14 @@ void Maxwell3DLane::Draw(bool is_indexed, u32 instance_count) {
     if (auto& workers = PlanWorkers::Get(); workers.Active() && GpuSplit::OnMethodLane()) {
         const u64 seq = workers.NextSeq();
         Send(ReadsDraw, [this, is_indexed, instance_count, seq] {
-            CheckPlan(seq);
+            const bool planned = CheckPlan(seq);
+            if (planned) {
+                PlanWorkers::SetCurrentPlan(&current_plan);
+            }
             if (mirror.ShouldExecute()) {
                 rasterizer->Draw(is_indexed, instance_count);
             }
+            PlanWorkers::SetCurrentPlan(nullptr);
         });
         workers.PushDraw(this, seq);
         return;
@@ -908,16 +938,17 @@ void Maxwell3DLane::Draw(bool is_indexed, u32 instance_count) {
     });
 }
 
-void Maxwell3DLane::CheckPlan(u64 seq) {
+bool Maxwell3DLane::CheckPlan(u64 seq) {
     auto& workers = PlanWorkers::Get();
-    DrawPlan plan;
-    const bool found = workers.TakePlan(seq, plan);
+    const bool found = workers.TakePlan(seq, current_plan);
     bool matched = false;
     if (found && PlanWorkers::Verify()) {
-        matched = plan.digest ==
-                  MirrorDigestOf(mirror, std::span<const u16>{plan.unknown.data(), plan.num_unknown});
+        matched = current_plan.digest ==
+                  MirrorDigestOf(mirror, std::span<const u16>{current_plan.unknown.data(),
+                                                              current_plan.num_unknown});
     }
     workers.NoteDraw(found, matched);
+    return found;
 }
 
 void Maxwell3DLane::DrawIndirect() {

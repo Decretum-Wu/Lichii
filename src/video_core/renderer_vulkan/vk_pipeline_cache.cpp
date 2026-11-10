@@ -60,6 +60,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_cache_v2.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/shader_cache.h"
 #include "video_core/shader_cache_v2/cache_file.h"
@@ -835,6 +836,7 @@ PipelineCache::~PipelineCache() {
     // After the records the serialization thread queued: its writer drains on destruction
     shader_cache_v2 = nullptr;
     cache_v2.reset();
+    planned_index.Clear();
     graphics_cache.clear();
     evicted_pipelines.clear();
     if (pipeline_binaries) {
@@ -1997,6 +1999,9 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         std::chrono::steady_clock::now() - used_pipelines_saved > save_interval) {
         SaveUsedPipelines();
     }
+    if (VideoCommon::PlanWorkers::Get().Active()) {
+        planned_index.Insert(graphics_key, pipeline.get());
+    }
     if (current_pipeline) {
         current_pipeline->AddTransition(pipeline.get());
     }
@@ -2077,9 +2082,14 @@ void PipelineCache::EvictUnusedPipelines() {
     if (evicted == 0) {
         return;
     }
+    // Before the evicted pipelines can go: a plan made from the old index is stale from here on.
+    planned_index.Clear();
     for (auto& [key, pipeline] : graphics_cache) {
         if (pipeline) {
             pipeline->ClearTransitions();
+            if (VideoCommon::PlanWorkers::Get().Active() && used_this_session.contains(pipeline.get())) {
+                planned_index.Insert(key, pipeline.get());
+            }
         }
     }
     LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} frames, {} left", evicted,
@@ -3075,4 +3085,182 @@ vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::
     }
 }
 
+PlannedPipelineIndex::PlannedPipelineIndex() : entries{std::make_unique<Entry[]>(Capacity)} {}
+
+void PlannedPipelineIndex::Insert(const GraphicsPipelineCacheKey& key,
+                                  GraphicsPipeline* pipeline) {
+    // Kept below half full so probes stay short; past that, workers just don't find the rest.
+    if (count * 2 >= Capacity) {
+        return;
+    }
+    const u64 hash = key.Hash();
+    for (size_t probe = 0, index = hash & (Capacity - 1); probe < Capacity;
+         ++probe, index = (index + 1) & (Capacity - 1)) {
+        Entry& entry = entries[index];
+        const Node* const node = entry.node.load(std::memory_order_relaxed);
+        if (node != nullptr &&
+            (entry.hash.load(std::memory_order_relaxed) != hash || !(node->key == key))) {
+            continue;
+        }
+        if (node != nullptr && node->pipeline == pipeline) {
+            return;
+        }
+        nodes.push_back(std::make_unique<Node>(Node{key, pipeline}));
+        entry.hash.store(hash, std::memory_order_relaxed);
+        entry.node.store(nodes.back().get(), std::memory_order_release);
+        count += node == nullptr ? 1 : 0;
+        return;
+    }
+}
+
+void PlannedPipelineIndex::Clear() {
+    generation.fetch_add(1, std::memory_order_seq_cst);
+    for (size_t index = 0; index < Capacity; ++index) {
+        entries[index].node.store(nullptr, std::memory_order_relaxed);
+    }
+    count = 0;
+}
+
+const PlannedPipelineIndex::Node* PlannedPipelineIndex::Find(
+    const GraphicsPipelineCacheKey& key) const noexcept {
+    const u64 hash = key.Hash();
+    for (size_t probe = 0, index = hash & (Capacity - 1); probe < Capacity;
+         ++probe, index = (index + 1) & (Capacity - 1)) {
+        const Entry& entry = entries[index];
+        const Node* const node = entry.node.load(std::memory_order_acquire);
+        if (node == nullptr) {
+            return nullptr;
+        }
+        // The node is immutable and never freed while the cache lives: comparing its key decides.
+        if (entry.hash.load(std::memory_order_relaxed) == hash && node->key == key) {
+            return node;
+        }
+    }
+    return nullptr;
+}
+
+void PipelineCache::Plan(const VideoCommon::PlanMirror& mirror, VideoCommon::DrawPlan& plan) {
+    using Tegra::Engines::Maxwell3D;
+    using ShaderType = Maxwell3D::Regs::ShaderType;
+    using Result = VideoCommon::PlanWorkers::PlannerResult;
+    auto& workers = VideoCommon::PlanWorkers::Get();
+    if (mirror.memory == nullptr) {
+        workers.NotePlanner(Result::NoMemory);
+        return;
+    }
+    // The registers macros run on the preparation lane's mirror write and the worker doesn't
+    // know: only the ones that decide whether draws run (and those macros' memory operands),
+    // which nothing in the key reads.
+    for (u32 i = 0; i < plan.num_unknown; ++i) {
+        const u16 reg = plan.unknown[i];
+        const bool harmless = (reg >= 0x154 && reg <= 0x158) ||
+                              (reg >= MAXWELL3D_REG_INDEX(render_enable.address_high) &&
+                               reg <= MAXWELL3D_REG_INDEX(render_enable.mode));
+        if (!harmless) {
+            workers.NotePlanner(Result::UnknownRegisters);
+            return;
+        }
+    }
+    const auto& regs = mirror.regs;
+    const bool native = mirror.native;
+    if (native && regs.IsMeshEnabled()) {
+        workers.NotePlanner(Result::Mesh); // MeshStateHash reads memory
+        return;
+    }
+    const u64 pipeline_generation = planned_index.Generation();
+    const u64 map_serial = mirror.memory->MapSerial();
+    u64 shader_generation = RemovalGeneration();
+    bool looked_up = false;
+    GraphicsPipelineCacheKey key{};
+    std::array<const void*, Maxwell::MaxShaderProgram> infos{};
+    // As RefreshStages.
+    const GPUVAddr base_addr = regs.program_region.Address();
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        if (!regs.IsShaderConfigEnabled(index)) {
+            continue;
+        }
+        const auto& shader_config = regs.pipelines[index];
+        const auto program = static_cast<ShaderType>(index);
+        if (program == ShaderType::Pixel && !regs.rasterize_enable) {
+            continue;
+        }
+        const GPUVAddr shader_addr =
+            native ? (static_cast<u64>(shader_config.reserved[0] & 0xff) << 32) |
+                         shader_config.reserved[1]
+                   : base_addr + shader_config.offset;
+        const std::optional<VAddr> cpu_addr = mirror.memory->GpuToCpuAddress(shader_addr);
+        if (!cpu_addr) {
+            workers.NotePlanner(Result::Unmapped);
+            return;
+        }
+        const ShaderInfo* info{};
+        u64 unique_hash{};
+        u64 generation{};
+        if (!LookupShared(*cpu_addr, info, unique_hash, generation)) {
+            workers.NotePlanner(Result::NotRegistered);
+            return;
+        }
+        if (!looked_up) {
+            shader_generation = generation;
+            looked_up = true;
+        }
+        infos[index] = info;
+        key.unique_hashes[index] = unique_hash;
+    }
+    key.state.RefreshFrom(regs, static_cast<Maxwell::PrimitiveTopology>(mirror.topology),
+                          static_cast<Tegra::Engines::Maxwell3D::EngineHint>(mirror.engine_state),
+                          dynamic_features);
+    plan.key_hash = key.Hash();
+    const PlannedPipelineIndex::Node* const node = planned_index.Find(key);
+    if (node == nullptr) {
+        workers.NotePlanner(Result::NotInIndex);
+        return;
+    }
+    workers.NotePlanner(Result::Found);
+    plan.pipeline = node;
+    plan.pipeline_generation = pipeline_generation;
+    plan.shader_generation = shader_generation;
+    plan.map_serial = map_serial;
+    plan.memory = mirror.memory;
+    plan.native = native;
+    plan.shader_infos = infos;
+}
+
+bool PipelineCache::PlannedPipelineMatches(const VideoCommon::DrawPlan& plan, bool& valid) const {
+    const auto* const node = static_cast<const PlannedPipelineIndex::Node*>(plan.pipeline);
+    valid = node != nullptr && plan.pipeline_generation == planned_index.Generation() &&
+            plan.shader_generation == RemovalGeneration() && plan.memory == gpu_memory &&
+            plan.map_serial == gpu_memory->MapSerial() &&
+            plan.native == maxwell3d->GetNativeMacroEngine().native_turing;
+    return valid && node->pipeline == current_pipeline;
+}
+
+GraphicsPipeline* PipelineCache::TakePlannedPipeline(const VideoCommon::DrawPlan& plan,
+                                                     bool& valid) {
+    (void)PlannedPipelineMatches(plan, valid);
+    if (!valid) {
+        return nullptr;
+    }
+    const auto& node = *static_cast<const PlannedPipelineIndex::Node*>(plan.pipeline);
+    // What RefreshStages and the key's Refresh leave behind.
+    auto& dirty = maxwell3d->dirty.flags;
+    dirty[VideoCommon::Dirty::Shaders] = false;
+    last_shaders_valid = true;
+    for (size_t index = 0; index < shader_infos.size(); ++index) {
+        if (node.key.unique_hashes[index] != 0) {
+            shader_infos[index] = static_cast<const ShaderInfo*>(plan.shader_infos[index]);
+        }
+    }
+    graphics_key = node.key;
+    if (!dynamic_features.has_dynamic_vertex_input) {
+        dirty[Dirty::VertexInput] = false;
+    }
+    dirty[Dirty::ViewportSwizzles] = false;
+    if (!dynamic_features.has_extended_dynamic_state_3_blend) {
+        dirty[Dirty::Blending] = false;
+    }
+    current_pipeline = node.pipeline;
+    current_pipeline->MarkUsed(frame_count);
+    return BuiltPipeline(current_pipeline);
+}
 } // namespace Vulkan

@@ -78,6 +78,7 @@
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_drain_check.h"
 #include "video_core/nx2_fast_draw.h"
+#include "video_core/plan_workers.h"
 #include "video_core/nx2_list_stats.h"
 #include "video_core/nx2_profile.h"
 
@@ -446,12 +447,50 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
+    VideoCommon::PlanWorkers::Get().SetPlanner(&pipeline_cache);
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
+    VideoCommon::PlanWorkers::Get().SetPlanner(nullptr);
     VideoCommon::GpuSplit::Get().SetIdleHook(nullptr, nullptr);
     scheduler.WaitWorker();
     scheduler.Finish();
+}
+
+GraphicsPipeline* RasterizerVulkan::LookUpPipeline() {
+    using Workers = VideoCommon::PlanWorkers;
+    const VideoCommon::DrawPlan* const plan = Workers::CurrentPlan();
+    if (plan == nullptr) {
+        return pipeline_cache.CurrentGraphicsPipeline();
+    }
+    auto& workers = Workers::Get();
+    bool valid = false;
+    if (Workers::Verify()) {
+        GraphicsPipeline* const found = pipeline_cache.CurrentGraphicsPipeline();
+        if (plan->pipeline == nullptr) {
+            if (plan->key_hash != 0) {
+                workers.NotePipeline(plan->key_hash == pipeline_cache.CurrentKeyHash()
+                                         ? Workers::PipelineOutcome::SameKeyUnplanned
+                                         : Workers::PipelineOutcome::OtherKeyUnplanned);
+            }
+            return found;
+        }
+        const bool matched = pipeline_cache.PlannedPipelineMatches(*plan, valid);
+        workers.NotePipeline(!valid    ? Workers::PipelineOutcome::Stale
+                             : matched ? Workers::PipelineOutcome::Matched
+                                       : Workers::PipelineOutcome::Differed);
+        return found;
+    }
+    if (plan->pipeline == nullptr) {
+        return pipeline_cache.CurrentGraphicsPipeline();
+    }
+    GraphicsPipeline* const planned = pipeline_cache.TakePlannedPipeline(*plan, valid);
+    if (!valid) {
+        workers.NotePipeline(Workers::PipelineOutcome::Stale);
+        return pipeline_cache.CurrentGraphicsPipeline();
+    }
+    workers.NotePipeline(Workers::PipelineOutcome::Used);
+    return planned;
 }
 
 GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_indirect) {
@@ -857,7 +896,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     GraphicsPipeline* const verify_pipeline = fast_draw_verify ? delta_pipeline : nullptr;
     GraphicsPipeline* const pipeline{delta_pipeline && !verify_pipeline ? delta_pipeline : [&] {
         Profile::Scope scope{Profile::Zone::PipelineLookup};
-        return pipeline_cache.CurrentGraphicsPipeline();
+        return LookUpPipeline();
     }()};
     const bool verify_views = verify_pipeline != nullptr && verify_pipeline == pipeline;
     if (verify_pipeline != nullptr) {
