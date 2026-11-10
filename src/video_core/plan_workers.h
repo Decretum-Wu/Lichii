@@ -82,6 +82,32 @@ struct DrawPlan {
     const Tegra::MemoryManager* memory{};
     bool native{};
     std::array<const void*, 6> shader_infos{};
+
+    /// Guest memory the plan read (PlanWorkers::ReadMemory) holds for the draw while
+    /// Nx2FastDraw::MemorySerial stays this.
+    u64 memory_serial{};
+
+    /// A small uniform buffer's bytes for the draw, as a 128-bit hash.
+    struct Uniform {
+        GPUVAddr address;
+        u64 hash_low;
+        u64 hash_high;
+        u32 size;
+        u8 stage;
+        u8 index;
+    };
+    static constexpr size_t MaxUniforms = 24;
+    u32 num_uniforms{};
+    std::array<Uniform, MaxUniforms> uniforms;
+
+    [[nodiscard]] const Uniform* FindUniform(size_t stage, u32 index) const noexcept {
+        for (u32 i = 0; i < num_uniforms; ++i) {
+            if (uniforms[i].stage == stage && uniforms[i].index == index) {
+                return &uniforms[i];
+            }
+        }
+        return nullptr;
+    }
 };
 
 /// The renderer's part of planning: what it can work out for a draw from a worker's mirror
@@ -118,6 +144,14 @@ public:
     void PushRecord(const void* engine, std::span<const u32> record);
     /// A macro run on the preparation lane's mirror of `engine` writes these registers.
     void PushMacro(const void* engine, std::span<const u32> writes);
+    /// The id of the next guest memory write the method lane sends the preparation lane (its
+    /// lambda calls NoteApplied with it once it wrote).
+    [[nodiscard]] u64 NextWriteId() noexcept {
+        return ++next_write_id;
+    }
+    /// Inline constant buffer data `words` the preparation lane writes at `address` of
+    /// `engine`'s GPU memory as write `id`: the workers read it over guest memory until then.
+    void PushWrite(const void* engine, u64 id, GPUVAddr address, std::span<const u32> words);
     /// The sequence number of the next draw (any engine), sent with it to the preparation lane.
     [[nodiscard]] u64 NextSeq();
     /// Draw `seq` of `engine`: the records sent so far are its state. Publishes.
@@ -139,8 +173,17 @@ public:
                         std::span<const u16> unknown);
 
     // Preparation lane.
-    /// The plan for draw `seq`, if a worker finished it; copied into `plan`.
-    [[nodiscard]] bool TakePlan(u64 seq, DrawPlan& plan);
+    /// The plan for draw `seq`, if a worker finished it. It stays put until NoteProcessed(seq):
+    /// no worker writes its slot again before.
+    [[nodiscard]] const DrawPlan* TakePlan(u64 seq) const noexcept;
+    /// The preparation lane is done with draw `seq` (and its plan).
+    void NoteProcessed(u64 seq) noexcept {
+        processed_seq.store(seq, std::memory_order_release);
+    }
+    /// The preparation lane wrote guest memory write `id` (PushWrite).
+    void NoteApplied(u64 id) noexcept {
+        applied_writes.store(id, std::memory_order_release);
+    }
     /// Counts a draw: whether its plan was there and, with EDEN_NX2_PREP_PLAN_VERIFY, whether its
     /// mirror digest matched the preparation lane's. Logs every 10 s.
     void NoteDraw(bool found, bool matched);
@@ -187,6 +230,11 @@ public:
     /// until no worker is inside the old one.
     void SetPlanner(DrawPlanner* planner);
 
+    /// Planner, on a worker: reads `out.size()` bytes of guest memory at `address` of the
+    /// mirror's GPU memory as the draw sees it (the inline constant buffer data sent before it
+    /// that the preparation lane hasn't written yet included). False if not all of it is mapped.
+    [[nodiscard]] bool ReadMemory(const PlanMirror& mirror, GPUVAddr address, std::span<u8> out);
+
 private:
     static constexpr size_t RingWords = size_t{1} << 21; // 8 MiB
     static constexpr size_t RingMask = RingWords - 1;
@@ -200,6 +248,7 @@ private:
         KindMacro,
         KindDraw,
         KindCheckpoint,
+        KindWrite,
     };
 
     struct alignas(64) Slot {
@@ -208,10 +257,26 @@ private:
         DrawPlan plan;
     };
 
+    /// Inline constant buffer data the preparation lane hasn't written yet (PushWrite).
+    struct OverlayWrite {
+        u64 id;
+        const void* engine;
+        GPUVAddr address;
+        size_t first; ///< In Worker::overlay_words
+        u32 count;
+    };
+
     struct Worker {
         u32 index{};
         u64 read_position{};
         std::vector<std::pair<const void*, std::unique_ptr<PlanMirror>>> mirrors;
+        std::vector<OverlayWrite> overlay;
+        std::vector<u32> overlay_words;
+        /// The overlay may lack writes sent before the first one it holds (the worker started,
+        /// or fell a ring behind, after them): reads wait until the preparation lane did those.
+        bool overlay_gap{true};
+        u64 overlay_complete_after{};
+        const void* planning_engine{}; ///< The engine of the draw it plans now
         std::jthread thread;
     };
 
@@ -221,7 +286,9 @@ private:
     /// Returns the words the entry at `position` takes, or 0 if the worker fell behind.
     size_t RunEntry(Worker& worker, u64 position);
     PlanMirror* FindMirror(Worker& worker, const void* engine);
-    void WritePlan(u64 seq, const PlanMirror& mirror);
+    void WritePlan(Worker& worker, u64 seq, const PlanMirror& mirror);
+    /// Drops the overlay writes the preparation lane did.
+    void RetireOverlay(Worker& worker);
 
     std::atomic<bool> active{};
     u32 count{};
@@ -232,6 +299,7 @@ private:
     // Method lane side.
     u64 write_position{};
     u64 next_seq{};
+    u64 next_write_id{};
     std::vector<std::pair<const void*, u64>> checkpoint_draws; ///< Draws since each one's last
 
     alignas(64) std::atomic<u64> published{};
@@ -239,6 +307,10 @@ private:
     std::atomic<u32> wake{};
     /// Set by a worker that dropped its mirrors: the next draw of every engine has a checkpoint.
     alignas(64) std::atomic<bool> checkpoint_wanted{};
+    /// The preparation lane's progress: the last draw it is done with, the last write it did.
+    alignas(64) std::atomic<u64> processed_seq{};
+    alignas(64) std::atomic<u64> applied_writes{};
+    static inline thread_local Worker* t_worker{};
 
     // Statistics (relaxed counters, logged with the preparation lane's verify counts).
     std::atomic<u64> overruns{};

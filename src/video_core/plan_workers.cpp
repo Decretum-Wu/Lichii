@@ -15,6 +15,8 @@
 #include "common/cityhash.h"
 #include "common/logging.h"
 #include "common/thread.h"
+#include "video_core/memory_manager.h"
+#include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/plan_workers.h"
 
@@ -107,6 +109,9 @@ void PlanWorkers::Start(u32 count_) {
     slots = std::make_unique<Slot[]>(NumSlots);
     write_position = 0;
     next_seq = 0;
+    next_write_id = 0;
+    processed_seq.store(0, std::memory_order_relaxed);
+    applied_writes.store(0, std::memory_order_relaxed);
     checkpoint_draws.clear();
     published.store(0, std::memory_order_relaxed);
     checkpoint_wanted.store(true, std::memory_order_relaxed);
@@ -275,6 +280,7 @@ PlanMirror* PlanWorkers::FindMirror(Worker& worker, const void* engine) {
 
 void PlanWorkers::WorkerLoop(Worker& worker, std::stop_token stop_token) {
     Common::SetCurrentThreadName(fmt::format("GPUPlan{}", worker.index).c_str());
+    t_worker = &worker;
     worker.read_position = published.load(std::memory_order_acquire);
     while (!stop_token.stop_requested()) {
         u64 available = published.load(std::memory_order_acquire);
@@ -305,6 +311,9 @@ void PlanWorkers::WorkerLoop(Worker& worker, std::stop_token stop_token) {
                 for (auto& [engine, mirror] : worker.mirrors) {
                     mirror->valid = false;
                 }
+                worker.overlay.clear();
+                worker.overlay_words.clear();
+                worker.overlay_gap = true;
                 worker.read_position = published.load(std::memory_order_acquire);
                 checkpoint_wanted.store(true, std::memory_order_relaxed);
                 break;
@@ -380,6 +389,19 @@ size_t PlanWorkers::RunEntry(Worker& worker, u64 position) {
         mirror.valid = !fell_behind();
         break;
     }
+    case KindWrite: {
+        const u64 id = u64{entry[3]} | (u64{entry[4]} << 32);
+        const GPUVAddr address = u64{entry[5]} | (u64{entry[6]} << 32);
+        if (worker.overlay_gap) {
+            worker.overlay_gap = false;
+            worker.overlay_complete_after = id - 1;
+        }
+        const size_t first = worker.overlay_words.size();
+        worker.overlay_words.insert(worker.overlay_words.end(), entry + 7, entry + words);
+        worker.overlay.push_back(
+            OverlayWrite{id, GetEngine(entry), address, first, static_cast<u32>(words - 7)});
+        break;
+    }
     case KindDraw: {
         const u64 seq = u64{entry[3]} | (u64{entry[4]} << 32);
         if (fell_behind()) {
@@ -392,7 +414,8 @@ size_t PlanWorkers::RunEntry(Worker& worker, u64 position) {
             plans_unsynced.fetch_add(1, std::memory_order_relaxed);
             break;
         }
-        WritePlan(seq, mirror);
+        worker.planning_engine = GetEngine(entry);
+        WritePlan(worker, seq, mirror);
         break;
     }
     default:
@@ -401,7 +424,13 @@ size_t PlanWorkers::RunEntry(Worker& worker, u64 position) {
     return fell_behind() ? 0 : words;
 }
 
-void PlanWorkers::WritePlan(u64 seq, const PlanMirror& mirror) {
+void PlanWorkers::WritePlan(Worker& worker, u64 seq, const PlanMirror& mirror) {
+    // The slot's last plan must be one the preparation lane is done with.
+    if (seq >= processed_seq.load(std::memory_order_acquire) + NumSlots) {
+        plans_unsynced.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    RetireOverlay(worker);
     DrawPlan plan;
     for (const u16 reg : mirror.unknown) {
         plan.unknown[plan.num_unknown++] = reg;
@@ -411,6 +440,9 @@ void PlanWorkers::WritePlan(u64 seq, const PlanMirror& mirror) {
         plan.digest = MirrorDigest(mirror.regs, mirror.state, mirror.root_tables, mirror.draw,
                                    std::span<const u16>{plan.unknown.data(), plan.num_unknown});
     }
+    // Before any guest memory is read: a write the overlay doesn't hold bumps it after.
+    plan.memory_serial = Nx2FastDraw::MemorySerial();
+    std::atomic_thread_fence(std::memory_order_acquire);
     planning.fetch_add(1, std::memory_order_seq_cst);
     if (DrawPlanner* const current = planner.load(std::memory_order_seq_cst)) {
         current->Plan(mirror, plan);
@@ -425,17 +457,70 @@ void PlanWorkers::WritePlan(u64 seq, const PlanMirror& mirror) {
     plans_written.fetch_add(1, std::memory_order_relaxed);
 }
 
-bool PlanWorkers::TakePlan(u64 seq, DrawPlan& plan) {
-    Slot& slot = slots[seq & (NumSlots - 1)];
-    const u64 done = (seq + 1) * 2;
-    if (slot.version.load(std::memory_order_acquire) != done) {
-        return false;
-    }
-    plan = slot.plan;
-    std::atomic_thread_fence(std::memory_order_acquire);
-    return slot.version.load(std::memory_order_relaxed) == done;
+const DrawPlan* PlanWorkers::TakePlan(u64 seq) const noexcept {
+    const Slot& slot = slots[seq & (NumSlots - 1)];
+    return slot.version.load(std::memory_order_acquire) == (seq + 1) * 2 ? &slot.plan : nullptr;
 }
 
+void PlanWorkers::PushWrite(const void* engine, u64 id, GPUVAddr address,
+                            std::span<const u32> words) {
+    const size_t size = 7 + words.size();
+    u32* const out = Reserve(size);
+    out[0] = KindWrite | static_cast<u32>(size << 8);
+    PutEngine(out, engine);
+    out[3] = static_cast<u32>(id);
+    out[4] = static_cast<u32>(id >> 32);
+    out[5] = static_cast<u32>(address);
+    out[6] = static_cast<u32>(address >> 32);
+    std::memcpy(out + 7, words.data(), words.size_bytes());
+}
+
+void PlanWorkers::RetireOverlay(Worker& worker) {
+    const u64 applied = applied_writes.load(std::memory_order_acquire);
+    size_t done = 0;
+    while (done < worker.overlay.size() && worker.overlay[done].id <= applied) {
+        ++done;
+    }
+    if (done == worker.overlay.size()) {
+        worker.overlay.clear();
+        worker.overlay_words.clear();
+    } else if (done != 0) {
+        worker.overlay.erase(worker.overlay.begin(), worker.overlay.begin() + done);
+    }
+}
+
+bool PlanWorkers::ReadMemory(const PlanMirror& mirror, GPUVAddr address, std::span<u8> out) {
+    Worker* const worker = t_worker;
+    if (worker == nullptr || mirror.memory == nullptr || out.empty()) {
+        return false;
+    }
+    // Writes the overlay may have missed (it fell a ring behind) must be in memory first.
+    const u64 applied = applied_writes.load(std::memory_order_acquire);
+    if (worker->overlay_gap || applied < worker->overlay_complete_after) {
+        return false;
+    }
+    if (!mirror.memory->IsFullyMappedRange(address, out.size())) {
+        return false;
+    }
+    mirror.memory->ReadBlockUnsafe(address, out.data(), out.size());
+    const GPUVAddr end = address + out.size();
+    for (const OverlayWrite& write : worker->overlay) {
+        if (write.id <= applied || write.engine != worker->planning_engine) {
+            continue;
+        }
+        const GPUVAddr write_end = write.address + u64{write.count} * sizeof(u32);
+        if (write.address >= end || write_end <= address) {
+            continue;
+        }
+        const GPUVAddr begin = (std::max)(write.address, address);
+        const GPUVAddr finish = (std::min)(write_end, end);
+        std::memcpy(out.data() + (begin - address),
+                    reinterpret_cast<const u8*>(worker->overlay_words.data() + write.first) +
+                        (begin - write.address),
+                    finish - begin);
+    }
+    return true;
+}
 void PlanWorkers::SetPlanner(DrawPlanner* planner_) {
     planner.store(planner_, std::memory_order_seq_cst);
     if (planner_ == nullptr) {
@@ -446,10 +531,18 @@ void PlanWorkers::SetPlanner(DrawPlanner* planner_) {
 }
 
 void PlanWorkers::NoteDraw(bool found, bool matched) {
+    // Counted only for the log (EDEN_NX2_GPU_PROFILE or EDEN_NX2_PREP_PLAN_VERIFY), and the
+    // clock read once every 4096 draws.
+    if (!Verify() && !Nx2Profile::Enabled()) {
+        return;
+    }
     ++draws_seen;
     plans_found += found ? 1 : 0;
     plans_matched += found && matched ? 1 : 0;
     plans_differed += found && !matched ? 1 : 0;
+    if ((draws_seen & 4095) != 0) {
+        return;
+    }
     const u64 now = Nx2Profile::Now();
     if (window_start == 0) {
         window_start = now;

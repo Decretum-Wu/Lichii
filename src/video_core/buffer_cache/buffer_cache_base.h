@@ -52,6 +52,7 @@
 #include "video_core/nx2_download_trace.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_read_trace.h"
+#include "video_core/plan_workers.h"
 #include "video_core/rasterizer_download_area.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/types.h"
@@ -844,6 +845,16 @@ private:
         u64 verified{};
         u64 mismatches{};
     } uniform_keep;
+
+    /// The plan of the draw being prepared whose uniform hashes hold (BeginGraphicsUniforms).
+    const VideoCommon::DrawPlan* uniform_plan{};
+    struct UniformPlanChecks {
+        u64 plans{};    ///< Draws whose plan's uniform hashes held
+        u64 stale{};    ///< Draws whose plan's guest memory changed since it was read
+        u64 used{};     ///< Uniform buffers bound with a planned hash
+        u64 verified{}; ///< EDEN_NX2_PREP_PLAN_VERIFY: hashes that matched the bytes
+        u64 differed{}; ///< EDEN_NX2_PREP_PLAN_VERIFY: hashes that didn't
+    } uniform_plan_checks;
 
     boost::container::small_vector<BufferCopy, 4> upload_copies;
 

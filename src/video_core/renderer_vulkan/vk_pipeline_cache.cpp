@@ -60,6 +60,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_cache_v2.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/buffer_cache/uniform_stream_reuse.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/shader_cache.h"
@@ -3224,6 +3225,36 @@ void PipelineCache::Plan(const VideoCommon::PlanMirror& mirror, VideoCommon::Dra
     plan.memory = mirror.memory;
     plan.native = native;
     plan.shader_infos = infos;
+    // The small uniform buffers the pipeline binds, as the draw will see them: the preparation
+    // lane compares their hashes instead of their bytes (BindSmallUniformReusing). The pipeline
+    // outlives this: evicted ones are destroyed only once the GPU is done with them.
+    const GraphicsPipeline& pipeline = *node->pipeline;
+    const auto& masks = pipeline.EnabledUniformBufferMasks();
+    const auto& sizes = pipeline.UniformBufferSizes();
+    std::array<u8, 4096> bytes;
+    for (u32 stage = 0; stage < masks.size(); ++stage) {
+        for (u32 mask = masks[stage]; mask != 0; mask &= mask - 1) {
+            const u32 index = static_cast<u32>(std::countr_zero(mask));
+            const auto& cbuf = mirror.state.shader_stages[stage].const_buffers[index];
+            const u32 size = (std::min)(cbuf.size, sizes[stage][index]);
+            if (!cbuf.enabled || size == 0 || size > bytes.size() ||
+                plan.num_uniforms == plan.uniforms.size()) {
+                continue;
+            }
+            if (!workers.ReadMemory(mirror, cbuf.address, std::span<u8>{bytes.data(), size})) {
+                continue;
+            }
+            const auto [low, high] = VideoCommon::UniformBytesHash(bytes.data(), size);
+            plan.uniforms[plan.num_uniforms++] = {
+                .address = cbuf.address,
+                .hash_low = low,
+                .hash_high = high,
+                .size = size,
+                .stage = static_cast<u8>(stage),
+                .index = static_cast<u8>(index),
+            };
+        }
+    }
 }
 
 bool PipelineCache::PlannedPipelineMatches(const VideoCommon::DrawPlan& plan, bool& valid) const {

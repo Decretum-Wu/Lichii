@@ -145,6 +145,16 @@ void BufferCache<P>::TickFrame() {
                      keep.kept, keep.streamed_binds, keep.verified, keep.mismatches);
         }
         keep.kept = keep.streamed_binds = keep.verified = keep.mismatches = 0;
+        UniformPlanChecks& checks = uniform_plan_checks;
+        if (checks.plans + checks.stale != 0 &&
+            (Nx2Profile::Enabled() || VideoCommon::PlanWorkers::Verify())) {
+            LOG_INFO(HW_GPU,
+                     "Planned uniforms in 600 frames: {} draws with hashes that held, {} with "
+                     "guest memory changed since read, {} buffers bound by hash; verify: {} "
+                     "hashes matched, {} differed",
+                     checks.plans, checks.stale, checks.used, checks.verified, checks.differed);
+        }
+        checks = {};
     }
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
         for (const auto& [address, size] : uploaded_buffer_ranges) {
@@ -2079,6 +2089,17 @@ void BufferCache<P>::SetUniformBuffersState(const std::array<u32, NUM_STAGES>& m
 
 template <class P>
 void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
+    // The plan worker's hashes hold while the guest memory it read hasn't changed since.
+    {
+        const VideoCommon::DrawPlan* const plan = VideoCommon::PlanWorkers::CurrentPlan();
+        const bool planned = plan != nullptr && plan->num_uniforms != 0;
+        const bool holds = planned && plan->memory == gpu_memory &&
+                           plan->map_serial == gpu_memory->MapSerial() &&
+                           plan->memory_serial == Nx2FastDraw::MemorySerial();
+        uniform_plan = holds ? plan : nullptr;
+        uniform_plan_checks.plans += holds ? 1 : 0;
+        uniform_plan_checks.stale += planned && !holds ? 1 : 0;
+    }
     UniformKeep& keep = uniform_keep;
     const bool unwritten = !keep.memory_writes_lost && keep.draw_deletions == buffer_deletions;
     keep.draw_deletions = buffer_deletions;
@@ -3006,8 +3027,25 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                 const u64 rebinds =
                     VideoCommon::UniformStreamReuseState<typename Runtime::StreamUniformRef>()
                         .rebinds;
+                // A plan worker's hash of the bytes stands for comparing them (PlanWorkers).
+                const VideoCommon::DrawPlan::Uniform* const planned =
+                    uniform_plan != nullptr ? uniform_plan->FindUniform(stage, index) : nullptr;
+                std::optional<VideoCommon::PlannedUniformHash> planned_hash;
+                if (planned != nullptr && planned->size == size &&
+                    planned->address ==
+                        maxwell3d->state.shader_stages[stage].const_buffers[index].address) {
+                    planned_hash = VideoCommon::PlannedUniformHash{
+                        .low = planned->hash_low,
+                        .high = planned->hash_high,
+                        .verify = VideoCommon::PlanWorkers::Verify(),
+                        .verified = &uniform_plan_checks.verified,
+                        .differed = &uniform_plan_checks.differed,
+                    };
+                    ++uniform_plan_checks.used;
+                }
                 streamed = VideoCommon::BindSmallUniformReusing(
-                    runtime, device_memory, stage, index, binding_index, device_addr, size);
+                    runtime, device_memory, stage, index, binding_index, device_addr, size,
+                    planned_hash ? &*planned_hash : nullptr);
                 const u64 rebound =
                     VideoCommon::UniformStreamReuseState<typename Runtime::StreamUniformRef>()
                         .rebinds -

@@ -853,6 +853,21 @@ void Maxwell3DLane::Wait(const Func& func) {
 }
 
 void Maxwell3DLane::WriteConstantWords(GPUVAddr address, std::span<const u32> words, bool note) {
+    if (auto& workers = PlanWorkers::Get(); workers.Active() && GpuSplit::OnMethodLane()) {
+        // The plan workers read the data over guest memory until this lane's lambda wrote it.
+        const u64 id = workers.NextWriteId();
+        workers.PushWrite(this, id, address, words);
+        const auto tracked = [memory = &engine.GetMemoryManager(), address, id,
+                              note](std::span<const u32> data) {
+            if (!note ||
+                !Nx2FastDraw::WriteData(*memory, address, data.data(), data.size_bytes())) {
+                memory->WriteWordsCached(address, data.data(), static_cast<u32>(data.size()));
+            }
+            PlanWorkers::Get().NoteApplied(id);
+        };
+        SendWords(ReadsNothing, words, tracked);
+        return;
+    }
     const auto write = [memory = &engine.GetMemoryManager(), address](std::span<const u32> data) {
         memory->WriteWordsCached(address, data.data(), static_cast<u32>(data.size()));
     };
@@ -869,6 +884,20 @@ void Maxwell3DLane::WriteConstantWords(GPUVAddr address, std::span<const u32> wo
 }
 
 void Maxwell3DLane::WriteConstantBlock(GPUVAddr address, std::span<const u32> words, bool note) {
+    if (auto& workers = PlanWorkers::Get(); workers.Active() && GpuSplit::OnMethodLane()) {
+        const u64 id = workers.NextWriteId();
+        workers.PushWrite(this, id, address, words);
+        const auto tracked = [memory = &engine.GetMemoryManager(), address, id,
+                              note](std::span<const u32> data) {
+            if (!note ||
+                !Nx2FastDraw::WriteData(*memory, address, data.data(), data.size_bytes())) {
+                memory->WriteBlockCached(address, data.data(), data.size_bytes());
+            }
+            PlanWorkers::Get().NoteApplied(id);
+        };
+        SendWords(ReadsNothing, words, tracked);
+        return;
+    }
     const auto write = [memory = &engine.GetMemoryManager(), address](std::span<const u32> data) {
         memory->WriteBlockCached(address, data.data(), data.size_bytes());
     };
@@ -918,14 +947,12 @@ void Maxwell3DLane::Draw(bool is_indexed, u32 instance_count) {
     if (auto& workers = PlanWorkers::Get(); workers.Active() && GpuSplit::OnMethodLane()) {
         const u64 seq = workers.NextSeq();
         Send(ReadsDraw, [this, is_indexed, instance_count, seq] {
-            const bool planned = CheckPlan(seq);
-            if (planned) {
-                PlanWorkers::SetCurrentPlan(&current_plan);
-            }
+            PlanWorkers::SetCurrentPlan(CheckPlan(seq));
             if (mirror.ShouldExecute()) {
                 rasterizer->Draw(is_indexed, instance_count);
             }
             PlanWorkers::SetCurrentPlan(nullptr);
+            PlanWorkers::Get().NoteProcessed(seq);
         });
         workers.PushDraw(this, seq);
         return;
@@ -938,17 +965,17 @@ void Maxwell3DLane::Draw(bool is_indexed, u32 instance_count) {
     });
 }
 
-bool Maxwell3DLane::CheckPlan(u64 seq) {
+const DrawPlan* Maxwell3DLane::CheckPlan(u64 seq) {
     auto& workers = PlanWorkers::Get();
-    const bool found = workers.TakePlan(seq, current_plan);
+    const DrawPlan* const plan = workers.TakePlan(seq);
     bool matched = false;
-    if (found && PlanWorkers::Verify()) {
-        matched = current_plan.digest ==
-                  MirrorDigestOf(mirror, std::span<const u16>{current_plan.unknown.data(),
-                                                              current_plan.num_unknown});
+    if (plan != nullptr && PlanWorkers::Verify()) {
+        matched = plan->digest ==
+                  MirrorDigestOf(mirror, std::span<const u16>{plan->unknown.data(),
+                                                              plan->num_unknown});
     }
-    workers.NoteDraw(found, matched);
-    return found;
+    workers.NoteDraw(plan != nullptr, matched);
+    return plan;
 }
 
 void Maxwell3DLane::DrawIndirect() {

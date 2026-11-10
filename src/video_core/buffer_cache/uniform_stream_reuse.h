@@ -10,10 +10,19 @@
 #include <cstring>
 #include <span>
 #include <type_traits>
+#include <utility>
 
+#include "common/cityhash.h"
 #include "common/common_types.h"
 
 namespace VideoCommon {
+
+/// The hash plan workers give a small uniform buffer's bytes (DrawPlan::Uniform).
+[[nodiscard]] inline std::pair<u64, u64> UniformBytesHash(const void* data, size_t size) {
+    const char* const bytes = static_cast<const char*>(data);
+    return {Common::CityHash64WithSeed(bytes, size, 0x9e3779b97f4a7c15ULL),
+            Common::CityHash64WithSeed(bytes, size, 0xc2b2ae3d27d4eb4fULL)};
+}
 
 /// What a buffer cache runtime offers for stream uniform reuse.
 ///  - StreamUniformRef: a small trivially copyable description of one stream allocation (the
@@ -63,6 +72,10 @@ public:
         u64 tick{};
         u64 device_addr{}; ///< Where `bytes` were last read
         u32 size{};        // 0: nothing streamed yet
+        /// Whether hash_* is the hash of `bytes` (UniformBytesHash), filled from a plan.
+        bool hashed{};
+        u64 hash_low{};
+        u64 hash_high{};
         std::array<u8, MaxBytes> bytes{};
     };
 
@@ -95,14 +108,26 @@ inline void ResetUniformStreamReuse() noexcept {
     }
 }
 
+/// A plan worker's hash of the bytes a uniform buffer holds for the draw (PlanWorkers), and,
+/// with EDEN_NX2_PREP_PLAN_VERIFY, the counts of the checks of it.
+struct PlannedUniformHash {
+    u64 low;
+    u64 high;
+    bool verify;
+    u64* verified;
+    u64* differed;
+};
+
 /// Binds the small uniform buffer at `device_addr` for (stage, cbuf `index`) through the stream
 /// buffer, reusing the slot's previous allocation when the bytes and the command buffer are the
-/// same. Returns false (nothing bound) when the buffer does not qualify, so the caller binds it
-/// the classic way.
+/// same. With `planned`, the bytes are known the same when their hash is the slot's (no compare).
+/// Returns false (nothing bound) when the buffer does not qualify, so the caller binds it the
+/// classic way.
 template <class Runtime, class DeviceMemory>
 [[nodiscard]] bool BindSmallUniformReusing(Runtime& runtime, DeviceMemory& device_memory,
                                            size_t stage, u32 index, u32 binding_index,
-                                           u64 device_addr, u32 size) {
+                                           u64 device_addr, u32 size,
+                                           const PlannedUniformHash* planned = nullptr) {
     using Reuse = UniformStreamReuse<typename Runtime::StreamUniformRef>;
     if (size == 0 || size > Reuse::MaxBytes || stage >= Reuse::NumStages ||
         index >= Reuse::NumSlots) {
@@ -113,14 +138,33 @@ template <class Runtime, class DeviceMemory>
     // Guest memory in one piece of host memory (most of these buffers lie within a page) is
     // compared where it is; other ranges are gathered into scratch first.
     const u8* guest = nullptr;
-    if constexpr (requires { device_memory.GetSpan(device_addr, size_t{size}); }) {
-        guest = device_memory.GetSpan(device_addr, size_t{size});
+    const auto read_guest = [&] {
+        if (guest != nullptr) {
+            return;
+        }
+        if constexpr (requires { device_memory.GetSpan(device_addr, size_t{size}); }) {
+            guest = device_memory.GetSpan(device_addr, size_t{size});
+        }
+        if (guest == nullptr) {
+            device_memory.ReadBlockUnsafe(device_addr, reuse.scratch.data(), size);
+            guest = reuse.scratch.data();
+        }
+    };
+    bool same_bytes;
+    if (planned != nullptr && !planned->verify) {
+        same_bytes = slot.hashed && slot.size == size && slot.hash_low == planned->low &&
+                     slot.hash_high == planned->high;
+    } else {
+        read_guest();
+        same_bytes = slot.size == size && std::memcmp(slot.bytes.data(), guest, size) == 0;
     }
-    if (guest == nullptr) {
-        device_memory.ReadBlockUnsafe(device_addr, reuse.scratch.data(), size);
-        guest = reuse.scratch.data();
+    bool hash_holds = planned != nullptr;
+    if (planned != nullptr && planned->verify) [[unlikely]] {
+        // The bytes decide; the plan's hash is checked against them.
+        const auto [low, high] = UniformBytesHash(guest, size);
+        hash_holds = low == planned->low && high == planned->high;
+        ++*(hash_holds ? planned->verified : planned->differed);
     }
-    const bool same_bytes = slot.size == size && std::memcmp(slot.bytes.data(), guest, size) == 0;
     slot.device_addr = device_addr;
     if (same_bytes && slot.tick == runtime.CurrentTick()) {
         runtime.RebindStreamUniform(slot.ref, size);
@@ -130,8 +174,14 @@ template <class Runtime, class DeviceMemory>
     if (!same_bytes) {
         // The slot takes the bytes first and the stream gets the slot's: the guest may write its
         // memory meanwhile, and the slot must hold what its allocation holds.
+        read_guest();
         slot.size = size;
         std::memcpy(slot.bytes.data(), guest, size);
+        slot.hashed = hash_holds;
+        if (hash_holds) {
+            slot.hash_low = planned->low;
+            slot.hash_high = planned->high;
+        }
     }
     const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
     std::memcpy(span.data(), slot.bytes.data(), size);
