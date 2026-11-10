@@ -676,6 +676,22 @@ TEST_CASE("Shader cache v2: a log is built record by record", "[video_core][shad
     discarded.Discard();
     REQUIRE_FALSE(std::filesystem::exists(other));
     REQUIRE_FALSE(std::filesystem::exists(temp.path / "other.bin.migrating"));
+
+    // Enough records that the buffer is written out more than once: the whole point of the
+    // builder, since a source of this size used to be held in memory before it was written
+    const auto large_file = temp.path / "large.bin";
+    V2::LogBuilder large;
+    REQUIRE(large.Start(large_file) == V2::WriteResult::Written);
+    std::vector<Written> many;
+    for (u64 i = 0; i < 40; ++i) {
+        std::vector<u8> payload(256 * 1024, static_cast<u8>(i));
+        REQUIRE(large.Append(RecordKind::Used, 0x100 + i, payload));
+        many.push_back({RecordKind::Used, 0x100 + i, std::move(payload)});
+    }
+    REQUIRE(large.Commit() == V2::WriteResult::Written);
+    const V2::LogFile large_log = V2::ReadLogFile(large_file);
+    REQUIRE(Live(large_log.parsed) == many);
+    REQUIRE(large_log.parsed.stats.dead_bytes == 0);
 }
 
 #ifndef _WIN32

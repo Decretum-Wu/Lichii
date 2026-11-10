@@ -220,6 +220,9 @@ WriteResult CompactLog(const std::filesystem::path& file, const CompactLimit& li
     return ReplaceFile(file, bytes);
 }
 
+// Out of line so that a caller does not need the complete type of the lock it holds
+LogBuilder::LogBuilder() = default;
+
 LogBuilder::~LogBuilder() {
     Discard();
 }

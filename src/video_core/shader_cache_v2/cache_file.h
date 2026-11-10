@@ -78,7 +78,7 @@ struct CompactLimit {
 /// memory, not the whole source written out twice.
 class LogBuilder {
 public:
-    LogBuilder() = default;
+    LogBuilder();
     ~LogBuilder();
 
     LogBuilder(const LogBuilder&) = delete;
