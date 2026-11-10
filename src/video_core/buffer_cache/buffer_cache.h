@@ -3768,7 +3768,9 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     OutdateReadDownloads(device_addr, size);
     NoteReadBackWrite(device_addr, size);
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
-    NoteUniformWrite(device_addr, size);
+    // Not for plans: guest memory, which planned uniform hashes stand for, changes only when
+    // the download lands (WriteDownloadedMemory logs it).
+    NoteUniformWrite(device_addr, size, false);
     MarkVertexBuffersStale(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
     QueueFenceDownload(device_addr, size);

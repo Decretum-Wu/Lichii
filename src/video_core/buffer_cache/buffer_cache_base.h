@@ -817,8 +817,10 @@ private:
     /// the delta chain.
     [[nodiscard]] bool UniformRangeKept(size_t stage, u32 index, DAddr device_addr,
                                         u32 size) const noexcept;
-    void NoteUniformWrite(DAddr device_addr, u64 size) {
-        NotePlanWrite(device_addr, size);
+    void NoteUniformWrite(DAddr device_addr, u64 size, bool plan_write = true) {
+        if (plan_write) {
+            NotePlanWrite(device_addr, size);
+        }
         UniformKeep& keep = uniform_keep;
         if (keep.memory_writes.size() == keep.memory_writes.capacity()) {
             keep.memory_writes_lost = true;
@@ -827,40 +829,42 @@ private:
         keep.memory_writes.emplace_back(device_addr, device_addr + size);
     }
     /// Plan workers: guest memory the caches were told about being written (CPU writes, engine
-    /// writes, copies, downloads), each with the preparation lane's progress then
-    /// (PlanWorkers::ProcessedSeq). Under the cache's mutex.
+    /// writes, copies, downloads), by page: each bucket of pages holds the preparation lane's
+    /// progress at the last write to one of them (PlanWorkers::ProcessedSeq). Under the cache's
+    /// mutex.
     void NotePlanWrite(DAddr device_addr, u64 size) {
-        if (!VideoCommon::PlanWorkers::Get().Active()) [[likely]] {
+        if (!VideoCommon::PlanWorkers::Get().Active() || size == 0) [[likely]] {
             return;
         }
-        PlanWrite& write = plan_writes[plan_writes_count % plan_writes.size()];
-        write = {VideoCommon::PlanWorkers::Get().ProcessedSeq(), device_addr, device_addr + size};
-        ++plan_writes_count;
+        const u64 seq = VideoCommon::PlanWorkers::Get().ProcessedSeq();
+        const u64 first = device_addr >> PlanWritePageBits;
+        const u64 last = (device_addr + size - 1) >> PlanWritePageBits;
+        if (last - first >= plan_write_seqs.size()) {
+            plan_write_all = seq;
+            return;
+        }
+        for (u64 page = first; page <= last; ++page) {
+            plan_write_seqs[page % plan_write_seqs.size()] = seq;
+        }
     }
     /// Whether [device_addr, +size) may have been written since the preparation lane was done
-    /// with draw `seq` (all of the log is newer: it can't tell).
+    /// with draw `seq`.
     [[nodiscard]] bool PlanWrittenSince(u64 seq, DAddr device_addr, u64 size) const noexcept {
-        for (u64 i = plan_writes_count; i > 0; --i) {
-            if (plan_writes_count - i >= plan_writes.size()) {
-                return true;
-            }
-            const PlanWrite& write = plan_writes[(i - 1) % plan_writes.size()];
-            if (write.seq < seq) {
-                return false;
-            }
-            if (write.begin < device_addr + size && device_addr < write.end) {
+        if (plan_write_all >= seq) {
+            return true;
+        }
+        const u64 first = device_addr >> PlanWritePageBits;
+        const u64 last = (device_addr + size - 1) >> PlanWritePageBits;
+        for (u64 page = first; page <= last; ++page) {
+            if (plan_write_seqs[page % plan_write_seqs.size()] >= seq) {
                 return true;
             }
         }
         return false;
     }
-    struct PlanWrite {
-        u64 seq;
-        DAddr begin;
-        DAddr end;
-    };
-    std::array<PlanWrite, 512> plan_writes{};
-    u64 plan_writes_count{};
+    static constexpr u64 PlanWritePageBits = 12;
+    std::array<u64, 8192> plan_write_seqs{};
+    u64 plan_write_all{};
     /// EDEN_NX2_UBO_KEEP_VERIFY=1: binds what a keep would skip the original way and logs where
     /// guest memory changed.
     const bool ubo_keep_verify = [] {
