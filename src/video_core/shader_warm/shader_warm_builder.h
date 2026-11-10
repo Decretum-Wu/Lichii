@@ -66,8 +66,9 @@ struct WarmStamp {
 };
 
 /// A hash of this build's sources that shape the SPIR-V of guest shaders (the recompiler without
-/// its OpenGL backends and the native lowering), made when it is built. It changes only with a
-/// build that may emit other SPIR-V, unlike the revision.
+/// its OpenGL backends, the native lowering and the Vulkan wrapper that calls the SPIR-V backend),
+/// made when it is built. It changes only with a build that may emit other SPIR-V, unlike the
+/// revision.
 [[nodiscard]] u64 EmissionStamp();
 
 /// The stamp of `warm_file` as it is now, empty when it cannot be read.
