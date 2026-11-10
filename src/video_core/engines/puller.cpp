@@ -20,6 +20,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/engines/puller.h"
+#include "video_core/front_qmd.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
@@ -167,6 +168,22 @@ ViewAnswer AskView(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
     // Another acquire holds only for the value the word has when the channel reaches it. Compute
     // and copy work sent before it may still release the word without the front's knowing (QMD
     // releases): a value that meets it stands once the back ran that work.
+    // It stands as well once the back ran every write to the word the front did not note: with
+    // the QMD view current, every queued signal was valued and its releases noted
+    // (QueuedSemaphoreWriteAt), and copies, inline uploads and late-valued releases are placed.
+    // At Ocarina of Time's water, ~540 equal acquires a second waited ~0.5 ms each for compute
+    // work whose releases the front knew.
+    const auto unnoted_writes_ran = [&](u64 noted_position) {
+        if (!VideoCommon::FrontQmdView::Get().Current() ||
+            !split.Ran(split.LastUnplacedWrite()) || !split.Ran(split.LastMappingChange())) {
+            return false;
+        }
+        // A noted release is placed too (copy engine semaphores): at its own position it is the
+        // write QueuedSemaphoreWriteAt reports.
+        const u64 placed =
+            split.PlacedWritesTarget(dma_pusher.memory_manager, acquire.address, sizeof(u32));
+        return placed <= noted_position || split.Ran(placed);
+    };
     const bool settled = acquire.WaitsToReach() || split.Ran(acquire.writers_before);
     // The last release the front sent to the word decides while it may not be in memory.
     const auto queued = split.QueuedSemaphoreWriteAt(device);
@@ -192,7 +209,8 @@ ViewAnswer AskView(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
         if (!acquire.Matches(queued->payload)) {
             return {Kind::NotMet};
         }
-        if (settled || queued->position >= acquire.writers_before) {
+        if (settled || queued->position >= acquire.writers_before ||
+            unnoted_writes_ran(queued->position)) {
             return {Kind::MetByQueued};
         }
         return {Kind::Unknown, acquire.writers_before};
@@ -200,7 +218,9 @@ ViewAnswer AskView(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
     if (!acquire.Matches(memory())) {
         return {Kind::NotMet};
     }
-    return settled ? ViewAnswer{Kind::Met} : ViewAnswer{Kind::Unknown, acquire.writers_before};
+    return settled || unnoted_writes_ran(0)
+               ? ViewAnswer{Kind::Met}
+               : ViewAnswer{Kind::Unknown, acquire.writers_before};
 }
 
 // Has the back flush the word out of the buffer cache after the work sent before: memory holds
