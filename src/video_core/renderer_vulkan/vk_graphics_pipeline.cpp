@@ -984,6 +984,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }
         delta_views_valid = true;
         kept_images_valid = false;
+        NextDeltaGeneration();
     }
     if (captured_delta) {
         kept_image_entries.clear();
@@ -1209,6 +1210,8 @@ void GraphicsPipeline::TakeDeltaStateFrom(GraphicsPipeline& other) noexcept {
     kept_scale_epoch = other.kept_scale_epoch;
     delta_views_valid = std::exchange(other.delta_views_valid, false);
     kept_images_valid = std::exchange(other.kept_images_valid, false);
+    NextDeltaGeneration();
+    other.NextDeltaGeneration();
 }
 
 bool GraphicsPipeline::ReadRawHandles(std::vector<u32>& out) const {
@@ -1284,6 +1287,7 @@ std::optional<u32> GraphicsPipeline::RetextureDelta() {
     // The kept descriptors and rescaling words are for the old views: ConfigureDelta pushes and
     // keeps them again.
     kept_images_valid = false;
+    NextDeltaGeneration();
     return static_cast<u32>(changed.size());
 }
 

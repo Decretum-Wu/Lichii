@@ -375,10 +375,27 @@ public:
     /// Takes what `other` (SharesDeltaStateWith) kept for delta draws; `other` keeps nothing.
     void TakeDeltaStateFrom(GraphicsPipeline& other) noexcept;
 
+    /// Changes whenever what the pipeline keeps for delta draws changes (a captured Configure,
+    /// RetextureDelta resolving some views, TakeDeltaStateFrom on either side), unique among
+    /// pipelines: a remembered draw of the pipeline stands for what it keeps only while equal.
+    [[nodiscard]] u64 DeltaGeneration() const noexcept {
+        return delta_generation;
+    }
+
     /// Whether RetextureDelta can bring the kept views up to date: every handle is a constant
     /// buffer word (no texture or image buffers, images or computed handles).
     [[nodiscard]] bool CanRetexture() const noexcept {
         return texture_memo_eligible && TakesDeltaDraws();
+    }
+    /// ConfigureDelta keeps the texture buffers bound, which a draw of another pipeline may have
+    /// left in this one's stages (the rasterizer's RevisitDraw). CanRetexture pipelines bind
+    /// none: unbinds them, as Configure does.
+    void UnbindStageTextureBuffers() {
+        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+            if (configured_stages[stage]) {
+                buffer_cache.UnbindGraphicsTextureBuffers(stage);
+            }
+        }
     }
     /// Delta draws after texture handle writes or rebinds: reads every handle again and resolves
     /// the views and samplers of those that changed, keeping the others; the next ConfigureDelta
@@ -456,6 +473,12 @@ private:
     bool writes_images{};
 
     DeltaBlocker delta_blocker{};
+    /// DeltaGeneration, from a counter all pipelines share (only the drawing thread bumps it).
+    void NextDeltaGeneration() noexcept {
+        delta_generation = ++delta_generations;
+    }
+    inline static u64 delta_generations{};
+    u64 delta_generation{};
     bool delta_views_valid{};
     bool capture_delta{};
     bool verify_delta{};

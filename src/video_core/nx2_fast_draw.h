@@ -34,7 +34,10 @@ class MemoryManager;
 /// GpuSplit::FastDrawNeutral), GPU::TickWork requests, texture cache writes, unmaps and
 /// deletions, shader removals, fence releases, HLE macros and frames. The rasterizer takes the
 /// delta path only while the serial, the GPU memory map, the command buffer, the render pass and
-/// the bound pipeline are the ones the previous draw left.
+/// the bound pipeline are the ones the previous draw left. A draw of another pipeline (or after a
+/// draw that can't be followed) takes it with what that pipeline kept at its own last draw while
+/// the memory serial, the map, the command buffer, the render pass and the texture pool registers
+/// are the ones that draw left, reading every texture handle again (RevisitDraws).
 /// EDEN_NX2_FAST_DRAW_VERIFY=1 resolves those draws in full and counts where the pipeline, views,
 /// samplers or kept buffer bindings differ.
 namespace VideoCommon::Nx2FastDraw {
@@ -262,26 +265,38 @@ inline u64 MemorySerial() {
 /// types) looks its pipeline up and keeps the previous draw's views, samplers and image
 /// descriptors when that pipeline resolves them alike. EDEN_NX2_TEST_RELOOKUP=0 (TEST): such
 /// draws resolve in full.
-/// TEST: EDEN_NX2_TEST_TOGGLE_FILE=<path> turns the switches under test off while that file
-/// exists (the drawing thread looks every 1024 draws), so one run compares both.
-inline bool g_test_toggled{};
 [[nodiscard]] inline bool RelookupDraws() {
     static const bool relookup = [] {
         const char* value = std::getenv("EDEN_NX2_TEST_RELOOKUP");
         return value == nullptr || value[0] != '0';
     }();
-    return relookup && !g_test_toggled;
+    return relookup;
 }
 
 /// Whether a draw after texture handle writes or rebinds reads the handles again and resolves
 /// only the ones that changed, keeping the rest as a delta draw does. EDEN_NX2_TEST_RETEXTURE=0
-/// (TEST): such draws resolve in full; EDEN_NX2_TEST_TOGGLE_FILE turns it off too.
+/// (TEST): such draws resolve in full.
 [[nodiscard]] inline bool RetextureDraws() {
     static const bool retexture = [] {
         const char* value = std::getenv("EDEN_NX2_TEST_RETEXTURE");
         return value == nullptr || value[0] != '0';
     }();
-    return retexture && !g_test_toggled;
+    return retexture;
+}
+
+/// Whether a draw whose pipeline differs from the previous draw's (or follows a draw that can't
+/// be followed by delta draws) keeps what that pipeline resolved at its own last recorded draw,
+/// while no memory, mapping, texture pool register, command buffer or render pass changed since
+/// (the rasterizer's RevisitDraw). EDEN_NX2_TEST_REVISIT=0 (TEST): such draws resolve in full.
+/// TEST: EDEN_NX2_TEST_TOGGLE_FILE=<path> turns it off while that file exists (the drawing thread
+/// looks every 1024 draws), so one run compares both.
+inline bool g_test_toggled{};
+[[nodiscard]] inline bool RevisitDraws() {
+    static const bool revisit = [] {
+        const char* value = std::getenv("EDEN_NX2_TEST_REVISIT");
+        return value == nullptr || value[0] != '0';
+    }();
+    return revisit && !g_test_toggled;
 }
 
 /// The device memory a GPU range maps to. A write through another GPU address that maps the

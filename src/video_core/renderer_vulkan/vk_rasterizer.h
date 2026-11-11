@@ -410,6 +410,7 @@ private:
         u64 map_serial{};
         u64 tick{};
         u64 render_pass{};
+        u64 generation{}; ///< pipeline->DeltaGeneration() after the draw
         TextureRegisters texture_registers{};
         Maxwell::PrimitiveTopology topology{};
         bool is_indexed{};
@@ -478,7 +479,20 @@ private:
         u64 retexture_unchanged{};
         u64 retexture_resolved{};
         u64 retexture_failed{};
+        /// Draws that came back to their pipeline's own last draw (RevisitDraw), and the ones
+        /// that couldn't by why (RevisitMiss).
+        u64 revisits{};
+        std::array<u64, 8> revisit_misses{};
         u64 window_start{};
+    };
+    /// Why RevisitDraw couldn't keep what the pipeline resolved at its last recorded draw.
+    enum RevisitMiss : size_t {
+        RevisitNoDraw,     ///< none remembered, or the pipeline kept other state since
+        RevisitPipeline,   ///< takes no delta draws, or its handles aren't all constant buffer words
+        RevisitMemory,     ///< memory or mappings changed since
+        RevisitSubmitted,  ///< another command buffer or render pass
+        RevisitTextures,   ///< other texture pool registers, or transform feedback
+        RevisitKind,       ///< indirect, inline index or frame dump draws
     };
     /// The pipeline of a draw resolved in full: a plan worker's (PlanWorkers) when it still holds,
     /// else CurrentGraphicsPipeline.
@@ -495,12 +509,25 @@ private:
                          u64 map_serial);
     void NoteResolvedDraw(GraphicsPipeline* pipeline, bool is_indexed, bool is_indirect, u64 serial,
                           u64 memory_serial, u64 map_serial);
+    /// For a draw TakeReusableDraw found no delta draw for (no candidate, another pipeline, state
+    /// changes): whether `pipeline` can take the delta path with what it kept at its own last
+    /// recorded draw (revisit_draws), nothing those views were resolved from having changed since
+    /// but its texture handles, which the draw reads again (taken_retexture). Sets taken_draw.
+    bool RevisitDraw(GraphicsPipeline* pipeline, bool is_indirect);
     void ReportFastDraws();
     ReusableDraw reusable_draw;
     ReusableDraw taken_draw; ///< The draw TakeReusableDraw last returned the pipeline of
     bool taken_relookup{};
     /// The draw reads its texture handles again (GraphicsPipeline::RetextureDelta).
     bool taken_retexture{};
+    /// The draw keeps what its pipeline resolved at its own last draw (RevisitDraw).
+    bool taken_revisit{};
+    /// Each pipeline's last recorded draw (direct-mapped by the pipeline's address).
+    std::array<ReusableDraw, 256> revisit_draws{};
+    [[nodiscard]] static size_t RevisitSlot(const GraphicsPipeline* pipeline) noexcept {
+        return static_cast<size_t>((reinterpret_cast<uintptr_t>(pipeline) >> 4) *
+                                   0x9E3779B97F4A7C15ULL >> 56);
+    }
     FullDraw last_full_reason{}; ///< TEST: why the draw resolves in full (FastDrawStats::full_ns)
     u32 toggle_checks{};         ///< TEST: draws since EDEN_NX2_TEST_TOGGLE_FILE was looked at
     /// Device memory of the constant buffers TakeReusableDraw checks for texture handle writes.
