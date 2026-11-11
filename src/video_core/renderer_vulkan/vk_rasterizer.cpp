@@ -1338,6 +1338,20 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
                 return true;
             }
             computed_checked = true;
+            if (FastDraw::RetextureComputedOnce()) {
+                const std::optional<u32> resolved = delta_pipeline->RetextureComputed();
+                if (!resolved) {
+                    ++fast_draw_stats.retexture_failed;
+                    ++fast_draw_stats.full[static_cast<size_t>(FullDraw::HandleData)];
+                    last_full_reason = FullDraw::HandleData;
+                    return false;
+                }
+                if (*resolved != 0) {
+                    ++fast_draw_stats.retexture_computed;
+                    ++fast_draw_stats.retexture_resolved;
+                }
+                return true;
+            }
             if (!delta_pipeline->ComputedHandlesChanged()) {
                 return true;
             }

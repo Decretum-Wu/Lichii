@@ -300,15 +300,26 @@ inline u64 MemorySerial() {
 /// from two words (the views of the ones that changed are resolved instead of every view).
 /// EDEN_NX2_TEST_RETEXTURE_COMPUTED=0 (TEST): only pipelines whose handles are all single
 /// constant buffer words.
-/// TEST: EDEN_NX2_TEST_TOGGLE_FILE=<path> turns it off while that file exists (the drawing thread
-/// looks every 1024 draws), so one run compares both.
-inline bool g_test_toggled{};
 [[nodiscard]] inline bool RetextureComputedDraws() {
     static const bool computed = [] {
         const char* value = std::getenv("EDEN_NX2_TEST_RETEXTURE_COMPUTED");
         return value == nullptr || value[0] != '0';
     }();
-    return computed && !g_test_toggled;
+    return computed;
+}
+
+/// Whether a delta draw after which only computed handles can have changed evaluates them once
+/// and resolves only theirs (GraphicsPipeline::RetextureComputed), instead of checking them and
+/// then reading every handle again. EDEN_NX2_TEST_RETEXTURE_ONCE=0 (TEST): the latter.
+/// TEST: EDEN_NX2_TEST_TOGGLE_FILE=<path> turns it off while that file exists (the drawing thread
+/// looks every 1024 draws), so one run compares both.
+inline bool g_test_toggled{};
+[[nodiscard]] inline bool RetextureComputedOnce() {
+    static const bool once = [] {
+        const char* value = std::getenv("EDEN_NX2_TEST_RETEXTURE_ONCE");
+        return value == nullptr || value[0] != '0';
+    }();
+    return once && !g_test_toggled;
 }
 
 /// The device memory a GPU range maps to. A write through another GPU address that maps the

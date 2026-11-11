@@ -1333,15 +1333,114 @@ std::optional<u32> GraphicsPipeline::RetextureDelta() {
         return std::nullopt;
     }
     small_vector<u32, 16> changed;
+    small_vector<u32, 16> raws;
     for (u32 element = 0; element < retexture_handles.size(); ++element) {
         if (retexture_handles[element] != delta_raw_handles[element]) {
             changed.push_back(element);
+            raws.push_back(retexture_handles[element]);
         }
     }
+    retexture_handles.clear();
     if (changed.empty()) {
-        retexture_handles.clear();
         return 0U;
     }
+    if (!ResolveChangedViews(std::span(changed.data(), changed.size()),
+                             std::span(raws.data(), raws.size()))) {
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < retexture_computed.size(); ++i) {
+        delta_computed_handles[i].value = retexture_computed[i];
+    }
+    return static_cast<u32>(changed.size());
+}
+
+bool GraphicsPipeline::ComputedHandlesChanged() const {
+    return std::ranges::any_of(delta_computed_handles, [this](const ComputedHandle& handle) {
+        return EvaluateComputedHandle(handle) != handle.value;
+    });
+}
+
+u32 GraphicsPipeline::EvaluateComputedHandle(const ComputedHandle& handle) const {
+    const Shader::Info& info{stage_infos[handle.stage]};
+    const auto& cbufs{maxwell3d->state.shader_stages[handle.stage].const_buffers};
+    u32 program{};
+    switch (handle.kind) {
+    case TextureBuffer:
+        program = info.texture_buffer_descriptors[handle.descriptor].handle_program;
+        break;
+    case ImageBuffer:
+        program = info.image_buffer_descriptors[handle.descriptor].handle_program;
+        break;
+    case Texture:
+        program = info.texture_descriptors[handle.descriptor].handle_program;
+        break;
+    default:
+        program = info.image_descriptors[handle.descriptor].handle_program;
+        break;
+    }
+    // As ConfigureImpl's read_handle computes it.
+    return VideoCommon::EvaluateTextureHandle(
+        info, program, *gpu_memory,
+        [&](u32 cbuf) -> GPUVAddr {
+            return cbuf < cbufs.size() && cbufs[cbuf].enabled ? cbufs[cbuf].address : GPUVAddr{};
+        },
+        device.GetStorageBufferAlignment());
+}
+
+std::optional<u32> GraphicsPipeline::RetextureComputed() {
+    if (!CanRetexture() || delta_raw_handles.size() != delta_views.size() ||
+        delta_samplers.size() != delta_views.size()) {
+        return std::nullopt;
+    }
+    small_vector<std::pair<size_t, u32>, 8> changed_handles;
+    for (size_t i = 0; i < delta_computed_handles.size(); ++i) {
+        const u32 value = EvaluateComputedHandle(delta_computed_handles[i]);
+        if (value != delta_computed_handles[i].value) {
+            changed_handles.emplace_back(i, value);
+        }
+    }
+    if (changed_handles.empty()) {
+        return 0U;
+    }
+    // The elements of each changed handle's descriptor, in delta_views' order (ReadRawHandles):
+    // the configured stages' texture descriptors one after another, an element per array entry.
+    small_vector<u32, 16> elements;
+    small_vector<u32, 16> raws;
+    for (const auto& [index, value] : changed_handles) {
+        const ComputedHandle& handle = delta_computed_handles[index];
+        if (handle.kind != Texture || !configured_stages[handle.stage]) {
+            return std::nullopt;
+        }
+        u32 first = 0;
+        for (size_t stage = 0; stage < handle.stage; ++stage) {
+            if (configured_stages[stage]) {
+                first += Shader::NumDescriptors(stage_infos[stage].texture_descriptors);
+            }
+        }
+        const auto& descriptors = stage_infos[handle.stage].texture_descriptors;
+        for (u16 descriptor = 0; descriptor < handle.descriptor; ++descriptor) {
+            first += descriptors[descriptor].count;
+        }
+        for (u32 element = 0; element < descriptors[handle.descriptor].count; ++element) {
+            if (first + element >= delta_views.size()) {
+                return std::nullopt;
+            }
+            elements.push_back(first + element);
+            raws.push_back(value);
+        }
+    }
+    if (!ResolveChangedViews(std::span(elements.data(), elements.size()),
+                             std::span(raws.data(), raws.size()))) {
+        return std::nullopt;
+    }
+    for (const auto& [index, value] : changed_handles) {
+        delta_computed_handles[index].value = value;
+    }
+    return static_cast<u32>(elements.size());
+}
+
+bool GraphicsPipeline::ResolveChangedViews(std::span<const u32> elements,
+                                           std::span<const u32> raws) {
     const bool via_header_index{maxwell3d->regs.sampler_binding ==
                                 Maxwell::SamplerBinding::ViaHeaderBinding};
     // Resolving a view can delete or rescale images (both break the fast draw serial) the views
@@ -1349,65 +1448,25 @@ std::optional<u32> GraphicsPipeline::RetextureDelta() {
     const u64 serial = VideoCommon::Nx2FastDraw::Serial();
     small_vector<VideoCommon::ImageViewInOut, 16> views;
     small_vector<VideoCommon::SamplerId, 16> samplers;
-    for (const u32 element : changed) {
-        const auto [image_index, sampler_index] =
-            TexturePair(retexture_handles[element], via_header_index);
+    for (const u32 raw : raws) {
+        const auto [image_index, sampler_index] = TexturePair(raw, via_header_index);
         views.push_back({image_index});
         samplers.push_back(texture_cache.GetSamplerId(sampler_index, false));
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), false, false);
     if (VideoCommon::Nx2FastDraw::Serial() != serial) {
-        retexture_handles.clear();
-        return std::nullopt;
+        return false;
     }
-    for (size_t i = 0; i < changed.size(); ++i) {
-        delta_views[changed[i]] = views[i];
-        delta_samplers[changed[i]] = samplers[i];
-    }
-    delta_raw_handles.swap(retexture_handles);
-    retexture_handles.clear();
-    for (size_t i = 0; i < retexture_computed.size(); ++i) {
-        delta_computed_handles[i].value = retexture_computed[i];
+    for (size_t i = 0; i < elements.size(); ++i) {
+        delta_views[elements[i]] = views[i];
+        delta_samplers[elements[i]] = samplers[i];
+        delta_raw_handles[elements[i]] = raws[i];
     }
     // The kept descriptors and rescaling words are for the old views: ConfigureDelta pushes and
     // keeps them again.
     kept_images_valid = false;
     NextDeltaGeneration();
-    return static_cast<u32>(changed.size());
-}
-
-bool GraphicsPipeline::ComputedHandlesChanged() const {
-    for (const ComputedHandle& handle : delta_computed_handles) {
-        const Shader::Info& info{stage_infos[handle.stage]};
-        const auto& cbufs{maxwell3d->state.shader_stages[handle.stage].const_buffers};
-        u32 program{};
-        switch (handle.kind) {
-        case TextureBuffer:
-            program = info.texture_buffer_descriptors[handle.descriptor].handle_program;
-            break;
-        case ImageBuffer:
-            program = info.image_buffer_descriptors[handle.descriptor].handle_program;
-            break;
-        case Texture:
-            program = info.texture_descriptors[handle.descriptor].handle_program;
-            break;
-        default:
-            program = info.image_descriptors[handle.descriptor].handle_program;
-            break;
-        }
-        // As ConfigureImpl's read_handle computes it.
-        const u32 value{VideoCommon::EvaluateTextureHandle(
-            info, program, *gpu_memory,
-            [&](u32 cbuf) -> GPUVAddr {
-                return cbuf < cbufs.size() && cbufs[cbuf].enabled ? cbufs[cbuf].address
-                                                                  : GPUVAddr{};
-            },
-            device.GetStorageBufferAlignment())};
-        if (value != handle.value) {
-            return true;
-        }
-    }
-    return false;
+    return true;
 }
 
 bool GraphicsPipeline::ConfigureDelta(bool is_indexed) {

@@ -429,6 +429,11 @@ public:
     /// many it resolved, or nothing (the draw resolves in full) when the handles can't be read or
     /// resolving deleted or rescaled images the kept views may sample.
     std::optional<u32> RetextureDelta();
+    /// RetextureDelta for a delta draw after which only handles computed at draw time can have
+    /// changed (no constant buffer of handles was bound or written): evaluates those once and
+    /// resolves only their descriptors' views. Returns how many views it resolved (0 when none
+    /// changed), or nothing when the draw must resolve in full.
+    std::optional<u32> RetextureComputed();
 
     template <typename Spec>
     static auto MakeConfigureSpecFunc() {
@@ -540,6 +545,12 @@ private:
     };
     enum ComputedHandleKind : u8 { TextureBuffer, ImageBuffer, Texture, Image };
     std::vector<ComputedHandle> delta_computed_handles;
+    /// The value `handle`'s program computes now, as ConfigureImpl's read_handle does.
+    [[nodiscard]] u32 EvaluateComputedHandle(const ComputedHandle& handle) const;
+    /// Resolves the views and samplers of the raw handles `raws` for delta_views' `elements`
+    /// and keeps them (the next ConfigureDelta pushes their descriptors again). False when
+    /// resolving deleted or rescaled images (the fast draw serial changed): nothing kept.
+    bool ResolveChangedViews(std::span<const u32> elements, std::span<const u32> raws);
     /// Delta draws: the image descriptor entries (first entry and count per
     /// stage) and rescaling words pushed for delta_views, which delta draws push again while no
     /// image changed its scale (TextureCache::ScaleEpoch).
