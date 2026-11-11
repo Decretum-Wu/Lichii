@@ -333,6 +333,13 @@ struct BufferCacheTestAccess {
     static u32 CpuMarks(Cache& cache) {
         return cache.memory_tracker.cpu_marks;
     }
+    /// Draws on `channel` from now on.
+    template <class C>
+    static void UseChannel(C& cache, BufferCacheChannelInfo& channel) {
+        cache.channel_state = &channel;
+        cache.maxwell3d = &channel.maxwell3d;
+        cache.gpu_memory = &channel.gpu_memory;
+    }
     static void KeepDraw(KeepCache& cache, BufferCacheChannelInfo& channel,
                          const Nx2FastDraw::Delta* delta, BufferId id, DAddr address,
                          u32 size) {
@@ -2248,4 +2255,87 @@ TEST_CASE("Async read-back counts the reading thread's and the GPU side's waits 
     REQUIRE(counters.reader_waits.load() - reader_waits == 1);
     REQUIRE(counters.gpu_side_waits.load() - gpu_side_waits == 1);
     REQUIRE(f.runtime.host_read_waits == 2);
+}
+
+
+TEST_CASE("Draw packets carry the vertex streams stage A read, and stage B binds those",
+          "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    Access::UseChannel(*f.cache, *f.channel);
+    auto& regs = f.channel->maxwell3d.regs;
+    auto& flags = f.channel->maxwell3d.dirty.flags;
+    const auto set_stream = [&](GPUVAddr address) {
+        auto& stream = regs.vertex_streams[0];
+        stream.enable.Assign(1);
+        stream.stride.Assign(16);
+        stream.address_high = static_cast<u32>(address >> 32);
+        stream.address_low = static_cast<u32>(address);
+        regs.vertex_stream_limits[0].address_high = static_cast<u32>((address + 0xfff) >> 32);
+        regs.vertex_stream_limits[0].address_low = static_cast<u32>(address + 0xfff);
+    };
+    set_stream(0x101000);
+    // A new engine starts with every flag set: only stream 0 changed here.
+    for (u32 index = 0; index < VideoCommon::NUM_VERTEX_BUFFERS; ++index) {
+        flags[VideoCommon::Dirty::VertexBuffer0 + index] = false;
+    }
+    flags[VideoCommon::Dirty::VertexBuffers] = true;
+    flags[VideoCommon::Dirty::VertexBuffer0] = true;
+    VideoCommon::GraphicsBufferPacket packet;
+    packet.Reset(false);
+    f.cache->ReadGraphicsGeometry(packet);
+    REQUIRE_FALSE(flags[VideoCommon::Dirty::VertexBuffers]);
+    REQUIRE_FALSE(flags[VideoCommon::Dirty::VertexBuffer0]);
+    REQUIRE(packet.vertex_resolve == 1);
+    REQUIRE(packet.vertex_rebind == 1);
+    REQUIRE(packet.vertex_streams.size() == 1);
+    REQUIRE(packet.vertex_streams[0].binding.device_addr == 0x11000);
+    REQUIRE(packet.vertex_streams[0].binding.size == 0x1000);
+    REQUIRE(packet.vertex_streams[0].stride == 16);
+
+    // A register write after stage A: stage B binds what the packet holds.
+    set_stream(0x102000);
+    f.cache->UpdateGraphicsBuffers(packet);
+    REQUIRE(f.channel->vertex_buffers[0].device_addr == 0x11000);
+    REQUIRE(f.channel->vertex_buffers[0].buffer_id == f.id);
+    REQUIRE(f.channel->vertex_strides[0] == 16);
+
+    // The flags were taken: the next packet carries no stream.
+    packet.Reset(false);
+    f.cache->ReadGraphicsGeometry(packet);
+    REQUIRE(packet.vertex_streams.empty());
+    REQUIRE(packet.vertex_resolve == 0);
+}
+
+TEST_CASE("Draw packets carry the storage buffers stage A read, and stage B binds those",
+          "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    Access::UseChannel(*f.cache, *f.channel);
+    auto& cbuf = f.channel->maxwell3d.state.shader_stages[0].const_buffers[0];
+    cbuf = {.address = 0x100000, .size = 0x100, .enabled = true};
+    f.Descriptor(0x102000, 0x100);
+    VideoCommon::GraphicsBufferPacket packet;
+    packet.Reset(false);
+    packet.storage_stages = 1;
+    f.cache->BindGraphicsStorageBuffer(packet, 0, 0, 0, 0, true);
+    REQUIRE(packet.storage_buffers.size() == 1);
+    const VideoCommon::Binding binding = packet.storage_buffers[0].binding;
+    REQUIRE(binding.device_addr == 0x12000);
+    REQUIRE(f.cache->ResolveGraphicsStorageBuffer(0, 0, 0, true, ~0U).device_addr == 0x12000);
+
+    // The descriptor changes after stage A: stage B binds the packet's buffer.
+    f.Descriptor(0x103000, 0x100);
+    f.cache->UpdateGraphicsBuffers(packet);
+    REQUIRE(f.channel->enabled_storage_buffers[0] == 1);
+    REQUIRE(f.channel->written_storage_buffers[0] == 1);
+    REQUIRE(f.channel->storage_buffers[0][0].device_addr == 0x12000);
+    REQUIRE(f.channel->storage_buffers[0][0].size == binding.size);
+    REQUIRE(f.channel->storage_buffers[0][0].buffer_id == f.id);
+
+    // A stage the packet leaves out keeps its bindings; a stage it lists without buffers has none.
+    packet.Reset(false);
+    f.cache->UpdateGraphicsBuffers(packet);
+    REQUIRE(f.channel->enabled_storage_buffers[0] == 1);
+    packet.storage_stages = 1;
+    f.cache->UpdateGraphicsBuffers(packet);
+    REQUIRE(f.channel->enabled_storage_buffers[0] == 0);
 }

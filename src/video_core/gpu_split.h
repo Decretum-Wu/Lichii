@@ -261,6 +261,9 @@ public:
 
     /// Makes what was sent visible to the back.
     void Publish();
+    /// Stage B's thread (EDEN_NX2_BACK_STAGES=1) recorded the packets made before the back
+    /// consumed `position` (any thread, in order).
+    void NoteStageBConsumed(u64 position);
     /// The front has nothing to send while it polls suspended channels. A back that ran everything
     /// runs its idle hook (the deferred submit) and sleeps now instead of spinning for more, as it
     /// did when every poll drained (Drain asks for the hook), but without the wait.
@@ -425,6 +428,8 @@ private:
     }
 
     void BackLoop(std::stop_token stop_token);
+    /// The back consumed the entries before `position`.
+    void StoreConsumed(u64 position);
     /// Runs the entry at `entry` (of the `words` published before the ring's end), returns its size.
     size_t Execute(const u64* entry, size_t words);
 

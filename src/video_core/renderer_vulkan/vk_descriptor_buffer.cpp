@@ -84,8 +84,41 @@ void DescriptorBufferRing::TickFrame() {
     }
     chunk_cursor = 0;
     cursor = 0;
+    plan_chunk = 0;
+    plan_cursor = 0;
     ++generation;
     frame_reused = true;
+}
+
+bool DescriptorBufferRing::Plan(VkDeviceSize size) noexcept {
+    const VkDeviceSize needed{Common::AlignUp(size, alignment)};
+    if (needed > chunk_capacity) {
+        return true; // Allocate refuses it without a stall
+    }
+    if (plan_cursor + needed > chunk_capacity) {
+        if (plan_chunk + 1 >= chunks_per_frame) {
+            return false;
+        }
+        ++plan_chunk;
+        plan_cursor = 0;
+    }
+    plan_cursor += needed;
+    return true;
+}
+
+void DescriptorBufferRing::PrepareFrame(Scheduler& scheduler) {
+    if (frame_reused) {
+        scheduler.Wait(frame_ticks[frame_index]);
+        frame_reused = false;
+    }
+}
+
+void DescriptorBufferRing::Rewind() noexcept {
+    chunk_cursor = 0;
+    cursor = 0;
+    plan_chunk = 0;
+    plan_cursor = 0;
+    ++generation;
 }
 
 void DescriptorBufferRing::TouchFrame(Scheduler& scheduler) {
@@ -101,13 +134,20 @@ DescriptorBufferRing::Allocation DescriptorBufferRing::Allocate(Scheduler& sched
         return Allocation{};
     }
     const VkDeviceSize needed{Common::AlignUp(size, alignment)};
-    if (frame_reused) {
-        frame_reused = false;
-        scheduler.Wait(frame_ticks[frame_index]);
-    }
+    PrepareFrame(scheduler);
     if (cursor + needed > chunk_capacity) {
         if (chunk_cursor + 1 < chunks_per_frame) {
             ++chunk_cursor;
+        } else if (VideoCommon::DrawStages::t_stage_b_thread) {
+            // Stage B on its own thread doesn't submit here: stage A plans each packet's
+            // allocation and stalls with B idle before the frame fills (Plan), so this is not
+            // reached. A submit here would also complete the tick A tagged the memory of the
+            // packets in flight with. The draw is skipped and counted instead.
+            if (full_on_stage_b.fetch_add(1, std::memory_order_relaxed) == 0) {
+                LOG_WARNING(Render_Vulkan,
+                            "Descriptor buffer frame full on stage B's thread: draws skipped");
+            }
+            return Allocation{};
         } else {
             LOG_DEBUG(Render_Vulkan, "Descriptor buffer frame exhausted, stalling on the GPU");
             scheduler.Finish();
@@ -119,6 +159,11 @@ DescriptorBufferRing::Allocation DescriptorBufferRing::Allocate(Scheduler& sched
     const size_t chunk{frame_index * chunks_per_frame + chunk_cursor};
     const VkDeviceSize offset{cursor};
     cursor += needed;
+    if (!VideoCommon::DrawStages::t_stage_b_thread) {
+        // B is idle: the plan starts again from where the frame is.
+        plan_chunk = chunk_cursor;
+        plan_cursor = cursor;
+    }
     frame_ticks[frame_index] = scheduler.CurrentTick();
     return Allocation{
         .host = chunk_hosts[chunk] + offset,

@@ -120,6 +120,10 @@ add_library(video_core STATIC
     nx2_cmdpage_diag.h
     nx2_debug_control.cpp
     nx2_debug_control.h
+    nx2_back_stages.cpp
+    nx2_back_stages.h
+    nx2_draw_stages.cpp
+    nx2_draw_stages.h
     nx2_fast_draw.cpp
     nx2_fast_draw.h
     nx2_profile.h
@@ -220,6 +224,7 @@ add_library(video_core STATIC
     renderer_vulkan/vk_descriptor_buffer.h
     renderer_vulkan/vk_descriptor_pool.cpp
     renderer_vulkan/vk_descriptor_pool.h
+    renderer_vulkan/vk_draw_packet.h
     renderer_vulkan/vk_fence_manager.cpp
     renderer_vulkan/vk_fence_manager.h
     renderer_vulkan/vk_frame_dump.cpp

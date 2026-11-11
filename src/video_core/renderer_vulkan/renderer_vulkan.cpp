@@ -30,6 +30,7 @@
 #ifdef HAS_RESHADE
 #include "video_core/post_processing/fx_chain.h"
 #endif
+#include "video_core/nx2_draw_stages.h"
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 #include "video_core/renderer_vulkan/vk_blit_screen.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -264,6 +265,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     if (VideoCommon::StutterTrace::Enabled()) {
         VideoCommon::StutterTrace::OnPresent();
+        VideoCommon::DrawStages::Count(VideoCommon::DrawStages::Join::Present);
     }
     RenderScreenshot(framebuffers);
     const auto acquiring = trace ? std::chrono::steady_clock::now()

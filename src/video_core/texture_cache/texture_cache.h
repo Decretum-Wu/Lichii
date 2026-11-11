@@ -27,6 +27,7 @@
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/dirty_flags.h"
+#include "video_core/nx2_draw_stages.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/guest_memory.h"
@@ -624,6 +625,10 @@ void TextureCache<P>::TickFrame() {
     sentenced_images.Tick();
     sentenced_image_index = (sentenced_image_index + 1) % TICKS_TO_DESTROY;
     sentenced_image_bytes[sentenced_image_index] = 0;
+    if (!retired_framebuffers.empty() && (!DrawStages::g_threaded || DrawStages::OwnsRing())) {
+        FlushDeferredClearForFramebuffers();
+        DestroyRetiredFramebuffers();
+    }
     sentenced_framebuffers.Tick();
     sentenced_image_view.Tick();
     TickAsyncDecode();
@@ -1227,7 +1232,14 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
         return id ? &slot_image_views[id] : nullptr;
     });
     ImageView* const depth_buffer = key.depth_buffer_id ? &slot_image_views[key.depth_buffer_id] : nullptr;
-    runtime.FlushDeferredClear();
+    // A new framebuffer can move the others, which the parked clear and stage B's packets in
+    // flight point at.
+    FlushDeferredClearForFramebuffers();
+    if (!DrawStages::g_threaded || DrawStages::OwnsRing()) {
+        DestroyRetiredFramebuffers();
+    } else if (DrawStages::g_checking) {
+        DrawStages::Violation(DrawStages::Stage::B, "a framebuffer made off the drawing thread");
+    }
     framebuffer_id = slot_framebuffers.insert(runtime, color_buffers, depth_buffer, key);
     return framebuffer_id;
 }
@@ -4175,8 +4187,35 @@ void TextureCache<P>::RemoveImageViewReferences(std::span<const ImageViewId> rem
 }
 
 template <class P>
-void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_views) {
+void TextureCache<P>::FlushDeferredClearForFramebuffers() {
+    if constexpr (requires { runtime.FlushDeferredClearNow(); }) {
+        if (DrawStages::g_threaded) {
+            runtime.FlushDeferredClearNow();
+            return;
+        }
+    }
     runtime.FlushDeferredClear();
+}
+
+template <class P>
+void TextureCache<P>::DestroyRetiredFramebuffers() {
+    for (const FramebufferId framebuffer_id : retired_framebuffers) {
+        sentenced_framebuffers.Push(std::move(slot_framebuffers[framebuffer_id]));
+        slot_framebuffers.erase(framebuffer_id);
+    }
+    retired_framebuffers.clear();
+}
+
+template <class P>
+void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_views) {
+    // With stage B on its own thread, its packets in flight and its parked clear point at
+    // framebuffers, and only the thread that draws can wait for B. Any other thread (a guest
+    // unmap) takes them out of the table and leaves the objects for that thread to destroy, at
+    // its next framebuffer change or frame.
+    const bool threaded = DrawStages::g_threaded;
+    if (!threaded) {
+        runtime.FlushDeferredClear();
+    }
     auto it = framebuffers.begin();
     while (it != framebuffers.end()) {
         if (it->first.Contains(removed_views)) {
@@ -4186,13 +4225,23 @@ void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_vi
                 last_framebuffer_id = {};
                 last_framebuffer_serial = 0;
             }
-            sentenced_framebuffers.Push(std::move(slot_framebuffers[framebuffer_id]));
-            slot_framebuffers.erase(framebuffer_id);
+            retired_framebuffers.push_back(framebuffer_id);
             it = framebuffers.erase(it);
         } else {
             ++it;
         }
     }
+    if (threaded) {
+        if (!DrawStages::OwnsRing()) {
+            return;
+        }
+        if (retired_framebuffers.empty()) {
+            runtime.FlushDeferredClear();
+            return;
+        }
+        FlushDeferredClearForFramebuffers();
+    }
+    DestroyRetiredFramebuffers();
 }
 
 template <class P>

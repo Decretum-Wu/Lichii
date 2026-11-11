@@ -42,6 +42,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_back_stages.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2_stutter_trace.h"
@@ -2048,6 +2049,9 @@ void PipelineCache::TickFrame() {
 }
 
 void PipelineCache::EvictUnusedPipelines() {
+    // With stage B on its own thread, packets in flight point at their pipelines: B records them
+    // before any is evicted.
+    VideoCommon::DrawStages::JoinB(VideoCommon::DrawStages::Join::Frame);
     // Building a pipeline again on MoltenVK means a Metal compile mid-game, far dearer than the
     // rebuild cost below, so none are evicted there.
     if (device.IsMoltenVK() || frame_count <= EvictAfterFrames) {

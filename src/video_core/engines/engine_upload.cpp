@@ -11,6 +11,7 @@
 #include "video_core/engines/engine_upload.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_draw_stages.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
 
@@ -90,6 +91,8 @@ void State::ProcessData(std::span<const u8> read_buffer) {
         const std::size_t dst_size = Tegra::Texture::CalculateSize(
             true, bytes_per_pixel, width, regs.dest.height, regs.dest.depth,
             regs.dest.BlockHeight(), regs.dest.BlockDepth());
+        VideoCommon::DrawStages::NoteGpuWrite(VideoCommon::DrawStages::Join::Inline,
+                                              memory_manager, address, dst_size);
 
         Tegra::Memory::GpuGuestMemoryScoped<u8,
                                             Tegra::Memory::GuestMemoryFlags::SafeReadCachedWrite>

@@ -375,11 +375,13 @@ private:
 
 BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& memory_allocator_,
                                        Scheduler& scheduler_, StagingBufferPool& staging_pool_,
+                                       StagingBufferPool& uniform_pool_,
                                        GuestDescriptorQueue& guest_descriptor_queue_,
                                        ComputePassDescriptorQueue& compute_pass_descriptor_queue,
                                        DescriptorPool& descriptor_pool)
     : device{device_}, memory_allocator{memory_allocator_}, scheduler{scheduler_},
-      staging_pool{staging_pool_}, guest_descriptor_queue{guest_descriptor_queue_},
+      staging_pool{staging_pool_}, uniform_pool{uniform_pool_},
+      guest_descriptor_queue{guest_descriptor_queue_},
       quad_index_pass(device, scheduler, descriptor_pool, staging_pool,
                       compute_pass_descriptor_queue),
       multi_range_buffers(device_) {
@@ -414,13 +416,18 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
 u32 BufferCacheRuntime::SetVertexRepackLayout(const Tegra::Engines::Maxwell3D::Regs& regs,
                                             bool dynamic_input) {
     const u32 old_mask = vertex_repack_mask;
-    const bool input_supported = VertexRepackInputSupported(dynamic_input, static_vertex_repack);
-    vertex_repack_mask = vertex_repack_pass && input_supported ? VertexRepackMask(regs) : 0;
+    vertex_repack_mask = VertexRepackMaskFor(regs, dynamic_input);
     if (vertex_repack_mask != old_mask) {
         LOG_DEBUG(Render_Vulkan, "Vertex repack selection: mask={:#x}, dynamic_input={}",
                   vertex_repack_mask, dynamic_input);
     }
     return old_mask ^ vertex_repack_mask;
+}
+
+u32 BufferCacheRuntime::VertexRepackMaskFor(const Tegra::Engines::Maxwell3D::Regs& regs,
+                                            bool dynamic_input) const {
+    const bool input_supported = VertexRepackInputSupported(dynamic_input, static_vertex_repack);
+    return vertex_repack_pass && input_supported ? VertexRepackMask(regs) : 0;
 }
 
 StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) {
@@ -598,7 +605,8 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
     }
 
     scheduler.RequestOutsideRenderPassOperationContext();
-    if (barrier && src_buffer == staging_pool.StreamBuf() && !vk_copies.empty()) {
+    if (barrier && src_buffer == staging_pool.StreamBuf() && !vk_copies.empty() &&
+        scheduler.BatchesUploads()) {
         // Only in-order stream uploads share barriers. Dedicated staging buffers retain their
         // normal recording path and tick-based reuse.
         scheduler.RecordUpload(src_buffer, dst_buffer,
@@ -703,7 +711,7 @@ bool BufferCacheRuntime::BindMultiRangeStorageBuffer(u64 key, bool is_written) {
         PostCopyBarrier();
         multi_range_buffers.MarkGathered(key);
     }
-    guest_descriptor_queue.AddBuffer(ref.handle, ref.address, 0, ref.size);
+    stage_descriptor_queue->AddBuffer(ref.handle, ref.address, 0, ref.size);
     return true;
 }
 

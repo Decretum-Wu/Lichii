@@ -805,12 +805,12 @@ public:
                 FlushEndTFB();
             }
         }
-        runtime.View3DRegs([this](Maxwell3D& maxwell3d) {
-            if (maxwell3d.regs.transform_feedback_enabled == 0) {
+        if (const auto* state = runtime.TransformFeedbackState()) {
+            if (!state->enabled) {
                 streams_mask = 0;
                 has_started = false;
             }
-        });
+        }
     }
 
     bool HasPendingSync() const override {
@@ -1041,31 +1041,17 @@ private:
         last_queries_stride.fill(1);
         stream_to_slot.fill(INVALID_SLOT);
         streams_mask = 0; // reset previously recorded streams
-        runtime.View3DRegs([this](Maxwell3D& maxwell3d) {
+        if (const auto* state = runtime.TransformFeedbackState()) {
             buffers_count = 0;
-            out_topology = maxwell3d.draw_manager.draw_state.topology;
-            patch_vertices = (std::max)(maxwell3d.regs.patch_vertices, 1U);
-            if (out_topology == Maxwell3D::Regs::PrimitiveTopology::Patches) {
-                switch (maxwell3d.regs.tessellation.params.output_primitives.Value()) {
-                case Maxwell3D::Regs::Tessellation::OutputPrimitives::Points:
-                    out_topology = Maxwell3D::Regs::PrimitiveTopology::Points;
-                    break;
-                case Maxwell3D::Regs::Tessellation::OutputPrimitives::Lines:
-                    out_topology = Maxwell3D::Regs::PrimitiveTopology::LineStrip;
-                    break;
-                case Maxwell3D::Regs::Tessellation::OutputPrimitives::Triangles_CW:
-                case Maxwell3D::Regs::Tessellation::OutputPrimitives::Triangles_CCW:
-                    out_topology = Maxwell3D::Regs::PrimitiveTopology::TriangleStrip;
-                    break;
-                }
-            }
-            for (size_t i = 0; i < Maxwell3D::Regs::NumTransformFeedbackBuffers; i++) {
-                const auto& tf = maxwell3d.regs.transform_feedback;
-                if (tf.buffers[i].enable == 0) {
+            out_topology = state->output_topology;
+            patch_vertices = state->patch_vertices;
+            for (size_t i = 0; i < state->buffers.size(); i++) {
+                const auto& buffer = state->buffers[i];
+                if (!buffer.enabled) {
                     continue;
                 }
                 buffers_count = std::max<size_t>(buffers_count, i + 1);
-                const size_t stream = tf.controls[i].stream;
+                const size_t stream = buffer.stream;
                 if (stream >= last_queries_stride.size()) {
                     LOG_WARNING(Render_Vulkan, "TransformFeedback stream {} out of range", stream);
                     continue;
@@ -1073,11 +1059,11 @@ private:
                 if ((streams_mask & (1ULL << stream)) != 0) {
                     continue;
                 }
-                last_queries_stride[stream] = tf.controls[i].stride;
+                last_queries_stride[stream] = buffer.stride;
                 stream_to_slot[stream] = i;
                 streams_mask |= 1ULL << stream;
             }
-        });
+        }
     }
 
     std::pair<size_t, size_t> ProduceCounterBuffer(size_t slot_index) {
@@ -1237,20 +1223,19 @@ public:
                 return index;
             }
             new_query->stride = 1;
-            runtime.View3DRegs([new_query, subreport](Maxwell3D& maxwell3d) {
-                new_query->patch_vertices = (std::max)(maxwell3d.regs.patch_vertices, 1U);
-                for (size_t i = 0; i < Maxwell3D::Regs::NumTransformFeedbackBuffers; i++) {
-                    const auto& tf = maxwell3d.regs.transform_feedback;
-                    if (tf.buffers[i].enable == 0) {
+            if (const auto* state = runtime.TransformFeedbackState()) {
+                new_query->patch_vertices = state->patch_vertices;
+                for (const auto& buffer : state->buffers) {
+                    if (!buffer.enabled) {
                         continue;
                     }
-                    if (tf.controls[i].stream != subreport) {
+                    if (buffer.stream != subreport) {
                         continue;
                     }
-                    new_query->stride = tf.controls[i].stride;
+                    new_query->stride = buffer.stride;
                     break;
                 }
-            });
+            }
         }
 
         new_query->dependant_manage = must_manage_dependance;
@@ -1424,6 +1409,8 @@ struct QueryCacheRuntimeImpl {
 
     // maxwell3d
     Maxwell3D* maxwell3d;
+    TransformFeedbackQueryState live_tfb_state{};
+    const TransformFeedbackQueryState* stage_tfb_state{};
 };
 
 QueryCacheRuntime::QueryCacheRuntime(VideoCore::RasterizerInterface* rasterizer, Tegra::MaxwellDeviceMemoryManager& device_memory_, Vulkan::BufferCache& buffer_cache_, const Device& device_, const MemoryAllocator& memory_allocator_, Scheduler& scheduler_, StagingBufferPool& staging_pool_, ComputePassDescriptorQueue& compute_pass_descriptor_queue, DescriptorPool& descriptor_pool, TextureCache& texture_cache_) {
@@ -1436,11 +1423,22 @@ void QueryCacheRuntime::Bind3DEngine(Maxwell3D* maxwell3d) {
     impl->maxwell3d = maxwell3d;
 }
 
-template <typename Func>
-void QueryCacheRuntime::View3DRegs(Func&& func) {
-    if (impl->maxwell3d) {
-        func(*impl->maxwell3d);
+const TransformFeedbackQueryState* QueryCacheRuntime::TransformFeedbackState() {
+    if (VideoCommon::DrawStages::t_stage_b_thread) {
+        ASSERT(impl->stage_tfb_state != nullptr);
+        return impl->stage_tfb_state;
     }
+    if (!impl->maxwell3d) {
+        return nullptr;
+    }
+    impl->live_tfb_state = TransformFeedbackQueryState::FromRegs(
+        impl->maxwell3d->regs, impl->maxwell3d->draw_manager.draw_state.topology);
+    return &impl->live_tfb_state;
+}
+
+void QueryCacheRuntime::SetStageTransformFeedbackState(const TransformFeedbackQueryState* state) {
+    ASSERT(VideoCommon::DrawStages::t_stage_b_thread);
+    impl->stage_tfb_state = state;
 }
 
 void QueryCacheRuntime::EndHostConditionalRendering() {

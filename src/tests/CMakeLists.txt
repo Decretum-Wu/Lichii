@@ -8,6 +8,10 @@ add_executable(tests
     common/addon_config.cpp
     video_core/vulkan_overlay_filter.cpp
     video_core/buffer_cache_ports.cpp
+    video_core/draw_packet.cpp
+    video_core/draw_stages.cpp
+    video_core/back_stages.cpp
+    video_core/transform_feedback_query_state.cpp
     video_core/unswizzle_workers.cpp
     video_core/block_linear_swizzle.cpp
     video_core/aftermath_dump.cpp

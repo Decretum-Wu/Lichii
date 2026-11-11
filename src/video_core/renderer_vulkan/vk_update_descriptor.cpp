@@ -11,6 +11,7 @@
 
 #include "common/assert.h"
 #include "common/logging.h"
+#include "video_core/nx2_back_stages.h"
 #include "video_core/renderer_vulkan/descriptor_payload_growth.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -51,6 +52,8 @@ void UpdateDescriptorQueue::Acquire(Scheduler& scheduler, size_t required_entrie
     }
     const size_t used = static_cast<size_t>(std::distance(payload_start, payload_cursor));
     if (reserve > frame_payload_size || used > frame_payload_size - reserve) {
+        // The payload is reused from its start or moves: stage B may still read the packets'.
+        VideoCommon::DrawStages::JoinB(VideoCommon::DrawStages::Join::ADescriptorWrap);
         const size_t old_capacity = frame_payload_size;
         auto result = PayloadGrowthResult::AtLimit;
         if (!growth_disabled) {

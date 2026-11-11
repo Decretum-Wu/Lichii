@@ -11,6 +11,7 @@
 #include <span>
 #include <variant>
 #include <vector>
+#include "video_core/nx2_draw_stages.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
@@ -107,6 +108,37 @@ public:
         *(payload_cursor++) = texel_buffer;
     }
 
+    /// Leaves `count` entries for BeginFill and returns where they start, counted from UpdateData:
+    /// stage A of a draw leaves each stage's storage and texel buffer entries to stage B.
+    u32 Skip(u32 count) noexcept {
+        VideoCommon::DrawStages::Expect(VideoCommon::DrawStages::Stage::A, "descriptor Skip");
+        const u32 first = static_cast<u32>(UpdateCount());
+        payload_cursor += count;
+        return first;
+    }
+
+    /// Until EndFill, entries go to those Skip left at `first`, counted from `data` (the
+    /// UpdateData of the draw they belong to), in the mode the draw acquired them with. With
+    /// stage B on its own thread this is B's queue, filling A's payload.
+    void BeginFill(DescriptorUpdateEntry* data, u32 first, bool use_descriptor_buffer_) noexcept {
+        VideoCommon::DrawStages::Expect(VideoCommon::DrawStages::Stage::B, "descriptor BeginFill");
+        use_descriptor_buffer = supports_descriptor_buffer && use_descriptor_buffer_;
+        fill_end = payload_cursor;
+        payload_cursor = data + first;
+    }
+
+    /// Returns how many entries were written since BeginFill(data, first).
+    u32 EndFill(DescriptorUpdateEntry* data, u32 first) noexcept {
+        const u32 written = static_cast<u32>(payload_cursor - (data + first));
+        payload_cursor = fill_end;
+        return written;
+    }
+
+    /// Stage A: the draw's entries, for stage B (UpdateData without const).
+    [[nodiscard]] DescriptorUpdateEntry* DrawEntries() const noexcept {
+        return upload_start;
+    }
+
     /// Entries an earlier draw added (delta draws).
     void AddEntries(std::span<const DescriptorUpdateEntry> entries) {
         std::memcpy(payload_cursor, entries.data(), entries.size_bytes());
@@ -135,8 +167,9 @@ private:
     size_t frame_index{0};
     DescriptorUpdateEntry* payload_cursor = nullptr;
     DescriptorUpdateEntry* payload_start = nullptr;
-    const DescriptorUpdateEntry* upload_start = nullptr;
+    DescriptorUpdateEntry* upload_start = nullptr;
     std::unique_ptr<DescriptorUpdateEntry[]> payload;
+    DescriptorUpdateEntry* fill_end{};
     bool growth_disabled{};
     bool fallback_reported{};
 };

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <functional>
@@ -45,6 +46,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_back_stages.h"
 #include "video_core/nx2_download_trace.h"
 #include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_fast_draw.h"
@@ -120,6 +122,119 @@ static constexpr Binding NULL_BINDING{
     .buffer_id = NULL_BUFFER_ID,
 };
 
+/// Stage A of a graphics draw resolves the draw's buffers into this from the registers, dirty
+/// flags and memory as they are at the draw; stage B binds them from it alone (docs/nx2/cmdlist.md).
+struct GraphicsBufferPacket {
+    using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+
+    struct VertexStream {
+        u32 index;
+        u32 stride;
+        Binding binding; ///< When the stream is in vertex_resolve
+    };
+    struct StorageBuffer {
+        u32 stage;
+        u32 index;
+        bool is_written;
+        Binding binding;
+    };
+    struct TextureBuffer {
+        u32 stage;
+        u32 index;
+        bool is_written;
+        bool is_image;
+        TextureBufferBinding binding;
+    };
+
+    /// Empties it for the next draw, keeping the capacity of its lists.
+    void Reset(bool is_indexed_) {
+        is_indexed = is_indexed_;
+        index_dirty = false;
+        inline_indices.clear();
+        vertex_resolve = 0;
+        vertex_rebind = 0;
+        vertex_streams.clear();
+        transform_feedback = false;
+        storage_stages = 0;
+        texture_stages = 0;
+        storage_buffers.clear();
+        texture_buffers.clear();
+        indirect = false;
+        buffers_uploaded = false;
+        resolve_uniforms = false;
+        uniform_binds.clear();
+    }
+
+    bool is_indexed{};
+    Maxwell::PrimitiveTopology topology{};
+    u32 vertex_first{};
+    u32 vertex_count{};
+
+    bool index_dirty{}; ///< A took Dirty::IndexBuffer: `index` is the binding to resolve
+    Binding index{};
+    Maxwell::IndexFormat index_format{};
+    u32 index_format_size{};
+    u32 index_first{};
+    u32 index_count{};
+    u32 index_guest_size{};         ///< Guest bytes uint8 index widening reads
+    std::vector<u8> inline_indices; ///< The indexes of an inline index draw
+
+    u32 vertex_resolve{}; ///< Streams A resolved (Dirty::VertexBuffers and the stream's flag)
+    u32 vertex_rebind{};  ///< Streams to bind again (the stream's flag)
+    std::vector<VertexStream> vertex_streams; ///< One per stream in either mask, ascending
+
+    bool transform_feedback{};
+    u32 transform_feedback_layouts{}; ///< Buffers the transform feedback writes varyings to
+    std::array<Binding, NUM_TRANSFORM_FEEDBACK_BUFFERS> transform_feedback_buffers{};
+
+    u32 storage_stages{}; ///< Stages whose storage buffers are storage_buffers
+    u32 texture_stages{}; ///< Stages whose texture buffers are texture_buffers
+    std::vector<StorageBuffer> storage_buffers; ///< In stage order
+    std::vector<TextureBuffer> texture_buffers; ///< In stage order
+
+    bool indirect{};
+    bool indirect_count{};
+    Binding indirect_buffer{};
+    Binding count_buffer{};
+
+    /// A uploaded buffer data (uniform buffers): B records the copy barrier before the draw.
+    bool buffers_uploaded{};
+    /// OpenGL, which runs both stages in one: B resolves the uniform buffers with the others.
+    bool resolve_uniforms{};
+
+    /// With stage B on its own thread, the uniform buffers A doesn't bind from the cache: those it
+    /// streamed (B binds the cached buffer instead when the range is GPU-modified) and those it
+    /// left to B, by their descriptor entry counted from the draw's first.
+    struct UniformBind {
+        u32 entry;
+        u32 size;
+        DAddr device_addr;
+        bool streamed;
+        bool native_bank; ///< A 64 KiB native program bank (uploaded again once per frame)
+    };
+    std::vector<UniformBind> uniform_binds;
+};
+
+/// The buffer cache's lock. Stage B (on its own thread, EDEN_NX2_BACK_STAGES=1) uses the cache
+/// under it: on the thread that draws, taking it first waits until B consumed every packet.
+class BufferCacheLock {
+public:
+    void lock() {
+        DrawStages::JoinB(DrawStages::Join::ABufferLock);
+        mutex.lock();
+    }
+    bool try_lock() {
+        DrawStages::JoinB(DrawStages::Join::ABufferLock);
+        return mutex.try_lock();
+    }
+    void unlock() {
+        mutex.unlock();
+    }
+
+private:
+    Common::SpinRecursiveMutex mutex;
+};
+
 template <typename Buffer>
 struct HostBindings {
     boost::container::static_vector<Buffer*, NUM_VERTEX_BUFFERS> buffers;
@@ -181,6 +296,16 @@ public:
     u32 uniform_buffer_skip_cache_size = DEFAULT_SKIP_CACHE_SIZE;
 
     bool has_deleted_buffers = false;
+
+    /// Draw packets: what B resolves and binds again besides what a packet carries (a deleted
+    /// buffer, a repacked vertex buffer), and the strides it binds the vertex buffers with.
+    bool index_resolve{};
+    u32 vertex_resolve{};
+    u32 vertex_rebind{};
+    std::array<u32, NUM_VERTEX_BUFFERS> vertex_strides{};
+    /// Stage A: the streams whose last resolved binding binds a buffer. Their dirty flags are
+    /// taken at every draw, the others' stay set until a draw resolves them to a buffer.
+    u32 vertex_streams_bound{};
 
     std::array<u32, NUM_STAGES> dirty_uniform_buffers{};
     std::array<u32, NUM_STAGES> fast_bound_uniform_buffers{};
@@ -344,12 +469,44 @@ public:
 
     void DisableGraphicsUniformBuffer(size_t stage, u32 index);
 
-    void UpdateGraphicsBuffers(bool is_indexed);
+    /// Stage A: reads the draw's index, vertex, transform feedback and indirect buffers into
+    /// `packet` and takes the dirty flags it hands over.
+    void ReadGraphicsGeometry(GraphicsBufferPacket& packet);
+
+    /// Stage A: the index buffer and vertex buffer `index` as the registers describe them now.
+    [[nodiscard]] Binding ResolveIndexBuffer() const;
+    [[nodiscard]] Binding ResolveVertexBuffer(u32 index) const;
+
+    /// Stage A: resolves the enabled uniform buffers. Their host binds follow
+    /// (BindHostGraphicsUniformBuffers) and copy what guest memory holds at the draw.
+    void UpdateGraphicsUniformBuffers();
+
+    void BindHostGraphicsUniformBuffers(size_t stage);
+
+    /// Stage A with stage B on its own thread: streams the small uniform buffers of `stage` as
+    /// BindHostGraphicsUniformBuffers does, and leaves the others to B in packet.uniform_binds,
+    /// without the cache's state (no buffer resolve, sync or upload).
+    void StageGraphicsUniformBuffers(size_t stage, GraphicsBufferPacket& packet);
+
+    /// Stage B: binds a uniform buffer A left in packet.uniform_binds through the runtime's
+    /// descriptor fill, or one A streamed whose range is GPU-modified now. False when A's stream
+    /// stands.
+    bool BindStagedUniformBuffer(const GraphicsBufferPacket::UniformBind& bind);
+
+    /// Stage B after a submit stage A didn't plan: binds the index and vertex buffers again.
+    void RebindGeometry() {
+        channel_state->vertex_rebind |= enabled_vertex_buffers_mask;
+    }
+
+    /// Stage B: binds the packet's storage and texture buffers and resolves every buffer.
+    void UpdateGraphicsBuffers(const GraphicsBufferPacket& packet);
 
     void UpdateComputeBuffers();
 
-    void BindHostGeometryBuffers(bool is_indexed);
+    /// Stage B.
+    void BindHostGeometryBuffers(const GraphicsBufferPacket& packet);
 
+    /// Stage B: the storage and texture buffers of `stage`.
     void BindHostStageBuffers(size_t stage);
 
     void BindHostComputeBuffers();
@@ -359,15 +516,24 @@ public:
 
     void SetComputeUniformBufferState(u32 mask, const ComputeUniformBufferSizes* sizes);
 
-    void UnbindGraphicsStorageBuffers(size_t stage);
+    /// Stage A: adds storage buffer `ssbo_index` of `stage` to the packet, read from the
+    /// constant buffer. The caller sets the stage in packet.storage_stages.
+    void BindGraphicsStorageBuffer(GraphicsBufferPacket& packet, size_t stage, size_t ssbo_index,
+                                   u32 cbuf_index, u32 cbuf_offset, bool is_written,
+                                   u32 indirect_offset = ~0U);
 
-    bool BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                   bool is_written, u32 indirect_offset = ~0U);
+    /// The binding of that storage buffer as the constant buffers describe it now; `holder`
+    /// receives the table pointer of an indirect one.
+    [[nodiscard]] Binding ResolveGraphicsStorageBuffer(size_t stage, u32 cbuf_index,
+                                                       u32 cbuf_offset, bool is_written,
+                                                       u32 indirect_offset,
+                                                       GPUVAddr* holder = nullptr) const;
 
-    void UnbindGraphicsTextureBuffers(size_t stage);
-
-    void BindGraphicsTextureBuffer(size_t stage, size_t tbo_index, GPUVAddr gpu_addr, u32 size,
-                                   PixelFormat format, bool is_written, bool is_image);
+    /// Stage A: adds texture buffer `tbo_index` of `stage` to the packet. The caller sets the
+    /// stage in packet.texture_stages.
+    void BindGraphicsTextureBuffer(GraphicsBufferPacket& packet, size_t stage, size_t tbo_index,
+                                   GPUVAddr gpu_addr, u32 size, PixelFormat format, bool is_written,
+                                   bool is_image);
 
     void UnbindComputeStorageBuffers();
 
@@ -511,6 +677,10 @@ public:
     /// Return true when a CPU region is modified from the CPU
     [[nodiscard]] bool IsRegionCpuModified(DAddr addr, size_t size);
 
+    /// The graphics uniform bindings resolve their buffers again (the ring of stage B's thread
+    /// stopped: buffers deleted while it ran were not taken out of them).
+    void ForgetGraphicsUniformBuffers();
+
     void SetDrawIndirect(
         const Tegra::Engines::Maxwell3D::DrawManager::IndirectParams* current_draw_indirect_) {
         current_draw_indirect = current_draw_indirect_;
@@ -536,7 +706,7 @@ public:
     /// nullptr.
     void BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta);
 
-    Common::SpinRecursiveMutex mutex;
+    BufferCacheLock mutex;
     Runtime& runtime;
     bool any_buffer_uploaded = false;
     /// Indirectly read banks of native programs already uploaded this frame.
@@ -577,13 +747,15 @@ private:
 
     void RunGarbageCollector(bool aggressive_gc);
 
-    void BindHostIndexBuffer();
+    void UnbindGraphicsStorageBuffers(size_t stage);
+
+    void UnbindGraphicsTextureBuffers(size_t stage);
+
+    void BindHostIndexBuffer(const GraphicsBufferPacket& packet);
 
     void BindHostVertexBuffers();
 
-    void BindHostDrawIndirectBuffers();
-
-    void BindHostGraphicsUniformBuffers(size_t stage);
+    void BindHostDrawIndirectBuffers(const GraphicsBufferPacket& packet);
 
     void BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 binding_index, bool needs_bind);
 
@@ -591,7 +763,7 @@ private:
 
     void BindHostGraphicsTextureBuffers(size_t stage);
 
-    void BindHostTransformFeedbackBuffers();
+    void BindHostTransformFeedbackBuffers(const GraphicsBufferPacket& packet);
 
     void BindHostVertexBuffer(u32 index, Buffer& buffer, u32 offset, u32 size, u32 stride);
 
@@ -601,17 +773,15 @@ private:
 
     void BindHostComputeTextureBuffers();
 
-    void DoUpdateGraphicsBuffers(bool is_indexed);
+    void DoUpdateGraphicsBuffers(const GraphicsBufferPacket& packet);
 
     void DoUpdateComputeBuffers();
 
-    void UpdateIndexBuffer();
+    void UpdateIndexBuffer(const GraphicsBufferPacket& packet);
 
     void UpdateVertexBuffers();
 
-    void UpdateVertexBuffer(u32 index);
-
-    void UpdateDrawIndirect();
+    void UpdateDrawIndirect(const GraphicsBufferPacket& packet);
 
     void UpdateUniformBuffers(size_t stage);
 
@@ -619,9 +789,7 @@ private:
 
     void UpdateTextureBuffers(size_t stage);
 
-    void UpdateTransformFeedbackBuffers();
-
-    void UpdateTransformFeedbackBuffer(u32 index);
+    void UpdateTransformFeedbackBuffers(const GraphicsBufferPacket& packet);
 
     void UpdateComputeUniformBuffers();
 
@@ -726,7 +894,7 @@ private:
                            const Binding& binding);
 
     [[nodiscard]] TextureBufferBinding GetTextureBufferBinding(GPUVAddr gpu_addr, u32 size,
-                                                               PixelFormat format);
+                                                               PixelFormat format) const;
 
     [[nodiscard]] std::span<const u8> ImmediateBufferWithData(DAddr device_addr, size_t size);
 
@@ -778,7 +946,8 @@ private:
     };
     std::array<GeometrySync, NUM_VERTEX_BUFFERS + 1> geometry_syncs{};
     /// Counts DeleteBuffer calls: a buffer id older than this count may have been freed or reused.
-    u64 buffer_deletions = 0;
+    /// Read by stage A without the lock while stage B deletes buffers on its own thread.
+    std::atomic<u64> buffer_deletions{};
     struct GeometryStats {
         u64 syncs{};
         u64 syncs_skipped{};
@@ -793,6 +962,9 @@ private:
     [[nodiscard]] bool UniformRangeKept(size_t stage, u32 index, DAddr device_addr,
                                         u32 size) const noexcept;
     void NoteUniformWrite(DAddr device_addr, u64 size) {
+        if (DrawStages::g_threaded) {
+            return;
+        }
         UniformKeep& keep = uniform_keep;
         if (keep.memory_writes.size() == keep.memory_writes.capacity()) {
             keep.memory_writes_lost = true;

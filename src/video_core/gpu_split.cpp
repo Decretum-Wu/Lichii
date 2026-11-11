@@ -27,8 +27,10 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_back_stages.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_fast_draw.h"
+#include "video_core/nx2_draw_stages.h"
 #include "video_core/nx2_profile.h"
 
 namespace VideoCommon {
@@ -59,6 +61,10 @@ void GpuSplit::CheckOwner(const char* where) {
     }
     const DWORD thread = GetCurrentThreadId();
     if (thread == g_back_thread_id.load(std::memory_order_relaxed)) {
+        return;
+    }
+    // Stage B's thread (EDEN_NX2_BACK_STAGES=1) records the back's draws.
+    if (DrawStages::g_threaded && DrawStages::t_stage_b_thread) {
         return;
     }
     static std::atomic<u32> reports{};
@@ -117,6 +123,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     }
     system = &system_;
     check_owner = std::getenv("EDEN_NX2_SPLIT_CHECK") != nullptr;
+    DrawStages::Configure();
     const char* const verify = std::getenv("EDEN_NX2_ACQUIRE_VERIFY");
     g_acquire_verify = verify != nullptr && verify[0] == '1';
     g_acquire_counting = g_acquire_verify || Nx2Profile::Enabled();
@@ -220,6 +227,7 @@ void GpuSplit::Drain(DrainSite site) {
         return;
     }
     Publish();
+    DrawStages::NoteFrontWait(site);
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
     const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Ticks() : 0;
     // Everything consumed is not enough: the back submits deferred work (Scheduler::DeferFlush)
@@ -350,6 +358,7 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
     if (consumed_cache >= target) {
         return false;
     }
+    DrawStages::NoteFrontWait(site);
     Nx2Profile::Scope scope{Nx2Profile::Zone::WriterWait};
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
@@ -622,17 +631,36 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             if ((read_position - last_store >= 4096 ||
                  read_position >= wait_target.load(std::memory_order_relaxed)) &&
                 read_position != available) {
-                consumed.store(read_position, std::memory_order_seq_cst);
+                StoreConsumed(read_position);
                 last_store = read_position;
-                NotifyFront();
             }
         }
-        consumed.store(read_position, std::memory_order_seq_cst);
-        NotifyFront();
+        StoreConsumed(read_position);
+    }
+    if (DrawStages::g_back_exit != nullptr) {
+        DrawStages::g_back_exit(DrawStages::g_back_exit_argument);
     }
     back_running.store(false, std::memory_order_seq_cst);
     front_wake.fetch_add(1, std::memory_order_seq_cst);
     front_wake.notify_all();
+}
+
+void GpuSplit::StoreConsumed(u64 position) {
+    if (DrawStages::BackRing* const ring =
+            DrawStages::OwnsRing() ? DrawStages::g_ring.load(std::memory_order_acquire) : nullptr) {
+        // With stage B on its own thread the front's waits count B's position: entries are
+        // consumed once B recorded the packets they made, and what the back holds goes to B now.
+        ring->Publish();
+        ring->Mark(position);
+        return;
+    }
+    consumed.store(position, std::memory_order_seq_cst);
+    NotifyFront();
+}
+
+void GpuSplit::NoteStageBConsumed(u64 position) {
+    consumed.store(position, std::memory_order_seq_cst);
+    NotifyFront();
 }
 
 void GpuSplit::ReportAcquire() {

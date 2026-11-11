@@ -571,6 +571,14 @@ private:
     /// Remove framebuffers using the given image views from the cache
     void RemoveFramebuffers(std::span<const ImageViewId> removed_views);
 
+    /// Lands a parked deferred clear before a framebuffer is created or destroyed; with stage B
+    /// on its own thread, once B recorded the packets in flight.
+    void FlushDeferredClearForFramebuffers();
+
+    /// Destroys the framebuffers RemoveFramebuffers took out of the table. Nothing may point at
+    /// them: FlushDeferredClearForFramebuffers comes first.
+    void DestroyRetiredFramebuffers();
+
     /// Mark an image as modified from the GPU
     void MarkModification(ImageBase& image) noexcept;
 
@@ -733,6 +741,8 @@ private:
     u64 block_image_bytes_frame{~0ULL};
     DelayedDestructionRing<ImageView, TICKS_TO_DESTROY> sentenced_image_view;
     DelayedDestructionRing<Framebuffer, TICKS_TO_DESTROY> sentenced_framebuffers;
+    /// Out of the table, not destroyed yet (stage B's packets may still point at them).
+    std::vector<FramebufferId> retired_framebuffers;
 
     ::Common::unordered_map<GPUVAddr, ImageAllocId> image_allocs_table;
 

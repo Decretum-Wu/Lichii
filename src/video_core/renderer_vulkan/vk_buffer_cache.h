@@ -108,6 +108,7 @@ class BufferCacheRuntime {
 public:
     explicit BufferCacheRuntime(const Device& device_, MemoryAllocator& memory_manager_,
                                 Scheduler& scheduler_, StagingBufferPool& staging_pool_,
+                                StagingBufferPool& uniform_pool_,
                                 GuestDescriptorQueue& guest_descriptor_queue,
                                 ComputePassDescriptorQueue& compute_pass_descriptor_queue,
                                 DescriptorPool& descriptor_pool);
@@ -116,6 +117,13 @@ public:
 
     /// Returns the mask of bindings whose repacked state changed.
     u32 SetVertexRepackLayout(const Tegra::Engines::Maxwell3D::Regs& regs, bool dynamic_input);
+    /// The bindings SetVertexRepackLayout would repack (stage A, with B on its own thread).
+    [[nodiscard]] u32 VertexRepackMaskFor(const Tegra::Engines::Maxwell3D::Regs& regs,
+                                          bool dynamic_input) const;
+    /// Stage B on its own thread: the bindings stage A selected for the draw.
+    void SetVertexRepackMask(u32 mask) {
+        vertex_repack_mask = mask;
+    }
 
     bool IsVertexRepacked(u32 binding) const {
         return (vertex_repack_mask & (1U << binding)) != 0;
@@ -123,6 +131,10 @@ public:
 
     bool AnyVertexRepacked() const {
         return vertex_repack_mask != 0;
+    }
+
+    u32 RepackedVertexBuffers() const {
+        return vertex_repack_mask;
     }
 
     u64 CurrentTick();
@@ -213,7 +225,7 @@ public:
     std::span<u8> BindMappedUniformBuffer([[maybe_unused]] size_t stage,
                                           [[maybe_unused]] u32 binding_index,
                                           u32 size) {
-        const StagingBufferRef ref = staging_pool.Request(size, MemoryUsage::Upload);
+        const StagingBufferRef ref = uniform_pool.Request(size, MemoryUsage::Upload);
         last_stream_uniform = StreamUniformRef{
             .buffer = ref.buffer,
             .device_address = ref.device_address,
@@ -280,6 +292,32 @@ public:
         BindBuffer(buffer, offset, size);
     }
 
+    /// Stage A with stage B on its own thread: where the draw's next descriptor entry goes, and
+    /// leaving it to B.
+    [[nodiscard]] u32 GuestDescriptorEntry() const noexcept {
+        return static_cast<u32>(guest_descriptor_queue.UpdateCount());
+    }
+    void SkipGuestDescriptorEntry() noexcept {
+        (void)guest_descriptor_queue.Skip(1);
+    }
+
+    /// Stage B: streams a uniform buffer B binds (from its own staging pool) and returns where
+    /// its data goes.
+    std::span<u8> BindStagedStreamUniform(u32 size) {
+        const StagingBufferRef ref = staging_pool.Request(size, MemoryUsage::Upload);
+        stage_descriptor_queue->AddBuffer(ref.buffer, ref.device_address, ref.offset, size);
+        return ref.mapped_span;
+    }
+
+    /// The queue the bindings stage B makes (storage, texel and B's uniform buffers) go to: the
+    /// guest queue, or with B on its own thread a queue of B's own that fills A's entries.
+    void SetStageDescriptorQueue(GuestDescriptorQueue& queue) noexcept {
+        stage_descriptor_queue = &queue;
+    }
+    [[nodiscard]] GuestDescriptorQueue& StageDescriptorQueue() const noexcept {
+        return *stage_descriptor_queue;
+    }
+
     void BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size,
                            [[maybe_unused]] bool is_written) {
         BindBuffer(buffer, offset, size);
@@ -291,7 +329,7 @@ public:
         if (format == VideoCore::Surface::PixelFormat::Invalid) {
             format = VideoCore::Surface::PixelFormat::R8_UNORM;
         }
-        guest_descriptor_queue.AddTexelBuffer(buffer.View(offset, size, format),
+        stage_descriptor_queue->AddTexelBuffer(buffer.View(offset, size, format),
                                               buffer.DeviceAddress(), offset, size,
                                               TexelBufferFormat(format));
     }
@@ -308,9 +346,9 @@ private:
     void BindBuffer(const Buffer& buffer, u32 offset, u32 size) {
         const VkBuffer handle = buffer.Handle();
         if (handle == VK_NULL_HANDLE) {
-            guest_descriptor_queue.AddBuffer(handle, 0, 0, VK_WHOLE_SIZE);
+            stage_descriptor_queue->AddBuffer(handle, 0, 0, VK_WHOLE_SIZE);
         } else {
-            guest_descriptor_queue.AddBuffer(handle, buffer.DeviceAddress(), offset, size);
+            stage_descriptor_queue->AddBuffer(handle, buffer.DeviceAddress(), offset, size);
         }
     }
 
@@ -322,8 +360,12 @@ private:
     const Device& device;
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
+    /// Uploads, downloads and the runtime's passes (stage B's pool with B on its own thread).
     StagingBufferPool& staging_pool;
+    /// Stage A's uniform stream.
+    StagingBufferPool& uniform_pool;
     GuestDescriptorQueue& guest_descriptor_queue;
+    GuestDescriptorQueue* stage_descriptor_queue{&guest_descriptor_queue};
 
     std::shared_ptr<QuadArrayIndexBuffer> quad_array_index_buffer;
     std::shared_ptr<QuadStripIndexBuffer> quad_strip_index_buffer;

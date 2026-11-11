@@ -2913,6 +2913,11 @@ void TextureCacheRuntime::FlushDeferredClear() {
     scheduler.FlushDeferredClear();
 }
 
+void TextureCacheRuntime::FlushDeferredClearNow() {
+    const Scheduler::DirectScope direct{VideoCommon::DrawStages::Join::Framebuffer};
+    scheduler.FlushDeferredClear();
+}
+
 VkImage TextureCacheRuntime::AcquireMsaaScratchImage(const VkImageCreateInfo& image_ci) {
     const MsaaScratchKey key{
         .format = image_ci.format,

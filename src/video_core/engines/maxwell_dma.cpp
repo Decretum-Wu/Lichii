@@ -15,6 +15,7 @@
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_draw_stages.h"
 #include "video_core/renderer_base.h"
 #include "video_core/textures/decoders.h"
 
@@ -93,6 +94,7 @@ void MaxwellDMA::Launch() {
 
     // TODO(Subv): Perform more research and implement all features of this engine.
     const LaunchDMA& launch = regs.launch_dma;
+    VideoCommon::DrawStages::NoteDma(memory_manager, regs);
     ASSERT(launch.interrupt_type == LaunchDMA::InterruptType::NONE);
 
     if (launch.multi_line_enable) {

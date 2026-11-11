@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -27,6 +28,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "video_core/renderer_vulkan/vk_draw_packet.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -197,7 +199,7 @@ public:
         return mesh_emulation ? &*mesh_emulation : nullptr;
     }
 
-    /// The emulation's output buffer and workgroup count for the next Configure.
+    /// The emulation's output buffer and workgroup count for the next Prepare.
     void SetMeshEmulationOutput(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
                                 u32 groups) noexcept {
         mesh_output_buffer = buffer;
@@ -206,11 +208,7 @@ public:
         mesh_groups = groups;
     }
 
-    struct MeshEmulationBuffer {
-        VkBuffer buffer{};
-        VkDeviceSize offset{};
-        VkDeviceSize size{};
-    };
+    using MeshEmulationBuffer = MeshEmulationDispatch::Buffer;
     /// With a task program: the task payload, offset and argument buffers, the arena counter,
     /// and the words of the output arena (the draw's group count is the task's).
     void SetMeshEmulationTaskBuffers(const MeshEmulationBuffer& payload,
@@ -220,6 +218,16 @@ public:
                                      u32 capacity_words) noexcept {
         mesh_task_buffers = {payload, offsets, args, counter};
         mesh_capacity = capacity_words;
+    }
+
+    /// Bytes a draw reserves in the descriptor buffer ring, at most (0: it uses none).
+    [[nodiscard]] VkDeviceSize DescriptorBufferBytes() const noexcept {
+        return descriptor_set_layout && uses_descriptor_buffer ? descriptor_buffer_layout.size : 0;
+    }
+
+    /// What the draw's dispatch uses, for its packet.
+    [[nodiscard]] MeshEmulationDispatch MeshDispatch() const noexcept {
+        return {mesh_task_buffers, mesh_groups, mesh_capacity};
     }
 
     [[nodiscard]] bool MeshEmulationHasTask() const noexcept {
@@ -237,9 +245,19 @@ public:
 
     void AddTransition(GraphicsPipeline* transition);
 
-    bool Configure(bool is_indexed) {
-        return configure_func(this, is_indexed);
+    /// Stage A of a draw (docs/nx2/cmdlist.md): resolves its textures, buffers and descriptors
+    /// from the registers into `packet`. False when the draw can't be recorded.
+    bool Prepare(DrawPacket& packet) {
+        return configure_func(this, packet);
     }
+
+    /// Stage B: resolves and binds the packet's buffers and records its descriptors and render
+    /// pass. False when the draw can't be recorded.
+    bool Record(const DrawPacket& packet);
+
+    /// EDEN_NX2_DRAW_PACKET_VERIFY: reads the packet's storage buffers, render area and render
+    /// targets again from the registers and caches and adds each difference to `differences`.
+    void VerifyPacket(const DrawPacket& packet, std::vector<std::string>& differences) const;
 
     [[nodiscard]] GraphicsPipeline* Next(const GraphicsPipelineCacheKey& current_key) noexcept {
         if (key == current_key) {
@@ -313,7 +331,7 @@ public:
     }
 
     /// Fast draw (nx2_fast_draw.h): whether draws can keep the image views and samplers the last
-    /// captured Configure resolved. Handles computed at draw time are resolved on every draw.
+    /// captured Prepare resolved. Handles computed at draw time are resolved on every draw.
     [[nodiscard]] bool TakesDeltaDraws() const noexcept {
         return delta_blocker == DeltaBlocker::None && delta_views_valid;
     }
@@ -338,13 +356,12 @@ public:
         return handle_constant_buffers;
     }
 
-    /// Resolves and binds every buffer as Configure does (storage buffer addresses are read from
-    /// the constant buffers again) and records the draw's descriptors with the image views,
-    /// samplers and texture buffers the last captured Configure resolved. False when the draw
-    /// can't be recorded, as for Configure.
-    bool ConfigureDelta(bool is_indexed);
+    /// Prepare for a delta draw: reads the buffers as Prepare does (storage buffer addresses are
+    /// read from the constant buffers again) and takes the image views, samplers and texture
+    /// buffers the last captured Prepare resolved. False when the draw can't be recorded.
+    bool PrepareDelta(DrawPacket& packet);
 
-    /// The next Configure keeps the views and samplers it resolves for delta draws. With
+    /// The next Prepare keeps the views and samplers it resolves for delta draws. With
     /// `verify`, it first compares them with the ones kept before; DeltaMismatch reports it.
     void CaptureNextDelta(bool verify) noexcept {
         capture_delta = true;
@@ -355,12 +372,12 @@ public:
     }
 
     /// Whether an image the kept views sample has an upload pending or a newer alias to copy in:
-    /// ConfigureDelta prepares none, Configure does.
+    /// PrepareDelta prepares none, Prepare does.
     [[nodiscard]] bool DeltaImagesChange() const noexcept;
 
     template <typename Spec>
     static auto MakeConfigureSpecFunc() {
-        return [](GraphicsPipeline* pl, bool is_indexed) { return pl->ConfigureImpl<Spec>(is_indexed); };
+        return [](GraphicsPipeline* pl, DrawPacket& packet) { return pl->ConfigureImpl<Spec>(packet); };
     }
 
     void SetEngine(Tegra::Engines::Maxwell3D* maxwell3d_, Tegra::MemoryManager* gpu_memory_) {
@@ -370,12 +387,20 @@ public:
 
 private:
     template <typename Spec>
-    bool ConfigureImpl(bool is_indexed);
+    bool ConfigureImpl(DrawPacket& packet);
 
-    void KeepImageDescriptors(size_t stage, size_t first_entry);
+    /// Stage A writes the draw's descriptor entries into the payload this acquires.
+    void AcquireDescriptors();
+    /// Stage A: a stage's uniform buffer entries, then the entries left for B's storage and texel
+    /// buffers.
+    void WriteBufferDescriptors(DrawPacket& packet, size_t stage);
+    /// The image entries written since `first`, for delta draws.
+    void KeepImageDescriptors(size_t stage, u32 first);
+    /// Stage A, after the images: the mesh emulation entries, render area and render targets.
+    void FinishPrepare(DrawPacket& packet, std::span<const VideoCommon::ImageViewInOut> views);
+    [[nodiscard]] RenderAreaPushConstant ReadRenderArea(u32 stages) const;
 
-    bool ConfigureDraw(const RescalingPushConstant& rescaling,
-                       const RenderAreaPushConstant& render_are);
+    bool ConfigureDraw(const DrawPacket& packet, size_t num_entries);
 
     void MakePipeline(VkRenderPass render_pass);
 
@@ -393,7 +418,7 @@ private:
     GuestDescriptorQueue& guest_descriptor_queue;
     DescriptorBufferRing& descriptor_buffer_ring;
 
-    bool (*configure_func)(GraphicsPipeline*, bool){};
+    bool (*configure_func)(GraphicsPipeline*, DrawPacket&){};
 
     std::vector<GraphicsPipelineCacheKey> transition_keys;
     std::vector<GraphicsPipeline*> transitions;
@@ -409,6 +434,7 @@ private:
     std::array<u32, 5> enabled_uniform_buffer_masks{};
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
     u32 num_descriptor_entries{};
+    std::array<u32, NUM_STAGES> num_buffer_entries{}; ///< Storage and texel buffer entries
     size_t num_image_elements{};
     std::vector<SampledImage> sampled_images;
     u32 num_textures{};

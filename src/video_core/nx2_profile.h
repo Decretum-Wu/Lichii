@@ -25,6 +25,10 @@
 
 // EDEN_NX2_GPU_PROFILE: time where the GPU thread spends its time. Each zone counts its own
 // (exclusive) time, nested zones excluded; every 10 s the thread logs each zone's share.
+namespace VideoCommon::DrawStages {
+std::string FormatJoins(u64 window_ns);
+}
+
 namespace VideoCommon::Nx2Profile {
 
 enum class Zone : u32 {
@@ -53,6 +57,10 @@ enum class Zone : u32 {
     PushDescriptors,
     RenderTargets,
     ConfigureDraw,
+    Record,         ///< Draw packets: stage B (GraphicsPipeline::Record), docs/nx2/cmdlist.md
+    PacketGeometry, ///< Stage A reads the index, vertex and indirect buffers into the packet
+    PacketCapture,  ///< Stage A's packet finish outside render targets
+    PacketEntries,  ///< Stage B's storage and texel buffer entries outside bind stage buffers
     DynamicState,
     DrawRecord,
     TextureUpload,
@@ -83,7 +91,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "clear",         "compute",       "flush work",     "pipeline lookup", "configure",
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
-    "configure draw", "dynamic state", "draw record", "texture upload", "fence",
+    "configure draw", "record", "packet geometry", "packet capture", "packet entries",
+    "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait",
     "writer wait", "list submit wait", "list GPU wait", "graphics pipeline miss",
     "compute pipeline miss", "pipeline wait", "shader capture", "texture cache", "GPU wait",
@@ -379,6 +388,7 @@ inline void Report(const char* thread_name = "GPU thread", bool report_all_conte
         drains.pop_back();
         line += " | waits for the back by site:" + drains;
     }
+    line += DrawStages::FormatJoins(window);
     std::string gpu_waits;
     for (size_t i = 0; i < data.gpu_wait_count.size(); ++i) {
         if (data.gpu_wait_count[i] != 0) {

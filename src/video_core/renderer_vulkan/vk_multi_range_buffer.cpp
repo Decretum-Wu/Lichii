@@ -175,7 +175,8 @@ void MultiRangeBufferCache::RetireEntry(Scheduler& scheduler, Entry& entry) {
     if (retired.size() == retired.capacity()) {
         DrainRetired(scheduler);
     }
-    if (retired.size() == retired.capacity()) {
+    if (retired.size() == retired.capacity() &&
+        !VideoCommon::DrawStages::t_stage_b_thread) {
         u64 oldest = retired.front().tick;
         for (const Retired& item : retired) {
             if (item.tick < oldest) {

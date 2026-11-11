@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "video_core/query_cache/query_cache_base.h"
+#include "video_core/renderer_vulkan/transform_feedback_query_state.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 namespace VideoCore {
@@ -58,8 +59,9 @@ public:
 
     void Bind3DEngine(Tegra::Engines::Maxwell3D* maxwell3d);
 
-    template <typename Func>
-    void View3DRegs(Func&& func);
+    const TransformFeedbackQueryState* TransformFeedbackState();
+
+    void SetStageTransformFeedbackState(const TransformFeedbackQueryState* state);
 
 private:
     void TraceConditionalRendering(const char* path, bool handled, DAddr address, DAddr address_2 = 0);

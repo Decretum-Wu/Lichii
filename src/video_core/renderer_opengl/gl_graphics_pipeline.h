@@ -150,6 +150,7 @@ private:
     std::array<u32, 5> base_storage_bindings{};
     std::array<u32, 5> num_texture_buffers{};
     std::array<u32, 5> num_image_buffers{};
+    VideoCommon::GraphicsBufferPacket buffer_packet;
 
     u64 storage_buffer_alignment{};
     bool use_storage_buffers{};

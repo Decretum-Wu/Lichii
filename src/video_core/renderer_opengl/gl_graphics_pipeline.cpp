@@ -289,6 +289,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 
     texture_cache.SynchronizeDescriptors(false);
 
+    VideoCommon::GraphicsBufferPacket& packet = buffer_packet;
+    packet.Reset(is_indexed);
     buffer_cache.SetUniformBuffersState(enabled_uniform_buffer_masks, &uniform_buffer_sizes);
     buffer_cache.runtime.SetBaseUniformBindings(base_uniform_bindings);
     buffer_cache.runtime.SetBaseStorageBindings(base_storage_bindings);
@@ -298,12 +300,12 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};
     const auto config_stage{[&](size_t stage) LAMBDA_FORCEINLINE {
         const Shader::Info& info{stage_infos[stage]};
-        buffer_cache.UnbindGraphicsStorageBuffers(stage);
+        packet.storage_stages |= 1U << stage;
         if constexpr (Spec::has_storage_buffers) {
             size_t ssbo_index{};
             for (const auto& desc : info.storage_buffers_descriptors) {
                 ASSERT(desc.count == 1);
-                buffer_cache.BindGraphicsStorageBuffer(stage, ssbo_index, desc.cbuf_index,
+                buffer_cache.BindGraphicsStorageBuffer(packet, stage, ssbo_index, desc.cbuf_index,
                                                        desc.cbuf_offset, desc.is_written,
                                                        desc.indirect_offset);
                 ++ssbo_index;
@@ -412,7 +414,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                     is_written = desc.is_written;
                 }
                 ImageView& image_view{texture_cache.GetImageView(texture_buffer_it->id)};
-                buffer_cache.BindGraphicsTextureBuffer(stage, index, image_view.GpuAddr(),
+                buffer_cache.BindGraphicsTextureBuffer(packet, stage, index, image_view.GpuAddr(),
                                                        image_view.BufferSize(), image_view.format,
                                                        is_written, is_image);
                 ++index;
@@ -420,7 +422,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             }
         }};
         const Shader::Info& info{stage_infos[stage]};
-        buffer_cache.UnbindGraphicsTextureBuffers(stage);
+        packet.texture_stages |= 1U << stage;
 
         if constexpr (Spec::has_texture_buffers) {
             for (const auto& desc : info.texture_buffer_descriptors) {
@@ -452,8 +454,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     if constexpr (Spec::enabled_stages[4]) {
         bind_stage_info(4);
     }
-    buffer_cache.UpdateGraphicsBuffers(is_indexed);
-    buffer_cache.BindHostGeometryBuffers(is_indexed);
+    buffer_cache.ReadGraphicsGeometry(packet);
+    packet.resolve_uniforms = true;
+    buffer_cache.UpdateGraphicsBuffers(packet);
+    buffer_cache.BindHostGeometryBuffers(packet);
 
     if (!IsBuilt()) {
         WaitForBuild();
@@ -474,6 +478,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     std::array<GLuint, MAX_TEXTURES> gl_samplers;
     const auto prepare_stage{[&](size_t stage) {
         buffer_cache.runtime.SetImagePointers(&textures[texture_binding], &images[image_binding]);
+        buffer_cache.BindHostGraphicsUniformBuffers(stage);
         buffer_cache.BindHostStageBuffers(stage);
 
         texture_binding += num_texture_buffers[stage];

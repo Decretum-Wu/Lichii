@@ -96,6 +96,10 @@ public:
     void TickFrame();
 
     void FlushDeferredClear();
+    /// With stage B on its own thread: waits until B recorded every packet, then lands the clear
+    /// B parked. Packets and the parked clear point at framebuffers, which move when one is
+    /// created and go when one is removed.
+    void FlushDeferredClearNow();
 
     u64 GetDeviceLocalMemory() const;
 
