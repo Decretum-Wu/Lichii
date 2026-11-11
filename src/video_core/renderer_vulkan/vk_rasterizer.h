@@ -428,6 +428,7 @@ private:
         u64 out_of_order{};
         u64 remapped{};  ///< Packets recorded after the address space changed
         u64 b_submits{}; ///< Packets B recorded all of the dynamic state for after its own submit
+        u64 vertex_cached{};
         u32 logged{};
         std::chrono::steady_clock::time_point last_report{};
     } back_verify;

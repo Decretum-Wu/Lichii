@@ -2460,6 +2460,17 @@ void RasterizerVulkan::VerifyBackReads(const BackSlot& slot) {
         if (HashDeviceRange(device_memory, begin, size) == read.hash) {
             continue;
         }
+        if (VideoCommon::DrawStages::HostCachedVertexRead(
+                read.slot, buffer_cache.IsRegionCpuModified(begin, size))) {
+            if (stats.vertex_cached++ < 4) {
+                LOG_INFO(Render_Vulkan,
+                         "Back stages cached vertex: packet {} (draw {}) slot {} (vertex {}) "
+                         "{:#x}+{:#x} changed after stage A with no CPU-modified page at B",
+                         slot.committed, slot.packet.sequence, read.slot,
+                         read.slot - VideoCommon::DrawStages::VertexSlot(0), begin, size);
+            }
+            continue;
+        }
         ++stats.differing;
         if (stats.logged++ < 16) {
             LOG_ERROR(Render_Vulkan,
@@ -2575,9 +2586,9 @@ void RasterizerVulkan::RecordBackDraw(BackSlot& slot) {
         LOG_INFO(Render_Vulkan,
                  "Back stages verify: {} packets, {} ranges checked, {} changed after A built "
                  "the packet, {} out of order; {} packets recorded after the address space "
-                 "changed",
+                 "changed; {} vertex ranges changed with no CPU-modified page at B (host-cached)",
                  back_verify.packets, back_verify.ranges, back_verify.differing,
-                 back_verify.out_of_order, back_verify.remapped);
+                 back_verify.out_of_order, back_verify.remapped, back_verify.vertex_cached);
     }
 }
 

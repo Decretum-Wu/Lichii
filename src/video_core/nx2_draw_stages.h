@@ -238,6 +238,10 @@ inline constexpr u32 SlotCount = IndirectCountSlot + 1;
     return 33 + 5 * 64 + 5 * 32 + (order < UniformSlots ? order : UniformSlots - 1);
 }
 
+[[nodiscard]] constexpr bool HostCachedVertexRead(u32 slot, bool cpu_modified) {
+    return slot >= VertexSlot(0) && slot < StorageSlot(0, 0) && !cpu_modified;
+}
+
 /// The device ranges stage B read for the last Window packets, standing in for the packets in
 /// flight in stage 4: index buffers, vertex streams, storage and texel buffers. A 64 KiB page
 /// filter keeps the write checks cheap. The stage 0 probe's ring (EDEN_NX2_STAGE_PROBE).
