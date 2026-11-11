@@ -39,6 +39,7 @@ struct GpuSplitTestAccess {
     static void Initialize(GpuSplit& split, Core::System& system, u64 position = 0) {
         split.system = &system;
         split.ring = std::make_unique<u64[]>(GpuSplit::RingWords);
+        split.placed_log = std::make_unique<GpuSplit::PlacedLogEntry[]>(GpuSplit::PlacedLogSize);
         split.write_position = position;
         split.consumed_cache = position;
         split.published_local = position;
@@ -47,6 +48,10 @@ struct GpuSplitTestAccess {
 
     static u64 End(const GpuSplit& split) {
         return split.write_position;
+    }
+
+    static constexpr size_t PlacedLogSize() {
+        return GpuSplit::PlacedLogSize;
     }
 
     static void Start(GpuSplit& split, Core::System& system) {
@@ -1578,6 +1583,37 @@ struct MappedPages {
 };
 
 } // Anonymous namespace
+
+TEST_CASE("Split tells the queued placed writes that reach a word from those next to it",
+          "[video_core][gpu_split_dependencies]") {
+    using Access = VideoCommon::GpuSplitTestAccess;
+    using Writes = VideoCommon::GpuSplit::Writes;
+    Fixture f;
+    f.system.Initialize();
+    MappedPages pages{f};
+    constexpr GPUVAddr word = MappedPages::gpu_address + 0x40;
+    VideoCommon::GpuSplit split;
+    Access::Initialize(split, f.system);
+    // A release to the next word, in the same 256-byte granule.
+    split.Defer([] {}, Writes::Noted);
+    split.NoteWrite(f.memory, word + 4, 4);
+    const u64 neighbor = Access::End(split);
+    CHECK(split.PlacedWritesTarget(f.memory, word, 4) == neighbor);
+    CHECK(split.ExactPlacedTarget(f.memory, word, 4) == std::optional<u64>{0});
+    split.Defer([] {}, Writes::Noted);
+    split.NoteWrite(f.memory, word, 4);
+    const u64 own = Access::End(split);
+    CHECK(split.ExactPlacedTarget(f.memory, word, 4) == std::optional<u64>{own});
+    // Once the back ran them, none is queued.
+    Access::RunBack(split);
+    CHECK(split.ExactPlacedTarget(f.memory, word, 4) == std::optional<u64>{0});
+    // More queued writes than the log holds: it can't tell.
+    split.Defer([] {}, Writes::Noted);
+    for (size_t i = 0; i <= Access::PlacedLogSize(); ++i) {
+        split.NoteWrite(f.memory, MappedPages::gpu_address + 0x1000, 4);
+    }
+    CHECK_FALSE(split.ExactPlacedTarget(f.memory, word, 4).has_value());
+}
 
 TEST_CASE("Split tells guest memory writes from what only the GPU caches hold",
           "[video_core][gpu_split_dependencies]") {

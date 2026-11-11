@@ -2308,11 +2308,15 @@ void Maxwell3D::FrontNoteWrites(VideoCommon::GpuSplit& split, const FrontState& 
         return;
     }
     switch (method) {
-    case MAXWELL3D_REG_INDEX(report_semaphore.query):
-        // CounterReport: the value and its timestamp, now or once the host result is in.
-        split.NoteWrite(memory_manager, address(MAXWELL3D_REG_INDEX(report_semaphore.address_high)),
-                        16);
+    case MAXWELL3D_REG_INDEX(report_semaphore.query): {
+        // CounterReport: the payload of a short report, else the value and its timestamp, now or
+        // once the host result is in. Not 16 bytes for a short one: Switch 2 packs its semaphores
+        // tightly, and the words after it would wait for this write too (Puller AskView).
+        Regs::ReportSemaphore report;
+        std::memcpy(&report, &fs.regs[MAXWELL3D_REG_INDEX(report_semaphore)], sizeof(report));
+        split.NoteWrite(memory_manager, report.Address(), report.query.short_query != 0 ? 4 : 16);
         break;
+    }
     case MAXWELL3D_REG_INDEX(inline_data): {
         // Upload::State::ProcessData: lines of line_length_in bytes, pitch apart, or swizzled
         // into the destination surface.

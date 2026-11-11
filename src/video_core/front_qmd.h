@@ -598,6 +598,11 @@ private:
                         ? QueuedUpload(split, memory.Id(), *device, chain[links - 1]->before)
                         : nullptr;
                 if (earlier == nullptr) {
+                    // The back may have run it since the look above (an upload published to an
+                    // idle back): memory holds it then.
+                    if (split.Ran(chain[links - 1]->before)) {
+                        break;
+                    }
                     if (Nx2AcquireStats::g_enabled) [[unlikely]] {
                         NoteUploadMiss(split, *chain[links - 1], links, position); // TEST
                     }
@@ -613,6 +618,12 @@ private:
                 std::memcpy(reinterpret_cast<u8*>(descriptor.data()) + (first - *device),
                             part.bytes.data() + (first - part.device), end - first);
             }
+            return std::nullopt;
+        }
+        if (split.Ran(target)) {
+            // The back ran the write since the look above (QueuedUpload takes only uploads it has
+            // not run): as there.
+            memory.Read(qmd_address, descriptor.data(), sizeof(descriptor));
             return std::nullopt;
         }
         if (Nx2AcquireStats::g_enabled) [[unlikely]] {
@@ -641,6 +652,13 @@ private:
                 return;
             }
         }
+        ++logged;
+        const UploadWrite& oldest = uploads[(uploads_count - count) % uploads.size()];
+        LOG_INFO(HW_GPU,
+                 "QMD view: no upload record at {} for QMD {:#x} (signal at {}): {} records, the "
+                 "oldest at {} (run {}), the back at {}",
+                 target, device, position, count, count ? oldest.position : 0,
+                 count ? split.Ran(oldest.position) : false, split.Position() - split.Backlog());
     }
     /// TEST: an upload whose earlier writes the chain could not stand in for.
     void NoteUploadMiss(const GpuSplit& split, const UploadWrite& upload, size_t links,
@@ -664,9 +682,12 @@ private:
         const size_t count = (std::min)(uploads_count, uploads.size());
         for (size_t i = 1; i <= count; ++i) {
             const UploadWrite& upload = uploads[(uploads_count - i) % uploads.size()];
+            if (split.Ran(upload.position)) {
+                break; // The back ran it, and the older ones
+            }
             if (upload.position == target && upload.usable && upload.memory == memory_id &&
                 upload.device < device + sizeof(Descriptor) &&
-                device < upload.device + upload.size && !split.Ran(upload.position)) {
+                device < upload.device + upload.size) {
                 return &upload;
             }
         }
@@ -808,8 +829,9 @@ private:
     /// behind has some ten to write, a few times that in long frames.
     std::array<InlineWrite, 256> inline_writes{};
     size_t inline_writes_count{};
-    /// The last inline uploads sent (NoteUpload), oldest first from uploads_count on.
-    std::array<UploadWrite, 64> uploads{};
+    /// The last inline uploads sent (NoteUpload), oldest first from uploads_count on: those the
+    /// back may not have run, with the front ahead by a few milliseconds (two a dispatch).
+    std::array<UploadWrite, 256> uploads{};
     size_t uploads_count{};
     /// TEST (EDEN_NX2_DRAIN_CHECK): see TakeChecks.
     std::vector<Nx2DrainCheck::QmdRelease> checks;

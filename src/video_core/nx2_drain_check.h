@@ -525,6 +525,22 @@ enum class Decision : u32 {
     Count,
 };
 
+/// Why the semaphore view sent an acquire to a positioned wait (Puller AskView's Unknown).
+enum class WaitWhy : u8 {
+    FencedQueued,  ///< The last release sent lands once a fence ran
+    UnknownQueued, ///< The last release sent has a value the front can't tell
+    AtLeastQueued, ///< A maximum that doesn't meet it by itself
+    ViewNotCurrent,   ///< Writers after the release: the QMD view isn't current
+    UnplacedPending,  ///< Writers after the release: work that may write anywhere is queued
+    MappingPending,   ///< Writers after the release: a change of the mappings is queued
+    PlacedPending,    ///< Writers after the release: a placed write to the word is queued
+    Count,
+};
+
+inline constexpr std::array<const char*, static_cast<size_t>(WaitWhy::Count)> wait_why_names{
+    "fenced release", "unknown release", "maximum",        "view not current",
+    "unplaced write", "mapping change",  "placed write"};
+
 /// Who the front sent releases to a word for (State::noted bits).
 enum class Releaser : u32 {
     Puller,        ///< Semaphore methods (WriteLong, SEM_EXECUTE release)
@@ -581,6 +597,19 @@ struct State {
     /// By operation (equal, greater or equal, mask) and Decision.
     std::array<std::array<u64, static_cast<size_t>(Decision::Count)>, 3> acquires{};
     u64 positioned_waits{};
+    /// Positioned waits by why, for a release in memory (0) or still queued (1); of the unplaced
+    /// writes, by what sent the last; the ring words sent after each wait's position (what the
+    /// back still has to run once it reached it), and those with none past 256 words.
+    std::array<std::array<u64, static_cast<size_t>(WaitWhy::Count)>, 2> wait_why{};
+    std::array<u64, static_cast<size_t>(UnplacedKind::Count)> wait_unplaced{};
+    std::map<std::string, u64> wait_unplaced_methods; ///< The method entry that sent it
+    u64 wait_words_after{};
+    u64 waits_short_after{};
+    /// Placed writes the granules held pending, looked up exactly: the lookup failed (too many,
+    /// dropped), found them run, or found one still queued.
+    u64 exact_failed{};
+    u64 exact_ran{};
+    u64 exact_pending{};
     u64 suspended_gpu_written{}; ///< Words on GPU-written pages
     u64 suspended_flush{};       ///< Of those, words the buffer cache held newer than memory
     std::array<u64, static_cast<size_t>(Releaser::Count)> suspended_noted{};
@@ -738,6 +767,35 @@ inline void NoteQmdSync(QmdTakeOver where, std::chrono::steady_clock::duration t
     }
 }
 
+/// The semaphore view looked a placed write the granules held pending up exactly (`looked`: the
+/// log had them all), and found every write to the word run (`ran`).
+inline void NoteExactPlaced(bool looked, bool ran) {
+    if (!g_enabled) {
+        return;
+    }
+    State& state = Get();
+    state.exact_failed += looked ? 0 : 1;
+    state.exact_ran += looked && ran ? 1 : 0;
+    state.exact_pending += looked && !ran ? 1 : 0;
+}
+
+/// A positioned wait of an acquire: why (`queued`: for a release still queued), what sent the
+/// last unplaced write, and the ring words sent after its position.
+inline void NoteWaitWhy(WaitWhy why, bool queued, UnplacedKind kind, u64 words_after,
+                        const std::string& unplaced_method) {
+    if (!g_enabled) {
+        return;
+    }
+    State& state = Get();
+    ++state.wait_why[queued ? 1 : 0][static_cast<size_t>(why)];
+    if (why == WaitWhy::UnplacedPending) {
+        ++state.wait_unplaced[static_cast<size_t>(kind)];
+        ++state.wait_unplaced_methods[unplaced_method.empty() ? "?" : unplaced_method];
+    }
+    state.wait_words_after += words_after;
+    state.waits_short_after += words_after < 256 ? 1 : 0;
+}
+
 /// An acquire of `operation` (Puller GpuSemaphoreOperation) at `device_address`, decided so.
 /// Suspended: whether its word is on a GPU-written page, and the buffer cache held it newer.
 inline void NoteAcquire(u32 operation, Decision decision, u64 device_address, bool waited,
@@ -853,6 +911,39 @@ inline void MaybeReport() {
         }
         return text.empty() ? text : text + ")";
     };
+    {
+        std::string why_text;
+        for (size_t queued = 0; queued < 2; ++queued) {
+            why_text += queued == 0 ? "release in memory:" : " | release queued:";
+            for (size_t why = 0; why < wait_why_names.size(); ++why) {
+                why_text += fmt::format(" {} {}{}", wait_why_names[why], state.wait_why[queued][why],
+                                        why + 1 < wait_why_names.size() ? "," : "");
+            }
+        }
+        u64 waits = 0;
+        for (const auto& counts : state.wait_why) {
+            for (const u64 count : counts) {
+                waits += count;
+            }
+        }
+        std::string unplaced_methods;
+        for (const auto& [method, count] : state.wait_unplaced_methods) {
+            unplaced_methods += fmt::format("{}{} {}", unplaced_methods.empty() ? " (" : ", ",
+                                            method, count);
+        }
+        if (!unplaced_methods.empty()) {
+            unplaced_methods += ")";
+        }
+        LOG_INFO(HW_GPU,
+                 "Positioned waits in {:.1f} s (EDEN_NX2_ACQUIRE_STATS): {} | {}; unplaced writes "
+                 "by{}{} | ring words sent after the position {:.0f} each, under 256 for {} | "
+                 "placed writes looked up exactly: all run {}, one queued {}, not looked up {}",
+                 seconds, waits, why_text, kinds(state.wait_unplaced), unplaced_methods,
+                 waits ? static_cast<double>(state.wait_words_after) / static_cast<double>(waits)
+                       : 0.0,
+                 state.waits_short_after, state.exact_ran, state.exact_pending,
+                 state.exact_failed);
+    }
     // The writers a signal waited for most.
     std::vector<std::pair<u64, std::string>> writers;
     for (const auto& [writer, count] : state.qmd_wait_writers) {

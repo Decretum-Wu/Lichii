@@ -151,6 +151,9 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     }();
     lane = lane_wanted;
     ring = std::make_unique<u64[]>(RingWords);
+    if (!placed_log) {
+        placed_log = std::make_unique<PlacedLogEntry[]>(PlacedLogSize);
+    }
     ++starts; // Before the back starts: it tags the entries of fenced writes with it (EntryTag)
     if (lane) {
         prep_ring = std::make_unique<u64[]>(PrepWords);
@@ -204,6 +207,8 @@ void GpuSplit::Stop() {
     last_noted_write = 0;
     write_sets.fill({});
     coarse_sets.fill({});
+    placed_log_count = 0;
+    placed_log_lost = 0;
     published_local = 0;
     publish_held = false;
     logged_method_count = 0;
@@ -508,6 +513,7 @@ void GpuSplit::NoteDeviceWriteAt(DAddr address, u64 size, u64 position) {
         NoteSetWrite(write_sets[WriteSlot(granule)], granule, position);
     }
     last_noted_write = std::max(last_noted_write, position);
+    LogPlacedWrite(address, size, position);
 }
 
 void GpuSplit::NoteCoarseDeviceWriteAt(DAddr address, u64 size, u64 position) {
@@ -516,6 +522,31 @@ void GpuSplit::NoteCoarseDeviceWriteAt(DAddr address, u64 size, u64 position) {
         NoteSetWrite(coarse_sets[CoarseSlot(granule)], granule, position);
     }
     last_noted_write = std::max(last_noted_write, position);
+    LogPlacedWrite(address, size, position);
+}
+
+std::optional<u64> GpuSplit::ExactPlacedTarget(const Tegra::MemoryManager& memory,
+                                               GPUVAddr address, u64 size) const {
+    const u64 ran = consumed.load(std::memory_order_acquire);
+    if (!placed_log || placed_log_lost > ran) {
+        return std::nullopt;
+    }
+    const u64 first = placed_log_count - (std::min<u64>)(placed_log_count, PlacedLogSize);
+    u64 target = 0;
+    ForEachDeviceRange(memory, address, size, [&](DAddr device, u64 bytes) {
+        const DAddr end = device + bytes;
+        for (u64 index = placed_log_count; index > first; --index) {
+            const PlacedLogEntry& entry = placed_log[(index - 1) & (PlacedLogSize - 1)];
+            // Every entry noted before this one was noted by then: the back ran them all.
+            if (entry.sent <= ran) {
+                return;
+            }
+            if (entry.begin < end && device < entry.end && entry.position > ran) {
+                target = (std::max)(target, entry.position);
+            }
+        }
+    });
+    return target;
 }
 
 u64 GpuSplit::WritesTarget(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size) const {

@@ -152,10 +152,14 @@ struct ViewAnswer {
     };
     Kind kind;
     u64 position{};
+    // TEST (EDEN_NX2_ACQUIRE_STATS): why Unknown, and whether for a release still queued.
+    VideoCommon::Nx2AcquireStats::WaitWhy why{};
+    bool queued{};
 };
 
 ViewAnswer AskView(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire, u64 device) {
     using Kind = ViewAnswer::Kind;
+    using Why = VideoCommon::Nx2AcquireStats::WaitWhy;
     const auto& split = VideoCommon::GpuSplit::Get();
     const auto memory = [&] { return dma_pusher.memory_manager.Read<u32>(acquire.address); };
     // The words Switch 2 syncs on only advance (NVN2 even releases QMD completions as maxima,
@@ -174,16 +178,36 @@ ViewAnswer AskView(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
     // (QueuedSemaphoreWriteAt), and copies, inline uploads and late-valued releases are placed.
     // At Ocarina of Time's water, ~540 equal acquires a second waited ~0.5 ms each for compute
     // work whose releases the front knew.
+    Why unnoted_why = Why::ViewNotCurrent;
     const auto unnoted_writes_ran = [&](u64 noted_position) {
-        if (!VideoCommon::FrontQmdView::Get().Current() ||
-            !split.Ran(split.LastUnplacedWrite()) || !split.Ran(split.LastMappingChange())) {
+        if (!VideoCommon::FrontQmdView::Get().Current()) {
+            unnoted_why = Why::ViewNotCurrent;
+            return false;
+        }
+        if (!split.Ran(split.LastUnplacedWrite())) {
+            unnoted_why = Why::UnplacedPending;
+            return false;
+        }
+        if (!split.Ran(split.LastMappingChange())) {
+            unnoted_why = Why::MappingPending;
             return false;
         }
         // A noted release is placed too (copy engine semaphores): at its own position it is the
         // write QueuedSemaphoreWriteAt reports.
         const u64 placed =
             split.PlacedWritesTarget(dma_pusher.memory_manager, acquire.address, sizeof(u32));
-        return placed <= noted_position || split.Ran(placed);
+        unnoted_why = Why::PlacedPending;
+        if (placed <= noted_position || split.Ran(placed)) {
+            return true;
+        }
+        // The granules also count the words next to it (Switch 2 packs its semaphores tightly)
+        // and other granules hashed to its set (the constant buffer words of queued draws): at
+        // Ocarina of Time's water ~300 acquires a second waited for writes elsewhere.
+        const auto exact_placed =
+            split.ExactPlacedTarget(dma_pusher.memory_manager, acquire.address, sizeof(u32));
+        const bool ran = exact_placed && (*exact_placed <= noted_position || split.Ran(*exact_placed));
+        VideoCommon::Nx2AcquireStats::NoteExactPlaced(exact_placed.has_value(), ran);
+        return ran;
     };
     const bool settled = acquire.WaitsToReach() || split.Ran(acquire.writers_before);
     // The last release the front sent to the word decides while it may not be in memory.
@@ -194,18 +218,18 @@ ViewAnswer AskView(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
         // to the word before it are in memory once the back ran it. A greater-or-equal acquire
         // memory meets now meets it then too (the words only advance).
         if (!split.Ran(queued->position) && !(queued->known && acquire.WaitsToReach())) {
-            return {Kind::Unknown, queued->position};
+            return {Kind::Unknown, queued->position, Why::FencedQueued, true};
         }
     } else if (queued) {
         if (!queued->known) {
-            return {Kind::Unknown, queued->position};
+            return {Kind::Unknown, queued->position, Why::UnknownQueued, true};
         }
         if (queued->at_least) {
             // A maximum (QMD releases): the word holds the payload or more once the back ran it,
             // which meets a greater-or-equal acquire of the payload or less. Else memory tells.
             return acquire.WaitsToReach() && acquire.Matches(queued->payload)
                        ? ViewAnswer{Kind::MetByQueued}
-                       : ViewAnswer{Kind::Unknown, queued->position};
+                       : ViewAnswer{Kind::Unknown, queued->position, Why::AtLeastQueued, true};
         }
         if (!acquire.Matches(queued->payload)) {
             return {Kind::NotMet};
@@ -214,14 +238,14 @@ ViewAnswer AskView(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
             unnoted_writes_ran(queued->position)) {
             return {Kind::MetByQueued};
         }
-        return {Kind::Unknown, acquire.writers_before};
+        return {Kind::Unknown, acquire.writers_before, unnoted_why, true};
     }
     if (!acquire.Matches(memory())) {
         return {Kind::NotMet};
     }
     return settled || unnoted_writes_ran(0)
                ? ViewAnswer{Kind::Met}
-               : ViewAnswer{Kind::Unknown, acquire.writers_before};
+               : ViewAnswer{Kind::Unknown, acquire.writers_before, unnoted_why, false};
 }
 
 // Has the back flush the word out of the buffer cache after the work sent before: memory holds
@@ -729,7 +753,18 @@ bool Puller::AcquireWithoutDrain(DmaPusher& dma_pusher, PendingAcquire& acquire)
     // The value is in memory once the back ran that work, before what was sent after it. A
     // release the front can't value, then the writers before the acquire: two waits at most.
     u32 waits = 0;
+    const auto note_why = [&] {
+        if (VideoCommon::Nx2AcquireStats::g_enabled) [[unlikely]] {
+            VideoCommon::Nx2AcquireStats::NoteWaitWhy(
+                answer.why, answer.queued, split.LastUnplacedKind(),
+                split.Position() - (std::min)(answer.position, split.Position()),
+                answer.why == VideoCommon::Nx2AcquireStats::WaitWhy::UnplacedPending
+                    ? split.MethodEndingAt(split.LastUnplacedWrite())
+                    : std::string{});
+        }
+    };
     for (; answer.kind == Kind::Unknown && waits < 2; ++waits) {
+        note_why();
         split.WaitForPosition(answer.position, VideoCommon::DrainSite::Acquire);
         answer = AskView(dma_pusher, acquire, *device);
     }

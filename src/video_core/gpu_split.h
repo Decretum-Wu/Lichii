@@ -631,6 +631,11 @@ public:
     /// that may land anywhere.
     [[nodiscard]] u64 PlacedWritesTarget(const Tegra::MemoryManager& memory, GPUVAddr address,
                                          u64 size) const;
+    /// PlacedWritesTarget by the exact ranges of the placed writes the back may not have run: the
+    /// latest position of those that write [address, address + size), 0 if none. Empty when some
+    /// of them were dropped from the log (PlacedLogSize writes sent since).
+    [[nodiscard]] std::optional<u64> ExactPlacedTarget(const Tegra::MemoryManager& memory,
+                                                       GPUVAddr address, u64 size) const;
     /// The position after the compute and copy work sent before the last NoteSync.
     [[nodiscard]] u64 SyncedWriterPosition() const {
         return (std::min)(synced_writer_position, write_position);
@@ -871,6 +876,30 @@ private:
     u64 last_noted_write{};
     alignas(64) std::array<WriteSet, size_t{1} << WriteSlotBits> write_sets{};
     alignas(64) std::array<WriteSet, size_t{1} << CoarseSlotBits> coarse_sets{};
+    /// The placed writes in the order noted (NoteDeviceWriteAt, NoteCoarseDeviceWriteAt), with
+    /// their exact ranges: what the sets can't tell apart (writes next to a word in its granule,
+    /// other granules hashed to its set) for those the back has not run (ExactPlacedTarget).
+    struct PlacedLogEntry {
+        u64 position; ///< As placed (late QMD releases: before `sent`)
+        u64 sent;     ///< The write position when noted, in log order
+        DAddr begin;
+        DAddr end;
+    };
+    static constexpr size_t PlacedLogSize = size_t{1} << 16;
+    std::unique_ptr<PlacedLogEntry[]> placed_log;
+    u64 placed_log_count{};
+    u64 placed_log_lost{}; ///< The latest `sent` of the entries written over
+    void LogPlacedWrite(DAddr address, u64 size, u64 position) {
+        if (!placed_log) [[unlikely]] {
+            return; // Not started: nothing asks
+        }
+        PlacedLogEntry& entry = placed_log[placed_log_count & (PlacedLogSize - 1)];
+        if (placed_log_count >= PlacedLogSize) {
+            placed_log_lost = (std::max)(placed_log_lost, entry.sent);
+        }
+        entry = {position, write_position, address, address + size};
+        ++placed_log_count;
+    }
     u64 published_local{};
     /// PublishHold: Commit publishes nothing.
     bool publish_held{};

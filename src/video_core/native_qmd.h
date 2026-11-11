@@ -110,7 +110,8 @@ public:
         // What `read` returns is used before the next read only: a table entry holds no copy.
         Descriptor descriptor{};
         std::string_view error;
-        std::array<Pending, 256> pending{};
+        // Written before read: not zeroed (4 KiB, at every signal on both threads).
+        std::array<Pending, 256> pending;
         std::size_t count = 1;
         pending[0] = {address, argument & 15, ((argument >> 14) & 0x3ff) + 1};
         for (std::size_t i = 0; i < count; ++i) {
