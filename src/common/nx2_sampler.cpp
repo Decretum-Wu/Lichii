@@ -322,7 +322,7 @@ std::string Report(const std::vector<Target>& targets, const std::vector<Sample>
                             targets[thread].name, total, empty, faulted);
         print("self (where the thread is)", self, 60);
         // The hottest instructions as module offsets, for llvm-symbolizer --relative-address
-        // (which line of a function, inlined code included).
+        // (which line of a function, inlined code included). Enough to sum them per line.
         std::map<DWORD64, unsigned> addresses;
         for (const Sample& sample : samples) {
             if (sample.thread == thread && sample.depth != 0) {
@@ -335,7 +335,7 @@ std::string Report(const std::vector<Target>& targets, const std::vector<Sample>
         }
         std::sort(hot.rbegin(), hot.rend());
         text += "-- self by instruction (module+offset)\n";
-        for (size_t i = 0; i < (std::min<size_t>)(hot.size(), 60); ++i) {
+        for (size_t i = 0; i < (std::min<size_t>)(hot.size(), 400); ++i) {
             const DWORD64 address = hot[i].second;
             HMODULE module{};
             char module_path[MAX_PATH] = "?";

@@ -246,11 +246,30 @@ class Scope {
 public:
     explicit Scope(Zone zone_) : Scope{zone_, g_zones_enabled} {}
 
-    /// A zone timed only if `on` (a profiled run's choice, such as Fine()).
+    /// A zone timed only if `on` (a profiled run's choice, such as Fine()). Untimed, a zone is a
+    /// test inline; the timing is out of line (zones run on every draw and method).
     Scope(Zone zone_, bool on) : zone{zone_}, enabled{on} {
-        if (!enabled) {
-            return;
+        if (enabled) [[unlikely]] {
+            Open();
         }
+    }
+
+    ~Scope() {
+        if (enabled) [[unlikely]] {
+            Close();
+        }
+    }
+
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+private:
+#ifdef _MSC_VER
+    __declspec(noinline)
+#else
+    __attribute__((noinline))
+#endif
+    void Open() {
         auto& data = t_data;
         ++data.depth;
         parent_child_ns = data.child_ns;
@@ -265,10 +284,12 @@ public:
         }
     }
 
-    ~Scope() {
-        if (!enabled) {
-            return;
-        }
+#ifdef _MSC_VER
+    __declspec(noinline)
+#else
+    __attribute__((noinline))
+#endif
+    void Close() {
         const u64 end = Ticks();
         const u64 elapsed = end - start;
         auto& data = t_data;
@@ -291,10 +312,6 @@ public:
         }
     }
 
-    Scope(const Scope&) = delete;
-    Scope& operator=(const Scope&) = delete;
-
-private:
     Zone zone;
     Zone parent{Zone::Other};
     bool enabled;

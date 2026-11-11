@@ -97,16 +97,26 @@ inline void SetEnabledForTest(bool on) {
     return verify;
 }
 
-inline std::atomic<u64> g_serial{1};
+/// On their own cache lines, away from what every thread reads (g_enabled).
+alignas(64) inline std::atomic<u64> g_serial{1};
 /// Bumped by every break but a 3D register change: register writes change no memory, so draws
 /// with only those in between can keep uniforms as delta draws do (MemorySerial).
 inline std::atomic<u64> g_memory_serial{1};
+/// The reason of the break that bumped g_serial last and, for Register and Method, its 3D method
+/// (diagnostics; on the thread that draws, the first break since it read the serial).
+inline std::atomic<u32> g_last_break{};
 /// As g_memory_serial, for what plan workers' reads of guest memory hold under
 /// (PlanMemorySerial): only the breaks BumpsPlanMemory names, and fence releases that download
 /// buffers or images and texture downloads (BumpPlanMemorySerial).
-inline std::atomic<u64> g_plan_memory_serial{1};
-/// The last break's reason and, for Register and Method, its 3D method (diagnostics).
-inline std::atomic<u32> g_last_break{};
+alignas(64) inline std::atomic<u64> g_plan_memory_serial{1};
+
+/// The thread that draws reads the serials before each draw (Serial, MemorySerial). Once one of
+/// its breaks bumped a serial since it last read it, more change nothing it compares: they skip
+/// the atomic add (~1.4 million other engine methods a second in Ocarina of Time's water). Other
+/// threads always bump.
+inline thread_local bool t_reads_serials{};
+inline thread_local bool t_serial_bumped{};
+inline thread_local bool t_memory_serial_bumped{};
 
 /// The split's method lane (EDEN_NX2_PREP_LANE, gpu_split.h) runs the 3D engine ahead of the
 /// rasterizer: there a break waits until the lane sends the state it changed (TakePendingBreak),
@@ -172,15 +182,19 @@ inline void Break(Reason reason, u32 method = 0) {
             t_pending_break = last;
             return;
         }
-        if (reason != Reason::Register) {
+        if (reason != Reason::Register && !(t_reads_serials && t_memory_serial_bumped)) {
             g_memory_serial.fetch_add(1, std::memory_order_relaxed);
+            t_memory_serial_bumped = t_reads_serials;
         }
         if (BumpsPlanMemory(reason)) {
             g_plan_memory_serial.fetch_add(1, std::memory_order_seq_cst);
             CountPlanBump(last);
         }
-        g_serial.fetch_add(1, std::memory_order_relaxed);
-        g_last_break.store(last, std::memory_order_relaxed);
+        if (!(t_reads_serials && t_serial_bumped)) {
+            g_serial.fetch_add(1, std::memory_order_relaxed);
+            g_last_break.store(last, std::memory_order_relaxed);
+            t_serial_bumped = t_reads_serials;
+        }
     }
 }
 
@@ -220,11 +234,17 @@ inline void BumpPlanMemorySerial(Reason counted_as = Reason::Fence) {
     return true;
 }
 
+/// The thread that draws: what it compares fast draws with (and, from then on, its next break
+/// bumps the serial again).
 inline u64 Serial() {
+    t_reads_serials = true;
+    t_serial_bumped = false;
     return g_serial.load(std::memory_order_relaxed);
 }
 
 inline u64 MemorySerial() {
+    t_reads_serials = true;
+    t_memory_serial_bumped = false;
     return g_memory_serial.load(std::memory_order_relaxed);
 }
 

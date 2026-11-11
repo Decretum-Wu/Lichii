@@ -950,12 +950,14 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         uniform_memory_serial = ~u64{0};
     }
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
+    // The clock (fenced) only for runs that log the draw costs (ReportFastDraws).
+    const bool fast_draw_timed = fast_draw_on && (Profile::Enabled() || fast_draw_verify);
     // TEST (EDEN_NX2_TEST_TOGGLE_FILE): the switches under test follow that file.
     static const char* const toggle_file = std::getenv("EDEN_NX2_TEST_TOGGLE_FILE");
     if (toggle_file != nullptr && (++toggle_checks & 1023) == 0) {
         FastDraw::g_test_toggled = std::filesystem::exists(toggle_file);
     }
-    const u64 fast_draw_start = fast_draw_on ? Profile::Now() : 0;
+    const u64 fast_draw_start = fast_draw_timed ? Profile::Now() : 0;
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
         FlushWork();
@@ -1375,6 +1377,8 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     if (fast_draw_on) {
         NoteResolvedDraw(pipeline, is_indexed, is_indirect, draw_serial, draw_memory_serial,
                          draw_map_serial);
+    }
+    if (fast_draw_timed) {
         const size_t index = static_cast<size_t>(path);
         const u64 elapsed = Profile::Now() - fast_draw_start;
         fast_draw_stats.prepare_ns[index] += elapsed;
