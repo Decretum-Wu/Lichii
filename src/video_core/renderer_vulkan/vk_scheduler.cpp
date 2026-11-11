@@ -48,6 +48,7 @@ namespace {
 std::atomic<u64> g_profile_submits{};
 std::atomic<u64> g_profile_renderpasses{};
 std::atomic<u64> g_profile_finishes{};
+std::atomic<u64> g_profile_skipped_flushes{};
 std::atomic<u64> g_profile_finish_ns{};
 std::atomic<u64> g_profile_window_start{};
 std::mutex g_profile_end_mutex;
@@ -74,9 +75,10 @@ void ReportSubmitCounts() {
     }
     const double seconds = static_cast<double>(now - start) / 1e9;
     LOG_INFO(Render_Vulkan,
-             "Scheduler per second: {:.0f} submits, {:.0f} render passes, {:.0f} finishes "
-             "waiting {:.1f} ms",
+             "Scheduler per second: {:.0f} submits, {:.0f} empty flushes skipped, {:.0f} render "
+             "passes, {:.0f} finishes waiting {:.1f} ms",
              static_cast<double>(g_profile_submits.exchange(0)) / seconds,
+             static_cast<double>(g_profile_skipped_flushes.exchange(0)) / seconds,
              static_cast<double>(g_profile_renderpasses.exchange(0)) / seconds,
              static_cast<double>(g_profile_finishes.exchange(0)) / seconds,
              static_cast<double>(g_profile_finish_ns.exchange(0)) / 1e6 / seconds);
@@ -415,9 +417,16 @@ u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,
     // When flushing, we only send data to the worker thread; no waiting is necessary.
     const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore, location);
     AllocateNewContext();
+    submitted_serial = record_serial;
     last_flush = std::chrono::steady_clock::now();
     flush_pending = false;
     return signal_value;
+}
+
+void Scheduler::CountSkippedFlush() {
+    if (VideoCommon::Nx2Profile::Enabled()) {
+        g_profile_skipped_flushes.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 bool Scheduler::DeferFlush() {
@@ -495,6 +504,7 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,
     Wait(presubmit_tick);
     AllocateNewContext();
     VideoCommon::GpuWaitStats::AddHostWait(VideoCommon::GpuWaitStats::Now() - wait_start);
+    submitted_serial = record_serial;
     last_flush = std::chrono::steady_clock::now();
     flush_pending = false;
     if (profile) {

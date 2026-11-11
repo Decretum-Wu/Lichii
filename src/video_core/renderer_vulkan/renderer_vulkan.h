@@ -85,6 +85,12 @@ private:
     void EndSingleTimeCommands(VkCommandBuffer command_buffer);
     void Report() const;
 
+    /// The encoding and luminances this frame is presented with; picks the swapchain format
+    /// again when the HDR settings or the monitor's state changed.
+    HdrPresent UpdateHdrPresent();
+    /// SDR, with the luminances the game was told: screenshots and captures tone map HDR layers.
+    HdrPresent CaptureHdrPresent() const;
+
     vk::Buffer RenderToBuffer(std::span<const Tegra::FramebufferConfig> framebuffers,
                               const Layout::FramebufferLayout& layout, VkFormat format,
                               VkDeviceSize buffer_size);
@@ -126,6 +132,12 @@ private:
     std::optional<TurboMode> turbo_mode;
 
     Frame applet_frame;
+
+    u64 output_format_key{~u64{}};
+    u32 output_luminance_key{};
+    VkSurfaceFormatKHR output_format{};
+    f32 output_reference_white{};
+    f32 output_peak{};
 };
 
 } // namespace Vulkan

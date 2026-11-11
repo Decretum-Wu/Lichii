@@ -167,6 +167,8 @@ add_library(video_core STATIC
     renderer_vulkan/present/fsr3.h
     renderer_vulkan/present/fxaa.cpp
     renderer_vulkan/present/fxaa.h
+    renderer_vulkan/present/hdr_convert.cpp
+    renderer_vulkan/present/hdr_convert.h
     renderer_vulkan/present/layer.cpp
     renderer_vulkan/present/layer.h
     renderer_vulkan/present/present_push_constants.h
@@ -192,6 +194,7 @@ add_library(video_core STATIC
     renderer_vulkan/pipeline_build_failure.cpp
     renderer_vulkan/pipeline_build_failure.h
     renderer_vulkan/pipeline_build_trace.h
+    renderer_vulkan/pipeline_eviction_policy.h
     renderer_vulkan/pipeline_helper.h
     renderer_vulkan/pipeline_optimization.h
     renderer_vulkan/pipeline_shader_emission.h

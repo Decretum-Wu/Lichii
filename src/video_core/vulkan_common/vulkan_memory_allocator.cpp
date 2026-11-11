@@ -286,23 +286,6 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         result = vmaCreateImage(allocator, &ci, &relaxed, &handle, &allocation, &alloc_info);
     }
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
-        // Still out of device memory: a real image in host memory (slow, but valid) beats one
-        // with nothing bound, which AMD's drivers do not survive being sampled.
-        VmaAllocationCreateInfo host = alloc_ci;
-        host.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
-        host.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-        host.preferredFlags = 0;
-        result = vmaCreateImage(allocator, &ci, &host, &handle, &allocation, &alloc_info);
-        static u32 host_logged{};
-        if (result == VK_SUCCESS && host_logged++ < 16) {
-            LOG_WARNING(Render_Vulkan,
-                        "Image {}x{}x{} ({} levels, {} layers, format {}) is out of device memory; "
-                        "placed in host memory",
-                        ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
-                        ci.arrayLayers, static_cast<u32>(ci.format));
-        }
-    }
-    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
         pressure_events.fetch_add(1, std::memory_order_relaxed);
     }
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D &&

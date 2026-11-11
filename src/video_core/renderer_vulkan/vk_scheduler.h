@@ -257,6 +257,16 @@ public:
             location, RecordSite::Own, 0);
     }
 
+    /// Whether anything was recorded since the last Flush or Finish, or waits to be: batched
+    /// and reordered uploads and a deferred clear reach the command buffer only at the next
+    /// record or submit.
+    [[nodiscard]] bool RecordedSinceSubmit() const noexcept {
+        return record_serial != submitted_serial || uploads_pending || reordered_uploads_pending ||
+               deferred_clear.framebuffer != nullptr;
+    }
+    /// Counts a flush skipped because nothing was recorded (GPU profile).
+    static void CountSkippedFlush();
+
     /// Whether the recording thread submitted `tick` within 20 ms.
     [[nodiscard]] bool WaitForSubmission(u64 tick) const {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
@@ -371,6 +381,8 @@ public:
 private:
     std::chrono::steady_clock::time_point last_flush{};
     bool flush_pending{};
+    u64 record_serial{};    ///< Commands recorded
+    u64 submitted_serial{}; ///< record_serial at the last Flush or Finish
 
     class Command {
     public:
@@ -478,6 +490,7 @@ private:
             // Uploads recorded before this command go before it.
             FlushUploads();
         }
+        ++record_serial;
         if (!chunk->Record(command)) {
             DispatchWork();
             (void)chunk->Record(command);
