@@ -253,6 +253,17 @@ inline bool g_test_toggled{};
     return relookup && !g_test_toggled;
 }
 
+/// Whether a draw after texture handle writes or rebinds reads the handles again and resolves
+/// only the ones that changed, keeping the rest as a delta draw does. EDEN_NX2_TEST_RETEXTURE=0
+/// (TEST): such draws resolve in full; EDEN_NX2_TEST_TOGGLE_FILE turns it off too.
+[[nodiscard]] inline bool RetextureDraws() {
+    static const bool retexture = [] {
+        const char* value = std::getenv("EDEN_NX2_TEST_RETEXTURE");
+        return value == nullptr || value[0] != '0';
+    }();
+    return retexture && !g_test_toggled;
+}
+
 /// The device memory a GPU range maps to. A write through another GPU address that maps the
 /// same device memory changes the range too.
 class DeviceSpans {

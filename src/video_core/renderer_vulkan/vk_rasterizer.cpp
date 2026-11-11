@@ -500,6 +500,7 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
     const FastDraw::Delta delta = std::exchange(FastDraw::g_delta, FastDraw::Delta{});
     taken_delta = delta;
     taken_relookup = false;
+    taken_retexture = false;
     last_full_reason = FullDraw::NoCandidate;
     const auto full = [&](FullDraw reason) -> GraphicsPipeline* {
         ++fast_draw_stats.full[static_cast<size_t>(reason)];
@@ -572,10 +573,17 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
         }
         note_relookup(AttributesChanged);
     }
+    // Texture handle rebinds and writes: the draw reads the handles again and resolves the ones
+    // that changed (RetextureDelta), where every handle is a constant buffer word.
+    const bool retexture_on = FastDraw::RetextureDraws() && draw.pipeline->CanRetexture();
+    bool retexture = false;
     const auto& handles = draw.pipeline->HandleConstantBuffers();
     for (size_t stage = 0; stage < handles.size() && !delta.Empty(); ++stage) {
         if ((delta.binds[stage] & handles[stage]) != 0) {
-            return full(FullDraw::HandleBind);
+            if (!retexture_on) {
+                return full(FullDraw::HandleBind);
+            }
+            retexture = true;
         }
         if (delta.num_writes == 0) {
             continue;
@@ -591,7 +599,11 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
             if (delta.Reaches(cbuf.address + begin, end - begin, spans)) {
                 if (delta.ReachesWords(cbuf.address, draw.pipeline->HandleWords(stage, slot),
                                        spans)) {
-                    return full(FullDraw::HandleData);
+                    if (!retexture_on) {
+                        return full(FullDraw::HandleData);
+                    }
+                    retexture = true;
+                    continue;
                 }
                 taken_delta.no_uniform_keeps = true;
             }
@@ -599,6 +611,7 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
     }
     taken_draw = draw;
     taken_relookup = relookup;
+    taken_retexture = retexture;
     return draw.pipeline;
 }
 
@@ -782,13 +795,17 @@ void RasterizerVulkan::ReportFastDraws() {
     LOG_INFO(Render_Vulkan,
              "Fast draw relookups per second: {:.0f} after another kind, {:.0f} after register "
              "changes, {:.0f} after attribute types | {:.0f} same pipeline, {:.0f} other pipeline "
-             "taking the kept state, {:.0f} resolving differently",
+             "taking the kept state, {:.0f} resolving differently | retextures: {:.0f} kept every "
+             "view, {:.0f} resolved some, {:.0f} resolved in full",
              static_cast<double>(stats.relookup_causes[0]) / seconds,
              static_cast<double>(stats.relookup_causes[1]) / seconds,
              static_cast<double>(stats.relookup_causes[2]) / seconds,
              static_cast<double>(stats.relookup_same) / seconds,
              static_cast<double>(stats.relookup_moved) / seconds,
-             static_cast<double>(stats.relookup_other) / seconds);
+             static_cast<double>(stats.relookup_other) / seconds,
+             static_cast<double>(stats.retexture_unchanged) / seconds,
+             static_cast<double>(stats.retexture_resolved) / seconds,
+             static_cast<double>(stats.retexture_failed) / seconds);
     static constexpr std::array<const char*, static_cast<size_t>(FullDraw::Count)>
         full_names{"after an ineligible draw", "kind", "state changed", "after a submit",
                    "render pass", "pipeline without delta draws", "handle buffer bound",
@@ -1197,8 +1214,24 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         }
     }
     setup_scope.reset();
+    const bool retextured = [&] {
+        if (delta_pipeline == nullptr || !taken_retexture) {
+            return true;
+        }
+        Profile::Scope scope{Profile::Zone::ReadHandles};
+        const std::optional<u32> resolved = delta_pipeline->RetextureDelta();
+        if (!resolved) {
+            ++fast_draw_stats.retexture_failed;
+            ++fast_draw_stats.full[static_cast<size_t>(FullDraw::HandleData)];
+            last_full_reason = FullDraw::HandleData;
+            return false;
+        }
+        ++(*resolved == 0 ? fast_draw_stats.retexture_unchanged
+                          : fast_draw_stats.retexture_resolved);
+        return true;
+    }();
     const bool delta_holds =
-        delta_pipeline != nullptr &&
+        delta_pipeline != nullptr && retextured &&
         DeltaStillHolds(delta_pipeline, draw_serial, draw_memory_serial, draw_map_serial);
     const DrawPath path = delta_holds && !verify_pipeline ? DrawPath::Delta : DrawPath::Full;
     // Between the previous draw and this one only 3D registers changed besides what the delta

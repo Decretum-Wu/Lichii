@@ -375,6 +375,18 @@ public:
     /// Takes what `other` (SharesDeltaStateWith) kept for delta draws; `other` keeps nothing.
     void TakeDeltaStateFrom(GraphicsPipeline& other) noexcept;
 
+    /// Whether RetextureDelta can bring the kept views up to date: every handle is a constant
+    /// buffer word (no texture or image buffers, images or computed handles).
+    [[nodiscard]] bool CanRetexture() const noexcept {
+        return texture_memo_eligible && TakesDeltaDraws();
+    }
+    /// Delta draws after texture handle writes or rebinds: reads every handle again and resolves
+    /// the views and samplers of those that changed, keeping the others; the next ConfigureDelta
+    /// pushes their descriptors again. Returns how many it resolved, or nothing (the draw resolves
+    /// in full) when the handles can't be read or resolving deleted or rescaled images the kept
+    /// views may sample.
+    std::optional<u32> RetextureDelta();
+
     template <typename Spec>
     static auto MakeConfigureSpecFunc() {
         return [](GraphicsPipeline* pl, bool is_indexed) { return pl->ConfigureImpl<Spec>(is_indexed); };
@@ -390,6 +402,10 @@ private:
     bool ConfigureImpl(bool is_indexed);
 
     void KeepImageDescriptors(size_t stage, size_t first_entry);
+
+    /// Appends the texture handle words of the configured stages (CanRetexture pipelines), as
+    /// ConfigureImpl reads them. False when a constant buffer they are in isn't bound.
+    bool ReadRawHandles(std::vector<u32>& out) const;
 
     bool ConfigureDraw(const RescalingPushConstant& rescaling,
                        const RenderAreaPushConstant& render_are);
@@ -455,6 +471,10 @@ private:
         handle_word_index{};
     std::vector<VideoCommon::ImageViewInOut> delta_views;
     std::vector<VideoCommon::SamplerId> delta_samplers;
+    /// The constant buffer words delta_views and delta_samplers were resolved from (texture
+    /// memo eligible pipelines, RetextureDelta), and RetextureDelta's scratch.
+    std::vector<u32> delta_raw_handles;
+    std::vector<u32> retexture_handles;
     /// A handle the captured Configure computed at draw time: the descriptor it was read for
     /// (stage, kind as ComputedHandleKind, index in its list) and its value.
     struct ComputedHandle {

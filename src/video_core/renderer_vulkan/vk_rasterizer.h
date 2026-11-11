@@ -473,6 +473,11 @@ private:
         u64 relookup_same{};
         u64 relookup_moved{};
         u64 relookup_other{};
+        /// Draws that read their texture handles again: kept the views, resolved some, or
+        /// couldn't (resolved in full).
+        u64 retexture_unchanged{};
+        u64 retexture_resolved{};
+        u64 retexture_failed{};
         u64 window_start{};
     };
     /// The pipeline of a draw resolved in full: a plan worker's (PlanWorkers) when it still holds,
@@ -494,6 +499,8 @@ private:
     ReusableDraw reusable_draw;
     ReusableDraw taken_draw; ///< The draw TakeReusableDraw last returned the pipeline of
     bool taken_relookup{};
+    /// The draw reads its texture handles again (GraphicsPipeline::RetextureDelta).
+    bool taken_retexture{};
     FullDraw last_full_reason{}; ///< TEST: why the draw resolves in full (FastDrawStats::full_ns)
     u32 toggle_checks{};         ///< TEST: draws since EDEN_NX2_TEST_TOGGLE_FILE was looked at
     /// Device memory of the constant buffers TakeReusableDraw checks for texture handle writes.

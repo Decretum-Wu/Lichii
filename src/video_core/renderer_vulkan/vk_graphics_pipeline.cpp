@@ -978,6 +978,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         delta_samplers.assign(samplers.begin(), samplers.end());
         delta_computed_handles.assign(computed_handles.begin(), computed_handles.end());
         configured_stages = Spec::enabled_stages;
+        delta_raw_handles.clear();
+        if (texture_memo_eligible && !ReadRawHandles(delta_raw_handles)) {
+            delta_raw_handles.clear();
+        }
         delta_views_valid = true;
         kept_images_valid = false;
     }
@@ -1196,6 +1200,7 @@ bool GraphicsPipeline::SharesDeltaStateWith(const GraphicsPipeline& other) const
 void GraphicsPipeline::TakeDeltaStateFrom(GraphicsPipeline& other) noexcept {
     delta_views.swap(other.delta_views);
     delta_samplers.swap(other.delta_samplers);
+    delta_raw_handles.swap(other.delta_raw_handles);
     delta_computed_handles.swap(other.delta_computed_handles);
     kept_image_entries.swap(other.kept_image_entries);
     configured_stages = other.configured_stages;
@@ -1204,6 +1209,82 @@ void GraphicsPipeline::TakeDeltaStateFrom(GraphicsPipeline& other) noexcept {
     kept_scale_epoch = other.kept_scale_epoch;
     delta_views_valid = std::exchange(other.delta_views_valid, false);
     kept_images_valid = std::exchange(other.kept_images_valid, false);
+}
+
+bool GraphicsPipeline::ReadRawHandles(std::vector<u32>& out) const {
+    // As ConfigureImpl's read_handle reads them for texture memo eligible pipelines, in its order;
+    // words a storage buffer keeps its address in bind no texture (~0, never compared changed).
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        if (!configured_stages[stage]) {
+            continue;
+        }
+        const Shader::Info& info{stage_infos[stage]};
+        const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
+        for (const auto& desc : info.texture_descriptors) {
+            for (u32 index = 0; index < desc.count; ++index) {
+                if (VideoCommon::HandleIsStoragePointer(info, desc, index)) {
+                    out.push_back(~0U);
+                    continue;
+                }
+                if (!cbufs[desc.cbuf_index].enabled) {
+                    return false;
+                }
+                out.push_back(gpu_memory->Read<u32>(cbufs[desc.cbuf_index].address +
+                                                    desc.cbuf_offset +
+                                                    (index << desc.size_shift)));
+            }
+        }
+    }
+    return out.size() == delta_views.size();
+}
+
+std::optional<u32> GraphicsPipeline::RetextureDelta() {
+    if (!CanRetexture() || delta_raw_handles.size() != delta_views.size() ||
+        delta_samplers.size() != delta_views.size()) {
+        return std::nullopt;
+    }
+    if (!ReadRawHandles(retexture_handles)) {
+        retexture_handles.clear();
+        return std::nullopt;
+    }
+    small_vector<u32, 16> changed;
+    for (u32 element = 0; element < retexture_handles.size(); ++element) {
+        if (retexture_handles[element] != delta_raw_handles[element]) {
+            changed.push_back(element);
+        }
+    }
+    if (changed.empty()) {
+        retexture_handles.clear();
+        return 0U;
+    }
+    const bool via_header_index{maxwell3d->regs.sampler_binding ==
+                                Maxwell::SamplerBinding::ViaHeaderBinding};
+    // Resolving a view can delete or rescale images (both break the fast draw serial) the views
+    // kept for the other handles may sample: then the draw resolves everything in full.
+    const u64 serial = VideoCommon::Nx2FastDraw::Serial();
+    small_vector<VideoCommon::ImageViewInOut, 16> views;
+    small_vector<VideoCommon::SamplerId, 16> samplers;
+    for (const u32 element : changed) {
+        const auto [image_index, sampler_index] =
+            TexturePair(retexture_handles[element], via_header_index);
+        views.push_back({image_index});
+        samplers.push_back(texture_cache.GetSamplerId(sampler_index, false));
+    }
+    texture_cache.FillImageViews(std::span(views.data(), views.size()), false, false);
+    if (VideoCommon::Nx2FastDraw::Serial() != serial) {
+        retexture_handles.clear();
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < changed.size(); ++i) {
+        delta_views[changed[i]] = views[i];
+        delta_samplers[changed[i]] = samplers[i];
+    }
+    delta_raw_handles.swap(retexture_handles);
+    retexture_handles.clear();
+    // The kept descriptors and rescaling words are for the old views: ConfigureDelta pushes and
+    // keeps them again.
+    kept_images_valid = false;
+    return static_cast<u32>(changed.size());
 }
 
 bool GraphicsPipeline::ComputedHandlesChanged() const {
