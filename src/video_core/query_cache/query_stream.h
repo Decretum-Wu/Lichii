@@ -137,20 +137,28 @@ protected:
         }
     }
 
+    /// Called by the one thread that records reports. Free ids are taken from `reusable`, which
+    /// only this thread touches, and moved there from `old_queries` in batches: one lock per
+    /// batch instead of one per query (a report per draw builds two).
     template <typename... Args, typename = decltype(QueryType(std::declval<Args>()...))>
     size_t BuildQuery(Args&&... args) {
-        std::scoped_lock lk(guard);
-        if (old_queries_head != old_queries.size()) {
-            size_t new_id = old_queries[old_queries_head++];
+        if (reusable_head == reusable.size()) {
+            reusable.clear();
+            reusable_head = 0;
+            std::scoped_lock lk(guard);
             if (old_queries_head == old_queries.size()) {
-                old_queries.clear();
-                old_queries_head = 0;
+                const size_t new_id = slot_queries.size();
+                slot_queries.emplace_back(std::forward<Args>(args)...);
+                return new_id;
             }
-            new (&slot_queries[new_id]) QueryType(std::forward<Args>(args)...);
-            return new_id;
+            // Oldest first, as they were freed.
+            reusable.swap(old_queries);
+            reusable_head = old_queries_head;
+            old_queries.clear();
+            old_queries_head = 0;
         }
-        size_t new_id = slot_queries.size();
-        slot_queries.emplace_back(std::forward<Args>(args)...);
+        const size_t new_id = reusable[reusable_head++];
+        new (&slot_queries[new_id]) QueryType(std::forward<Args>(args)...);
         return new_id;
     }
 
@@ -174,6 +182,9 @@ protected:
     /// every two pushes, and a report per draw frees two queries.
     std::vector<size_t> old_queries;
     size_t old_queries_head{};
+    /// Free ids BuildQuery took from old_queries, used from reusable_head (its thread only).
+    std::vector<size_t> reusable;
+    size_t reusable_head{};
 };
 
 } // namespace VideoCommon
