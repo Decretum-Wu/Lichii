@@ -5774,6 +5774,69 @@ static QPalette LichiiPalette() {
     return palette;
 }
 
+void MainWindow::UpdateMenuIcons() {
+    const std::array<std::pair<QAction*, const char*>, 55> icons{{
+        {ui->action_Install_File_NAND, "download"},
+        {ui->action_Load_File, "file"},
+        {ui->action_Load_Folder, "folder"},
+        {ui->menu_recent_files->menuAction(), "clock"},
+        {ui->action_Load_Amiibo, "star"},
+        {ui->menuOpen_Eden_Folders->menuAction(), "folder"},
+        {ui->action_Exit, "x"},
+        {ui->action_Root_Data_Folder, "folder"},
+        {ui->action_NAND_Folder, "hdd"},
+        {ui->action_SDMC_Folder, "sd"},
+        {ui->action_Mod_Folder, "puzzle"},
+        {ui->action_Log_Folder, "list"},
+        {ui->action_Pause, "pause"},
+        {ui->action_Stop, "stop"},
+        {ui->action_Restart, "restart"},
+        {ui->action_Configure, "sliders"},
+        {ui->action_Configure_Current_Game, "gamepad"},
+        {ui->action_Post_Processing_Shaders, "wand"},
+        {ui->menu_Reset_Window_Size->menuAction(), "monitor"},
+        {ui->menu_View_Debugging->menuAction(), "bug"},
+        {ui->menu_Game_List_Mode->menuAction(), "grid"},
+        {ui->menuGame_Icon_Size->menuAction(), "image"},
+        {ui->action_View_Lobby, "globe"},
+        {ui->action_Start_Room, "plus"},
+        {ui->action_Connect_To_Room, "users"},
+        {ui->action_Show_Room, "dot"},
+        {ui->action_Leave_Room, "x"},
+        {ui->action_Install_Keys, "key"},
+        {ui->menuInstall_Firmware->menuAction(), "cpu"},
+        {ui->action_Firmware_From_Folder, "folder"},
+        {ui->action_Firmware_From_ZIP, "archive"},
+        {ui->action_Verify_installed_contents, "check"},
+        {ui->action_Data_Manager, "hdd"},
+        {ui->menu_cabinet_applet->menuAction(), "star"},
+        {ui->menu_Applets->menuAction(), "apps"},
+        {ui->menu_Create_Shortcuts->menuAction(), "share"},
+        {ui->action_Desktop, "monitor"},
+        {ui->action_Application_Menu, "apps"},
+        {ui->action_Capture_Screenshot, "image"},
+        {ui->menuTAS->menuAction(), "play"},
+        {ui->action_TAS_Start, "play"},
+        {ui->action_TAS_Record, "record"},
+        {ui->action_TAS_Reset, "restart"},
+        {ui->action_Configure_Tas, "sliders"},
+        {ui->action_Launch_QLaunch, "apps"},
+        {ui->action_Launch_MiiEdit, "user"},
+        {ui->action_Launch_Controller, "gamepad"},
+        {ui->action_Launch_PhotoViewer, "image"},
+        {ui->action_Open_Mods_Page, "puzzle"},
+        {ui->action_Open_UserHandbook, "help"},
+        {ui->action_Apply_Recommended_Settings, "wand"},
+        {ui->action_Restore_Previous_Settings, "restart"},
+        {ui->action_Whats_New, "sparkles"},
+        {ui->action_About, "info"},
+        {ui->action_Eden_Dependencies, "list"},
+    }};
+    for (const auto& [action, name] : icons) {
+        action->setIcon(MenuIcon(name));
+    }
+}
+
 void MainWindow::UpdateUITheme() {
     const QString default_theme = QString::fromUtf8(UISettings::themes[size_t(UISettings::default_theme)].second);
     QString current_theme = QString::fromStdString(UISettings::values.theme);
@@ -5829,6 +5892,8 @@ void MainWindow::UpdateUITheme() {
         qApp->setStyleSheet({});
         setStyleSheet({});
     }
+
+    UpdateMenuIcons();
 
 #ifdef _WIN32
     RemoveTitlebarFilter();

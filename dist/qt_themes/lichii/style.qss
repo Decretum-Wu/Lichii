@@ -693,7 +693,7 @@ QAbstractItemView {
     background-color: #17181b;
     alternate-background-color: #1b1c20;
     border: 0;
-    selection-background-color: rgba(240, 56, 107, 0.16);
+    selection-background-color: #3a1d28;
     selection-color: #ffffff;
     show-decoration-selected: 1;
 }
@@ -709,12 +709,16 @@ QAbstractItemView::item:hover {
 QAbstractItemView::item:selected,
 QAbstractItemView::item:selected:active,
 QAbstractItemView::item:selected:!active {
-    background-color: rgba(240, 56, 107, 0.16);
+    background-color: #3a1d28;
     color: #ffffff;
 }
 
 QTreeView::branch {
     background: transparent;
+}
+
+QTreeView::branch:selected {
+    background-color: #3a1d28;
 }
 
 QTreeView::branch:has-children:!has-siblings:closed,
@@ -800,7 +804,7 @@ QListWidget#selectorList::item:selected {
 }
 
 /* Per-game Properties: the game's info column */
-QDialog#ConfigurePerGame QGroupBox#groupBox {
+QDialog#ConfigurePerGame QGroupBox#gameInfo {
     background-color: #141518;
     border: 0;
     border-right: 1px solid #2a2b30;
@@ -808,11 +812,11 @@ QDialog#ConfigurePerGame QGroupBox#groupBox {
     padding: 16px 12px;
 }
 
-QDialog#ConfigurePerGame QGroupBox#groupBox::title {
+QDialog#ConfigurePerGame QGroupBox#gameInfo::title {
     color: transparent;
 }
 
-QDialog#ConfigurePerGame QGroupBox#groupBox QLineEdit {
+QDialog#ConfigurePerGame QGroupBox#gameInfo QLineEdit {
     background-color: transparent;
     border: 0;
     border-bottom: 1px solid #212226;
@@ -829,6 +833,17 @@ QDialog#ConfigurePerGame QGraphicsView {
 QDialog#ConfigureDialog QLabel#label,
 QDialog#ConfigurePerGame QLabel#label_8 {
     color: #6f7178;
+}
+
+/* About ---------------------------------------------------------------- */
+
+QDialog#AboutDialog QLabel#labelAbout {
+    color: #c4c5ca;
+}
+
+QDialog#AboutDialog QLabel#labelBuildInfo,
+QDialog#AboutDialog QLabel#labelLiability {
+    color: #8b8d94;
 }
 
 /* What's new ------------------------------------------------------------ */

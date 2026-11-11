@@ -395,12 +395,12 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
     ui->setupUi(this);
 
     auto* const info_area = new QScrollArea(this);
-    ui->horizontalLayout->replaceWidget(ui->groupBox, info_area);
+    ui->horizontalLayout->replaceWidget(ui->gameInfo, info_area);
     info_area->setFrameShape(QFrame::NoFrame);
     info_area->setWidgetResizable(true);
     info_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     info_area->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
-    info_area->setWidget(ui->groupBox);
+    info_area->setWidget(ui->gameInfo);
 
     const std::array<std::tuple<QWidget*, const char*, QString>, 10> tabs{{
         {addons_tab.get(), "puzzle", tr("Add-Ons")},
@@ -474,7 +474,7 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
     }
 
     LoadConfiguration();
-    info_area->setMinimumWidth(ui->groupBox->sizeHint().width() +
+    info_area->setMinimumWidth(ui->gameInfo->sizeHint().width() +
                                info_area->verticalScrollBar()->sizeHint().width());
     ConfigurationShared::FitToScreen(this, QSize(1040, 760));
 }
