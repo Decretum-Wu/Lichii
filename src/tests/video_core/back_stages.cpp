@@ -176,6 +176,40 @@ TEST_CASE("Back stages: joins from the thread that draws count their site", "[ba
     ring.Stop();
 }
 
+TEST_CASE("Back stages: what runs after a join from stage A runs between draws", "[back_stages]") {
+    BackRing ring;
+    ring.Start([](u32) {}, {}, {});
+    DrawStages::g_checking = true;
+    DrawStages::g_counting = true;
+    DrawStages::g_threaded = true;
+    DrawStages::g_ring = &ring;
+    DrawStages::t_draw_thread = true;
+    DrawStages::ClaimRing();
+    DrawStages::Stage hook_stage{DrawStages::Stage::A};
+    DrawStages::g_after_join_argument = &hook_stage;
+    DrawStages::g_after_join = [](void* argument) {
+        // As SpliceCapturedCommands: the scheduler's Record expects stage B or between draws.
+        DrawStages::Expect(DrawStages::Stage::B, "after join");
+        *static_cast<DrawStages::Stage*>(argument) = DrawStages::t_stage;
+    };
+    const u64 violations = DrawStages::g_counters.violations.load();
+    DrawStages::Enter(DrawStages::Stage::A);
+    DrawStages::JoinB(DrawStages::Join::ABufferLock);
+    REQUIRE(hook_stage == DrawStages::Stage::Outside);
+    REQUIRE(DrawStages::g_counters.violations.load() == violations);
+    REQUIRE(DrawStages::t_stage == DrawStages::Stage::A);
+    DrawStages::t_stage = DrawStages::Stage::Outside;
+    DrawStages::g_after_join = nullptr;
+    DrawStages::g_after_join_argument = nullptr;
+    DrawStages::ReleaseRing();
+    DrawStages::g_ring = nullptr;
+    DrawStages::g_threaded = false;
+    DrawStages::g_counting = false;
+    DrawStages::g_checking = false;
+    DrawStages::t_draw_thread = false;
+    ring.Stop();
+}
+
 TEST_CASE("Back stages: stopping and restarting a ring invalidates another thread's capture",
           "[back_stages][threaded]") {
     std::barrier phase{2};

@@ -131,6 +131,7 @@ add_executable(tests
     video_core/evicted_pointer_slots.cpp
     video_core/shader_cache_v2_programs.cpp
     video_core/shader_cache_v2_driver.cpp
+    video_core/vulkan_compute_descriptors.cpp
     video_core/vulkan_pipeline_binaries.cpp
     video_core/shader_precache.cpp
     video_core/shader_object_pool.cpp

@@ -116,7 +116,9 @@ per second" part.
   A.
 
 While a join holds, the owner checks treat the thread as between draws, as stage 4's B would be
-idle.
+idle. So does what a join runs after B is idle, such as A splicing its own list, even when the join
+came from stage A. Buffer bindings the runtime makes go to B's own descriptor queue only on B's
+thread; compute and every other caller fill the guest queue they acquired.
 
 ### Still shared, not yet a join
 

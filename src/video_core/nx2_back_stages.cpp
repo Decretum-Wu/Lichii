@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <chrono>
+#include <utility>
 
 #include <fmt/format.h>
 
@@ -225,7 +226,10 @@ void JoinNow(Join site) {
         ring->Join();
     }
     if (g_after_join != nullptr) {
+        // B is idle: what the hook records runs between draws, as under a JoinScope.
+        const Stage stage = std::exchange(t_stage, Stage::Outside);
         g_after_join(g_after_join_argument);
+        t_stage = stage;
     }
 }
 

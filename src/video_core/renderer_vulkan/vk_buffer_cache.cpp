@@ -711,7 +711,7 @@ bool BufferCacheRuntime::BindMultiRangeStorageBuffer(u64 key, bool is_written) {
         PostCopyBarrier();
         multi_range_buffers.MarkGathered(key);
     }
-    stage_descriptor_queue->AddBuffer(ref.handle, ref.address, 0, ref.size);
+    StageDescriptorQueue().AddBuffer(ref.handle, ref.address, 0, ref.size);
     return true;
 }
 

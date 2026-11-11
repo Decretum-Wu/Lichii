@@ -305,17 +305,20 @@ public:
     /// its data goes.
     std::span<u8> BindStagedStreamUniform(u32 size) {
         const StagingBufferRef ref = staging_pool.Request(size, MemoryUsage::Upload);
-        stage_descriptor_queue->AddBuffer(ref.buffer, ref.device_address, ref.offset, size);
+        StageDescriptorQueue().AddBuffer(ref.buffer, ref.device_address, ref.offset, size);
         return ref.mapped_span;
     }
 
-    /// The queue the bindings stage B makes (storage, texel and B's uniform buffers) go to: the
-    /// guest queue, or with B on its own thread a queue of B's own that fills A's entries.
+    /// Stage B's own queue (EDEN_NX2_BACK_STAGES=1), filling A's entries from B's thread.
     void SetStageDescriptorQueue(GuestDescriptorQueue& queue) noexcept {
-        stage_descriptor_queue = &queue;
+        back_descriptor_queue = &queue;
     }
+    /// The queue the runtime's bindings go to: B's own on stage B's thread, the guest queue on
+    /// every other thread (compute and inline draws acquire and count the guest queue).
     [[nodiscard]] GuestDescriptorQueue& StageDescriptorQueue() const noexcept {
-        return *stage_descriptor_queue;
+        return back_descriptor_queue != nullptr && VideoCommon::DrawStages::t_stage_b_thread
+                   ? *back_descriptor_queue
+                   : guest_descriptor_queue;
     }
 
     void BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size,
@@ -329,7 +332,7 @@ public:
         if (format == VideoCore::Surface::PixelFormat::Invalid) {
             format = VideoCore::Surface::PixelFormat::R8_UNORM;
         }
-        stage_descriptor_queue->AddTexelBuffer(buffer.View(offset, size, format),
+        StageDescriptorQueue().AddTexelBuffer(buffer.View(offset, size, format),
                                               buffer.DeviceAddress(), offset, size,
                                               TexelBufferFormat(format));
     }
@@ -346,9 +349,9 @@ private:
     void BindBuffer(const Buffer& buffer, u32 offset, u32 size) {
         const VkBuffer handle = buffer.Handle();
         if (handle == VK_NULL_HANDLE) {
-            stage_descriptor_queue->AddBuffer(handle, 0, 0, VK_WHOLE_SIZE);
+            StageDescriptorQueue().AddBuffer(handle, 0, 0, VK_WHOLE_SIZE);
         } else {
-            stage_descriptor_queue->AddBuffer(handle, buffer.DeviceAddress(), offset, size);
+            StageDescriptorQueue().AddBuffer(handle, buffer.DeviceAddress(), offset, size);
         }
     }
 
@@ -365,7 +368,7 @@ private:
     /// Stage A's uniform stream.
     StagingBufferPool& uniform_pool;
     GuestDescriptorQueue& guest_descriptor_queue;
-    GuestDescriptorQueue* stage_descriptor_queue{&guest_descriptor_queue};
+    GuestDescriptorQueue* back_descriptor_queue{};
 
     std::shared_ptr<QuadArrayIndexBuffer> quad_array_index_buffer;
     std::shared_ptr<QuadStripIndexBuffer> quad_strip_index_buffer;
