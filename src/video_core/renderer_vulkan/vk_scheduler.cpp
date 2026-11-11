@@ -129,22 +129,24 @@ Scheduler::Scheduler(const Device& device_, StateTracker& state_tracker_)
       upload_batch{std::make_unique<UploadBatch>()},
       reordered_uploads{std::make_unique<ReorderedUploadBatch>()} {
 
-    if (Common::DkbFrameTrace::Enabled()) {
-        const auto physical = device.GetPhysical();
-        trace_timestamp_bits =
-            physical.GetQueueFamilyProperties()[device.GetGraphicsFamily()].timestampValidBits;
-        trace_timestamp_period = physical.GetProperties().limits.timestampPeriod;
-        if (trace_timestamp_bits != 0 && trace_timestamp_bits <= 64 && trace_timestamp_period > 0) {
-            try {
-                trace_query_pool = device.GetLogical().CreateQueryPool({
-                    .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-                    .pNext = nullptr,
-                    .flags = 0,
-                    .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                    .queryCount = TraceMaxSubmissions * 2,
-                    .pipelineStatistics = 0,
-                });
-                trace_submissions.resize(TraceMaxSubmissions);
+    // The submission timestamps also feed the performance overlay's GPU %, so they exist
+    // without EDEN_DKB_FRAME_TRACE; nothing is written to them until a sample is asked for.
+    const auto physical = device.GetPhysical();
+    trace_timestamp_bits =
+        physical.GetQueueFamilyProperties()[device.GetGraphicsFamily()].timestampValidBits;
+    trace_timestamp_period = physical.GetProperties().limits.timestampPeriod;
+    if (trace_timestamp_bits != 0 && trace_timestamp_bits <= 64 && trace_timestamp_period > 0) {
+        try {
+            trace_query_pool = device.GetLogical().CreateQueryPool({
+                .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                .queryCount = TraceMaxSubmissions * 2,
+                .pipelineStatistics = 0,
+            });
+            trace_submissions.resize(TraceMaxSubmissions);
+            if (Common::DkbFrameTrace::Enabled()) {
                 trace_work_pool = device.GetLogical().CreateQueryPool({
                     .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                     .pNext = nullptr,
@@ -154,19 +156,21 @@ Scheduler::Scheduler(const Device& device_, StateTracker& state_tracker_)
                     .pipelineStatistics = 0,
                 });
                 trace_work_items.resize(TraceMaxWork);
-            } catch (const vk::Exception& error) {
-                LOG_WARNING(Render_Vulkan, "DKB gpu_timestamp unavailable: {}", error.what());
             }
-        } else {
-            LOG_INFO(Render_Vulkan, "DKB gpu_timestamp unsupported: valid_bits={} period_ns={}",
-                     trace_timestamp_bits, trace_timestamp_period);
+        } catch (const vk::Exception& error) {
+            LOG_WARNING(Render_Vulkan, "DKB gpu_timestamp unavailable: {}", error.what());
         }
+    } else if (Common::DkbFrameTrace::Enabled()) {
+        LOG_INFO(Render_Vulkan, "DKB gpu_timestamp unsupported: valid_bits={} period_ns={}",
+                 trace_timestamp_bits, trace_timestamp_period);
     }
     if (VideoCommon::ReadTrace::Enabled()) {
         CreateReadTrace();
     }
+    // The submission pool exists without EDEN_DKB_FRAME_TRACE (the overlay's GPU %), but only
+    // the trace samples a frame every second.
     gpu_cost = GpuCost::Create(device, trace_timestamp_bits, trace_timestamp_period,
-                               static_cast<bool>(trace_query_pool));
+                               trace_query_pool && Common::DkbFrameTrace::Enabled());
     record_sites = gpu_cost != nullptr;
 
     AcquireNewChunk();
@@ -527,10 +531,31 @@ void Scheduler::WaitWorker() {
     std::scoped_lock el{execution_mutex};
 }
 
-void Scheduler::MarkFrameEnd(u64 frame) {
+Scheduler::FrameMark Scheduler::NextFrameMark() {
     if (Common::DkbFrameTrace::Enabled()) {
-        Record([this, frame](vk::CommandBuffer) { trace_frame_end = frame; });
+        return FrameMark::Both;
     }
+    u32 marks = gpu_busy_marks.load(std::memory_order_relaxed);
+    if (marks == 0 ||
+        !gpu_busy_marks.compare_exchange_strong(marks, marks - 1, std::memory_order_relaxed)) {
+        return FrameMark::None;
+    }
+    return marks == 2 ? FrameMark::Start : FrameMark::End;
+}
+
+void Scheduler::MarkFrameEnd(u64 frame, FrameMark mark) {
+    Record([this, frame, mark](vk::CommandBuffer) {
+        trace_frame_end = frame;
+        trace_frame_mark = mark;
+    });
+}
+
+std::optional<double> Scheduler::GpuBusyMs() const {
+    std::scoped_lock lock{gpu_busy_mutex};
+    if (!gpu_busy || std::chrono::steady_clock::now() - gpu_busy->taken > std::chrono::seconds{3}) {
+        return std::nullopt;
+    }
+    return gpu_busy->ms;
 }
 
 void Scheduler::DispatchWork() {
@@ -922,7 +947,7 @@ void Scheduler::AllocateWorkerCommandBuffer() {
         current_upload_cmdbuf.WriteTimestamp(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, *read_trace->ticks,
                                              query);
     }
-    if (trace_query_pool && !trace_gpu_failed) {
+    if (trace_query_pool && !trace_gpu_failed && (trace_gpu_pending || trace_gpu_sampling)) {
         TraceGpuSubmission();
         if (gpu_cost && trace_gpu_recording) {
             gpu_cost->BeginSubmission(current_cmdbuf, current_upload_cmdbuf, trace_gpu_count == 0);
@@ -947,7 +972,7 @@ void Scheduler::TraceShader(u64 hash, u32 stage) {
 }
 
 void Scheduler::TraceGraphicsPipeline(const std::array<u64, 6>& hashes) {
-    if (!trace_query_pool) {
+    if (!trace_work_pool) {
         return;
     }
     Record([this, hashes](vk::CommandBuffer) {
@@ -962,7 +987,7 @@ void Scheduler::TraceGraphicsPipeline(const std::array<u64, 6>& hashes) {
 }
 
 void Scheduler::TraceComputePipeline(u64 hash) {
-    if (!trace_query_pool) {
+    if (!trace_work_pool) {
         return;
     }
     Record([this, hash](vk::CommandBuffer) {
@@ -1076,6 +1101,9 @@ void Scheduler::TraceGpuSubmission() {
         }
         double total_ms{};
         std::array<std::pair<double, u32>, 4> slowest{};
+        // Each submission's start and end, in ticks after the first one started.
+        std::vector<std::pair<u64, u64>> intervals;
+        intervals.reserve(trace_gpu_count);
         for (u32 i = 0; i < trace_gpu_count * 2; i += 2) {
             if (results[i].available == 0 || results[i + 1].available == 0) {
                 return;
@@ -1088,21 +1116,46 @@ void Scheduler::TraceGpuSubmission() {
                 slowest.back() = {duration_ms, i / 2};
                 std::ranges::sort(slowest, std::greater<>{});
             }
+            const u64 start = Common::DkbFrameTrace::TimestampDelta(
+                results[0].timestamp, results[i].timestamp, trace_timestamp_bits);
+            intervals.emplace_back(start, start + ticks);
+        }
+        // Busy time is the union of the submissions: idle gaps between them are not counted,
+        // and overlapping submissions are counted once.
+        std::ranges::sort(intervals);
+        u64 busy_ticks{};
+        u64 busy_start = intervals.front().first;
+        u64 busy_end = intervals.front().second;
+        for (const auto& [start, end] : intervals) {
+            if (start > busy_end) {
+                busy_ticks += busy_end - busy_start;
+                busy_start = start;
+            }
+            busy_end = std::max(busy_end, end);
+        }
+        busy_ticks += busy_end - busy_start;
+        const double busy_ms = static_cast<double>(busy_ticks) * trace_timestamp_period / 1e6;
+        if (trace_gpu_publish && trace_gpu_skipped == 0) {
+            std::scoped_lock lock{gpu_busy_mutex};
+            gpu_busy = GpuBusySample{busy_ms, std::chrono::steady_clock::now()};
         }
         const double span_ms = trace_gpu_skipped == 0
             ? static_cast<double>(Common::DkbFrameTrace::TimestampDelta(
                   results[0].timestamp, results[trace_gpu_count * 2 - 1].timestamp,
                   trace_timestamp_bits)) * trace_timestamp_period / 1e6
             : -1.0;
-        LOG_INFO(Render_Vulkan,
-                 "DKB gpu_frame renderer_frame={} last_submission_tick={} "
-                 "gpu_frame_span_ms={:.3f} gpu_submission_sum_ms={:.3f} "
-                 "measured_submissions={} dropped_submissions={} "
-                 "valid_bits={} period_ns={}",
-                 trace_sample_frame, trace_gpu_tick, span_ms, total_ms, trace_gpu_count,
-                 trace_gpu_skipped, trace_timestamp_bits, trace_timestamp_period);
+        if (Common::DkbFrameTrace::Enabled()) {
+            LOG_INFO(Render_Vulkan,
+                     "DKB gpu_frame renderer_frame={} last_submission_tick={} "
+                     "gpu_frame_span_ms={:.3f} gpu_submission_sum_ms={:.3f} gpu_busy_ms={:.3f} "
+                     "measured_submissions={} dropped_submissions={} "
+                     "valid_bits={} period_ns={}",
+                     trace_sample_frame, trace_gpu_tick, span_ms, total_ms, busy_ms,
+                     trace_gpu_count, trace_gpu_skipped, trace_timestamp_bits,
+                     trace_timestamp_period);
+        }
         for (const auto& [duration_ms, index] : slowest) {
-            if (duration_ms < 10.0) {
+            if (duration_ms < 10.0 || !Common::DkbFrameTrace::Enabled()) {
                 continue;
             }
             const auto& work = trace_submissions[index];
@@ -1183,7 +1236,7 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
         } else if (trace_gpu_sampling) {
             ++trace_gpu_skipped;
         }
-        if (trace_query_pool) {
+        if (trace_work_pool) {
             trace_work = {};
         }
         if (read_trace) {
@@ -1226,8 +1279,12 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
             if (trace_gpu_sampling) {
                 trace_gpu_pending = true;
                 trace_gpu_sampling = false;
+                // A start mark while sampling means the end mark was lost: the sample spans
+                // more than one frame.
+                trace_gpu_publish = trace_frame_mark != FrameMark::Start;
             }
             if (trace_query_pool && !trace_gpu_failed && !trace_gpu_pending &&
+                trace_frame_mark != FrameMark::End &&
                 trace_gpu_rate.Ready(std::chrono::steady_clock::now())) {
                 trace_sample_frame = trace_frame_end + 1;
                 trace_gpu_sampling = true;

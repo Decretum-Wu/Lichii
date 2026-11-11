@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -27,6 +28,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/memory_detect.h"
+#include "common/zstd_compression.h"
 #include "common/thread.h"
 #include "common/thread_worker.h"
 #include "core/core.h"
@@ -389,15 +391,13 @@ void AddRuntimeSpirvTime(size_t thread, std::chrono::steady_clock::time_point be
         std::memory_order::relaxed);
 }
 
-vk::ShaderModule EmitShaderModule(const Device& device, const Shader::Profile& profile,
-                                 const Shader::RuntimeInfo& runtime_info,
-                                 Shader::IR::Program& program, Shader::Backend::Bindings& binding,
-                                 u64 shader_hash, size_t stage_index,
-                                 std::span<const u32> reference = {}) {
-    const auto code =
-        EmitPipelineShader(profile, runtime_info, program, binding, shader_hash, reference);
+std::vector<u32> EmitStageSpirv(const Device& device, const Shader::Profile& profile,
+                                const Shader::RuntimeInfo& runtime_info,
+                                Shader::IR::Program& program, Shader::Backend::Bindings& binding,
+                                u64 shader_hash, size_t stage_index,
+                                std::span<const u32> reference = {}) {
+    auto code = EmitPipelineShader(profile, runtime_info, program, binding, shader_hash, reference);
     device.SaveShader(code);
-    vk::ShaderModule module{BuildShader(device, code)};
 
     // Text log + .spv dump. Text log is gated by gpu_log_level != Off; .spv dump
     // is independent and gated only by gpu_log_shader_dumps.
@@ -418,12 +418,7 @@ vk::ShaderModule EmitShaderModule(const Device& device, const Shader::Profile& p
                                          std::span<const u32>(code.data(), code.size()));
         }
     }
-
-    if (device.HasDebuggingToolAttached()) {
-        const std::string name{fmt::format("Shader {:016x}", shader_hash)};
-        module.SetObjectNameEXT(name.c_str());
-    }
-    return module;
+    return code;
 }
 
 vk::ShaderModule EmitComputeModule(const Device& device, const Shader::Profile& profile,
@@ -530,6 +525,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
                                 !device_.DriverCachesPipelines()},
       serialization_thread(1, "VkPipelineSerialization", {}, Common::ThreadPlacement::Background) {
+    // A sixty-fourth of the RAM (16 GB: 256 MB), about 25 KB per evicted pipeline
+    const u64 ram = Common::GetMemInfo().TotalPhysicalMemory;
+    kept_stages = decltype(kept_stages){ram != 0 ? ram / 64 : u64{256} << 20};
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
     const VkShaderStageFlags subgroup_stages{device.GetSubgroupSupportedStages()};
@@ -2009,7 +2007,13 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         }
         if (!pipeline) {
             const auto keep = evicted_pointer_slots.Take(graphics_key.Hash());
-            pipeline = CreateGraphicsPipeline(keep ? &*keep : nullptr);
+            if (auto kept = kept_stages.Take(graphics_key)) {
+                pipeline = RebuildGraphicsPipeline(std::move(*kept));
+                ++rebuilt_from_kept;
+            } else {
+                translated_again += keep ? 1 : 0;
+                pipeline = CreateGraphicsPipeline(keep ? &*keep : nullptr);
+            }
         }
     } else if (StutterTrace::Enabled() && pipeline && !pipeline->WasUsed()) {
         StutterTrace::CountLookup(StutterTrace::Lookup::GraphicsPrebuilt);
@@ -2109,6 +2113,9 @@ void PipelineCache::EvictUnusedPipelines() {
             used_and_evicted.insert(it->first.Hash());
         }
         evicted_pointer_slots.Remember(it->first.Hash(), it->second->MappedPointers());
+        KeptGraphicsStages kept = it->second->TakeKeptStages();
+        const u64 bytes = kept.Bytes();
+        kept_stages.Add(it->first, std::move(kept), bytes);
         evicted_pipelines.emplace_back(tick, std::move(it->second));
         graphics_cache.erase(it);
     }
@@ -2117,8 +2124,13 @@ void PipelineCache::EvictUnusedPipelines() {
             pipeline->ClearTransitions();
         }
     }
-    LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} frames, {} left",
-             evict.size(), EvictAfterFrames, graphics_cache.size());
+    LOG_INFO(Render_Vulkan,
+             "Evicted {} graphics pipelines unused for {} frames, {} left; {} evicted ones kept "
+             "for a rebuild ({} KiB), {} rebuilt from them and {} translated again since the last",
+             evict.size(), EvictAfterFrames, graphics_cache.size(), kept_stages.Size(),
+             kept_stages.Bytes() >> 10, rebuilt_from_kept, translated_again);
+    rebuilt_from_kept = 0;
+    translated_again = 0;
 }
 
 /// Returns `pipeline` when it is built or the current draw must wait for it, and nullptr when the
@@ -2211,6 +2223,34 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexc
         }
     }
     return discard ? nullptr : pipeline;
+}
+
+std::unique_ptr<GraphicsPipeline> PipelineCache::RebuildGraphicsPipeline(KeptGraphicsStages kept) {
+    std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
+    for (size_t stage = 0; stage < infos.size(); ++stage) {
+        infos[stage] = kept.infos[stage].get();
+    }
+    const u64 bytes = kept.Bytes();
+    auto emit = [spirv = std::move(kept.spirv)] {
+        std::array<std::vector<u32>, Maxwell::MaxShaderStage> code;
+        for (size_t stage = 0; stage < code.size(); ++stage) {
+            if (spirv[stage].empty()) {
+                continue;
+            }
+            const std::vector<u8> data = Common::Compression::DecompressDataZSTD(spirv[stage]);
+            code[stage].resize(data.size() / sizeof(u32));
+            std::memcpy(code[stage].data(), data.data(), code[stage].size() * sizeof(u32));
+        }
+        return code;
+    };
+    auto pipeline = std::make_unique<GraphicsPipeline>(
+        scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, pipeline_binaries.get(),
+        &shader_notify, device, descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring,
+        BuildQueue(true, bytes), nullptr, render_pass_cache, graphics_key,
+        std::array<std::vector<u32>, Maxwell::MaxShaderStage>{}, infos, std::move(emit),
+        std::move(kept.mesh_emulation));
+    pipeline->SetMappedPointers(std::move(kept.mapped_pointers));
+    return pipeline;
 }
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
@@ -2518,7 +2558,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     }
     const bool defer_emission = ir_reservation != nullptr;
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
-    std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
+    std::array<std::vector<u32>, Maxwell::MaxShaderStage> stage_spirv;
     std::array<std::optional<Shader::RuntimeInfo>, Maxwell::MaxShaderStage> deferred_runtime_infos;
     std::array<std::vector<u32>, Maxwell::MaxShaderStage> reference_spirv;
 
@@ -2575,15 +2615,16 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             }
         } else {
             const auto begin = std::chrono::steady_clock::now();
-            modules[stage_index] = EmitShaderModule(device, profile, runtime_info, program, binding,
-                                                   key.unique_hashes[index], stage_index);
+            stage_spirv[stage_index] = EmitStageSpirv(device, profile, runtime_info, program,
+                                                      binding, key.unique_hashes[index],
+                                                      stage_index);
             if (build_in_parallel) {
                 AddRuntimeSpirvTime(0, begin);
             }
         }
         previous_stage = &program;
     }
-    std::function<std::array<vk::ShaderModule, Maxwell::MaxShaderStage>()> emit_stages;
+    std::function<std::array<std::vector<u32>, Maxwell::MaxShaderStage>()> emit_stages;
     if (defer_emission) {
         auto job = std::make_shared<DeferredStages>();
         job->reservation = std::move(ir_reservation);
@@ -2600,14 +2641,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
         emit_stages = [this, job = std::move(job), hashes = key.unique_hashes]() mutable {
             const auto begin = std::chrono::steady_clock::now();
-            std::array<vk::ShaderModule, Maxwell::MaxShaderStage> stage_modules;
+            std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv;
             Shader::Backend::Bindings stage_binding;
-            for (size_t stage = 0; stage < stage_modules.size(); ++stage) {
+            for (size_t stage = 0; stage < spirv.size(); ++stage) {
                 if (job->runtime_infos[stage]) {
-                    stage_modules[stage] =
-                        EmitShaderModule(device, profile, *job->runtime_infos[stage],
-                                         job->programs[stage + 1], stage_binding,
-                                         hashes[stage + 1], stage, job->reference_spirv[stage]);
+                    spirv[stage] =
+                        EmitStageSpirv(device, profile, *job->runtime_infos[stage],
+                                       job->programs[stage + 1], stage_binding, hashes[stage + 1],
+                                       stage, job->reference_spirv[stage]);
                 }
             }
             auto completed_pools = std::move(job->pools);
@@ -2618,7 +2659,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 ReturnPools(std::move(stage));
             }
             AddRuntimeSpirvTime(1, begin);
-            return stage_modules;
+            return spirv;
         };
     }
     static_assert(VideoCommon::EvictedPointerSlots::NumPrograms == Maxwell::MaxShaderProgram);
@@ -2632,7 +2673,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, pipeline_binaries.get(),
         &shader_notify, device, descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring,
         BuildQueue(build_in_parallel, defer_emission ? deferred_ir_bytes : 0), statistics,
-        render_pass_cache, key, std::move(modules), infos, std::move(emit_stages),
+        render_pass_cache, key, std::move(stage_spirv), infos, std::move(emit_stages),
         std::move(mesh_emulation));
     pipeline->SetMappedPointers(std::move(mapped_pointers));
     return pipeline;

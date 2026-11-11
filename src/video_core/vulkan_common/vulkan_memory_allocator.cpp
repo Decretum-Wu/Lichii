@@ -266,7 +266,18 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         return VK_SUCCESS;
     }
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
-    const bool huge = texels > MaxBackedImageTexels;
+    u64 bytes = 0;
+    if (texels > MaxBackedImageTexels) {
+        // Its memory size decides: an image the driver won't create is too large to back.
+        const auto& dld = device.GetDispatchLoader();
+        VkImage probe{};
+        bytes = ~u64{0};
+        if (dld.vkCreateImage(*device.GetLogical(), &ci, nullptr, &probe) == VK_SUCCESS) {
+            bytes = device.GetLogical().GetImageMemoryRequirements(probe).size;
+            dld.vkDestroyImage(*device.GetLogical(), probe, nullptr);
+        }
+    }
+    const bool huge = IsTooLargeToBack(texels, bytes);
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
@@ -289,7 +300,7 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         pressure_events.fetch_add(1, std::memory_order_relaxed);
     }
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D &&
-        UsesUnbackedFallback(texels, may_fail)) {
+        UsesUnbackedFallback(texels, bytes, may_fail)) {
         // Too big to back at all, e.g. title 1's sparse virtual texture arrays (8192x8192,
         // 68 layers, ~23 GB): on the console only resident tiles have memory. Use an image with
         // nothing bound, so views and copies still work, instead of aborting. A smaller image

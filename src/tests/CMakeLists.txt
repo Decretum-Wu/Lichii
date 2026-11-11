@@ -21,6 +21,7 @@ add_executable(tests
     core/nx2_video_ready.cpp
     core/nx2_debug_server.cpp
     core/nx2_present_pacer.cpp
+    core/perf_stats.cpp
     common/display_hdr.cpp
     common/dkb_cpu_trace.cpp
     common/dkb_frame_trace.cpp
@@ -83,6 +84,7 @@ add_executable(tests
     video_core/ampere_async_copy.cpp
     video_core/ampere_trap_guards.cpp
     video_core/async_draw_policy.cpp
+    video_core/bounded_store.cpp
     video_core/pipeline_eviction_policy.cpp
     video_core/async_shader_emission.cpp
     video_core/oot_network.cpp
@@ -248,6 +250,7 @@ if (TARGET SDL3::SDL3)
 endif()
 
 if (WIN32 AND ARCHITECTURE_x86_64)
+    target_sources(tests PRIVATE common/nx2_sampler.cpp)
     add_executable(event_wait_probe ../../tools/nx2/event_wait_probe.cpp)
     target_link_libraries(event_wait_probe PRIVATE common)
 endif()

@@ -71,6 +71,14 @@ public:
     [[nodiscard]] VideoCore::DlssStatus GetDlssStatus() const override;
 #endif
 
+    void RequestGpuBusySample() override {
+        scheduler.RequestGpuBusySample();
+    }
+
+    [[nodiscard]] std::optional<double> GetGpuBusyMs() const override {
+        return scheduler.GpuBusyMs();
+    }
+
     // Enhanced platform-specific initialization
     void InitializePlatformSpecific();
 
