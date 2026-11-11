@@ -434,6 +434,10 @@ GraphicsPipeline::GraphicsPipeline(
                    return desc.handle_program == ~0U && !desc.has_secondary;
                });
     });
+    retexture_eligible = std::ranges::all_of(stage_infos, [](const Shader::Info& info) {
+        return info.texture_buffer_descriptors.empty() && info.image_buffer_descriptors.empty() &&
+               info.image_descriptors.empty();
+    });
     writes_images = std::ranges::any_of(stage_infos, [&](const Shader::Info& info) {
         return any_written(info.image_descriptors) || any_written(info.image_buffer_descriptors);
     });
@@ -979,7 +983,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         delta_computed_handles.assign(computed_handles.begin(), computed_handles.end());
         configured_stages = Spec::enabled_stages;
         delta_raw_handles.clear();
-        if (texture_memo_eligible && !ReadRawHandles(delta_raw_handles)) {
+        if (retexture_eligible && !ReadRawHandles(delta_raw_handles)) {
             delta_raw_handles.clear();
         }
         delta_views_valid = true;
@@ -1214,9 +1218,11 @@ void GraphicsPipeline::TakeDeltaStateFrom(GraphicsPipeline& other) noexcept {
     other.NextDeltaGeneration();
 }
 
-bool GraphicsPipeline::ReadRawHandles(std::vector<u32>& out) const {
-    // As ConfigureImpl's read_handle reads them for texture memo eligible pipelines, in its order;
-    // words a storage buffer keeps its address in bind no texture (~0, never compared changed).
+bool GraphicsPipeline::ReadRawHandles(std::vector<u32>& out, std::vector<u32>* computed) const {
+    // As ConfigureImpl's read_handle reads them for texture-only pipelines, in its order; words a
+    // storage buffer keeps its address in bind no texture (~0, never compared changed). A handle
+    // computed at draw time is evaluated once per descriptor (its elements share it) and also
+    // appended to `computed`, in delta_computed_handles' order.
     for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
         if (!configured_stages[stage]) {
             continue;
@@ -1224,6 +1230,23 @@ bool GraphicsPipeline::ReadRawHandles(std::vector<u32>& out) const {
         const Shader::Info& info{stage_infos[stage]};
         const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
         for (const auto& desc : info.texture_descriptors) {
+            if (desc.handle_program != ~0U) {
+                if (desc.count == 0) {
+                    continue;
+                }
+                const u32 value{VideoCommon::EvaluateTextureHandle(
+                    info, desc.handle_program, *gpu_memory,
+                    [&](u32 cbuf) -> GPUVAddr {
+                        return cbuf < cbufs.size() && cbufs[cbuf].enabled ? cbufs[cbuf].address
+                                                                          : GPUVAddr{};
+                    },
+                    device.GetStorageBufferAlignment())};
+                if (computed != nullptr) {
+                    computed->push_back(value);
+                }
+                out.insert(out.end(), desc.count, value);
+                continue;
+            }
             for (u32 index = 0; index < desc.count; ++index) {
                 if (VideoCommon::HandleIsStoragePointer(info, desc, index)) {
                     out.push_back(~0U);
@@ -1232,9 +1255,19 @@ bool GraphicsPipeline::ReadRawHandles(std::vector<u32>& out) const {
                 if (!cbufs[desc.cbuf_index].enabled) {
                     return false;
                 }
-                out.push_back(gpu_memory->Read<u32>(cbufs[desc.cbuf_index].address +
-                                                    desc.cbuf_offset +
-                                                    (index << desc.size_shift)));
+                const u32 word{gpu_memory->Read<u32>(cbufs[desc.cbuf_index].address +
+                                                     desc.cbuf_offset +
+                                                     (index << desc.size_shift))};
+                if (!desc.has_secondary) {
+                    out.push_back(word);
+                    continue;
+                }
+                if (!cbufs[desc.secondary_cbuf_index].enabled) {
+                    return false;
+                }
+                const u32 second{gpu_memory->Read<u32>(cbufs[desc.secondary_cbuf_index].address +
+                                                       desc.secondary_cbuf_offset)};
+                out.push_back((word << desc.shift_left) | (second << desc.secondary_shift_left));
             }
         }
     }
@@ -1246,7 +1279,9 @@ std::optional<u32> GraphicsPipeline::RetextureDelta() {
         delta_samplers.size() != delta_views.size()) {
         return std::nullopt;
     }
-    if (!ReadRawHandles(retexture_handles)) {
+    retexture_computed.clear();
+    if (!ReadRawHandles(retexture_handles, &retexture_computed) ||
+        retexture_computed.size() != delta_computed_handles.size()) {
         retexture_handles.clear();
         return std::nullopt;
     }
@@ -1284,6 +1319,9 @@ std::optional<u32> GraphicsPipeline::RetextureDelta() {
     }
     delta_raw_handles.swap(retexture_handles);
     retexture_handles.clear();
+    for (size_t i = 0; i < retexture_computed.size(); ++i) {
+        delta_computed_handles[i].value = retexture_computed[i];
+    }
     // The kept descriptors and rescaling words are for the old views: ConfigureDelta pushes and
     // keeps them again.
     kept_images_valid = false;

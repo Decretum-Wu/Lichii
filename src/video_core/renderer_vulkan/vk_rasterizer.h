@@ -475,10 +475,11 @@ private:
         u64 relookup_moved{};
         u64 relookup_other{};
         /// Draws that read their texture handles again: kept the views, resolved some, or
-        /// couldn't (resolved in full).
+        /// couldn't (resolved in full); and the ones a computed handle change made read them.
         u64 retexture_unchanged{};
         u64 retexture_resolved{};
         u64 retexture_failed{};
+        u64 retexture_computed{};
         /// Draws that came back to their pipeline's own last draw (RevisitDraw), and the ones
         /// that couldn't by why (RevisitMiss).
         u64 revisits{};
@@ -487,12 +488,13 @@ private:
     };
     /// Why RevisitDraw couldn't keep what the pipeline resolved at its last recorded draw.
     enum RevisitMiss : size_t {
-        RevisitNoDraw,     ///< none remembered, or the pipeline kept other state since
-        RevisitPipeline,   ///< takes no delta draws, or its handles aren't all constant buffer words
+        RevisitNoDraw,     ///< none remembered (another pipeline's in its slot)
+        RevisitPipeline,   ///< takes no delta draws, or samples texture or image buffers or images
         RevisitMemory,     ///< memory or mappings changed since
         RevisitSubmitted,  ///< another command buffer or render pass
         RevisitTextures,   ///< other texture pool registers, or transform feedback
         RevisitKind,       ///< indirect, inline index or frame dump draws
+        RevisitGeneration, ///< the pipeline kept other state since (or gave it to another)
     };
     /// The pipeline of a draw resolved in full: a plan worker's (PlanWorkers) when it still holds,
     /// else CurrentGraphicsPipeline.
@@ -504,9 +506,10 @@ private:
     GraphicsPipeline* TakeReusableDraw(bool is_indexed, bool is_indirect);
     /// Whether the draw TakeReusableDraw took still holds once the caches are locked (serials
     /// and map_serial as read then) for `pipeline`, which holds the kept state, and the images
-    /// it samples need no preparing.
+    /// it samples need no preparing. computed_checked: the computed handles were evaluated
+    /// since the caches were locked and hold.
     bool DeltaStillHolds(GraphicsPipeline* pipeline, u64 serial, u64 memory_serial,
-                         u64 map_serial);
+                         u64 map_serial, bool computed_checked);
     void NoteResolvedDraw(GraphicsPipeline* pipeline, bool is_indexed, bool is_indirect, u64 serial,
                           u64 memory_serial, u64 map_serial);
     /// For a draw TakeReusableDraw found no delta draw for (no candidate, another pipeline, state

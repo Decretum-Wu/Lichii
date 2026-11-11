@@ -20,6 +20,7 @@
 #include "shader_recompiler/shader_info.h"
 #include "video_core/evicted_pointer_slots.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/nx2_fast_draw.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/pipeline_build.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
@@ -382,10 +383,17 @@ public:
         return delta_generation;
     }
 
-    /// Whether RetextureDelta can bring the kept views up to date: every handle is a constant
-    /// buffer word (no texture or image buffers, images or computed handles).
+    /// Whether RetextureDelta can bring the kept views up to date: the pipeline samples textures
+    /// only (no texture or image buffers or images), from constant buffer words or handles
+    /// computed at draw time.
     [[nodiscard]] bool CanRetexture() const noexcept {
-        return texture_memo_eligible && TakesDeltaDraws();
+        return (texture_memo_eligible ||
+                (retexture_eligible && VideoCommon::Nx2FastDraw::RetextureComputedDraws())) &&
+               TakesDeltaDraws();
+    }
+    /// Whether a texture handle is computed at draw time (ComputedHandlesChanged).
+    [[nodiscard]] bool HasComputedHandles() const noexcept {
+        return has_computed_handles;
     }
     /// ConfigureDelta keeps the texture buffers bound, which a draw of another pipeline may have
     /// left in this one's stages (the rasterizer's RevisitDraw). CanRetexture pipelines bind
@@ -397,11 +405,11 @@ public:
             }
         }
     }
-    /// Delta draws after texture handle writes or rebinds: reads every handle again and resolves
-    /// the views and samplers of those that changed, keeping the others; the next ConfigureDelta
-    /// pushes their descriptors again. Returns how many it resolved, or nothing (the draw resolves
-    /// in full) when the handles can't be read or resolving deleted or rescaled images the kept
-    /// views may sample.
+    /// Delta draws after texture handle writes or rebinds, or computed handle changes: reads (or
+    /// computes) every handle again and resolves the views and samplers of those that changed,
+    /// keeping the others; the next ConfigureDelta pushes their descriptors again. Returns how
+    /// many it resolved, or nothing (the draw resolves in full) when the handles can't be read or
+    /// resolving deleted or rescaled images the kept views may sample.
     std::optional<u32> RetextureDelta();
 
     template <typename Spec>
@@ -420,9 +428,10 @@ private:
 
     void KeepImageDescriptors(size_t stage, size_t first_entry);
 
-    /// Appends the texture handle words of the configured stages (CanRetexture pipelines), as
-    /// ConfigureImpl reads them. False when a constant buffer they are in isn't bound.
-    bool ReadRawHandles(std::vector<u32>& out) const;
+    /// Appends the texture handles of the configured stages (CanRetexture pipelines) as
+    /// ConfigureImpl reads or computes them, and the computed ones to `computed` too. False when
+    /// a constant buffer a handle is read from isn't bound.
+    bool ReadRawHandles(std::vector<u32>& out, std::vector<u32>* computed = nullptr) const;
 
     bool ConfigureDraw(const RescalingPushConstant& rescaling,
                        const RenderAreaPushConstant& render_are);
@@ -469,6 +478,8 @@ private:
     /// Every texture is sampled with a handle read from a constant buffer: ConfigureImpl can
     /// resolve them from texture_memo.
     bool texture_memo_eligible{};
+    /// Textures only, their handles read or computed (CanRetexture).
+    bool retexture_eligible{};
     VideoCommon::SampledTextureMemo texture_memo;
     bool writes_images{};
 
@@ -494,10 +505,11 @@ private:
         handle_word_index{};
     std::vector<VideoCommon::ImageViewInOut> delta_views;
     std::vector<VideoCommon::SamplerId> delta_samplers;
-    /// The constant buffer words delta_views and delta_samplers were resolved from (texture
-    /// memo eligible pipelines, RetextureDelta), and RetextureDelta's scratch.
+    /// The handles delta_views and delta_samplers were resolved from (CanRetexture pipelines,
+    /// RetextureDelta), and RetextureDelta's scratch.
     std::vector<u32> delta_raw_handles;
     std::vector<u32> retexture_handles;
+    std::vector<u32> retexture_computed;
     /// A handle the captured Configure computed at draw time: the descriptor it was read for
     /// (stage, kind as ComputedHandleKind, index in its list) and its value.
     struct ComputedHandle {

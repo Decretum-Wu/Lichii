@@ -617,7 +617,7 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
 }
 
 bool RasterizerVulkan::DeltaStillHolds(GraphicsPipeline* pipeline, u64 serial, u64 memory_serial,
-                                       u64 map_serial) {
+                                       u64 map_serial, bool computed_checked) {
     const auto full = [&](FullDraw reason) {
         ++fast_draw_stats.full[static_cast<size_t>(reason)];
         last_full_reason = reason;
@@ -642,7 +642,7 @@ bool RasterizerVulkan::DeltaStillHolds(GraphicsPipeline* pipeline, u64 serial, u
         return full(FullDraw::SampledImages);
     }
     // Handles computed at draw time come from memory the delta doesn't track (storage buffers).
-    if (pipeline->ComputedHandlesChanged()) {
+    if (!computed_checked && pipeline->ComputedHandlesChanged()) {
         return full(FullDraw::ComputedHandles);
     }
     return true;
@@ -658,15 +658,18 @@ bool RasterizerVulkan::RevisitDraw(GraphicsPipeline* pipeline, bool is_indirect)
         frame_dump.Capturing()) {
         return miss(RevisitKind);
     }
-    const ReusableDraw& draw = revisit_draws[RevisitSlot(pipeline)];
-    if (draw.pipeline != pipeline || draw.maxwell3d != maxwell3d ||
-        draw.generation != pipeline->DeltaGeneration()) {
-        return miss(RevisitNoDraw);
-    }
-    // Only every handle a constant buffer word: the draw reads them all again (RetextureDelta),
-    // as constant buffer data written since that draw was checked against other pipelines'.
+    // Only pipelines that sample textures alone: the draw reads (or computes) every handle again
+    // (RetextureDelta), as constant buffer data written since that draw was checked against other
+    // pipelines' handles.
     if (!pipeline->IsBuilt() || !pipeline->CanRetexture()) {
         return miss(RevisitPipeline);
+    }
+    const ReusableDraw& draw = revisit_draws[RevisitSlot(pipeline)];
+    if (draw.pipeline != pipeline || draw.maxwell3d != maxwell3d) {
+        return miss(RevisitNoDraw);
+    }
+    if (draw.generation != pipeline->DeltaGeneration()) {
+        return miss(RevisitGeneration);
     }
     if (draw.memory_serial != FastDraw::MemorySerial() || draw.map_serial != gpu_memory->MapSerial()) {
         return miss(RevisitMemory);
@@ -856,7 +859,8 @@ void RasterizerVulkan::ReportFastDraws() {
              "Fast draw relookups per second: {:.0f} after another kind, {:.0f} after register "
              "changes, {:.0f} after attribute types | {:.0f} same pipeline, {:.0f} other pipeline "
              "taking the kept state, {:.0f} resolving differently | retextures: {:.0f} kept every "
-             "view, {:.0f} resolved some, {:.0f} resolved in full",
+             "view, {:.0f} resolved some, {:.0f} resolved in full, {:.0f} after computed handle "
+             "changes",
              static_cast<double>(stats.relookup_causes[0]) / seconds,
              static_cast<double>(stats.relookup_causes[1]) / seconds,
              static_cast<double>(stats.relookup_causes[2]) / seconds,
@@ -865,13 +869,15 @@ void RasterizerVulkan::ReportFastDraws() {
              static_cast<double>(stats.relookup_other) / seconds,
              static_cast<double>(stats.retexture_unchanged) / seconds,
              static_cast<double>(stats.retexture_resolved) / seconds,
-             static_cast<double>(stats.retexture_failed) / seconds);
+             static_cast<double>(stats.retexture_failed) / seconds,
+             static_cast<double>(stats.retexture_computed) / seconds);
     LOG_INFO(Render_Vulkan,
-             "Fast draw revisits per second: {:.0f} | not: {:.0f} no draw kept, {:.0f} pipeline, "
-             "{:.0f} memory changed, {:.0f} other command buffer or render pass, {:.0f} texture "
-             "pools, {:.0f} draw kind",
+             "Fast draw revisits per second: {:.0f} | not: {:.0f} no draw kept, {:.0f} kept other "
+             "state since, {:.0f} pipeline, {:.0f} memory changed, {:.0f} other command buffer or "
+             "render pass, {:.0f} texture pools, {:.0f} draw kind",
              static_cast<double>(stats.revisits) / seconds,
              static_cast<double>(stats.revisit_misses[RevisitNoDraw]) / seconds,
+             static_cast<double>(stats.revisit_misses[RevisitGeneration]) / seconds,
              static_cast<double>(stats.revisit_misses[RevisitPipeline]) / seconds,
              static_cast<double>(stats.revisit_misses[RevisitMemory]) / seconds,
              static_cast<double>(stats.revisit_misses[RevisitSubmitted]) / seconds,
@@ -1302,11 +1308,25 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         }
     }
     setup_scope.reset();
+    // Handles computed at draw time come from memory the delta doesn't track: evaluated again for
+    // each delta draw, the views of the ones that changed are resolved as written handles are.
+    bool computed_checked = false;
     const bool retextured = [&] {
-        if (delta_pipeline == nullptr || !taken_retexture) {
+        if (delta_pipeline == nullptr) {
             return true;
         }
         Profile::Scope scope{Profile::Zone::ReadHandles};
+        if (!taken_retexture) {
+            if (!delta_pipeline->HasComputedHandles() || !delta_pipeline->CanRetexture() ||
+                !FastDraw::RetextureDraws()) {
+                return true;
+            }
+            computed_checked = true;
+            if (!delta_pipeline->ComputedHandlesChanged()) {
+                return true;
+            }
+            ++fast_draw_stats.retexture_computed;
+        }
         if (taken_revisit) {
             // The draws in between may have left other texture pools synchronized.
             texture_cache.SynchronizeDescriptors(false);
@@ -1318,13 +1338,16 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
             last_full_reason = FullDraw::HandleData;
             return false;
         }
+        // RetextureDelta evaluated the computed handles now, and kept their values.
+        computed_checked = true;
         ++(*resolved == 0 ? fast_draw_stats.retexture_unchanged
                           : fast_draw_stats.retexture_resolved);
         return true;
     }();
     const bool delta_holds =
         delta_pipeline != nullptr && retextured &&
-        DeltaStillHolds(delta_pipeline, draw_serial, draw_memory_serial, draw_map_serial);
+        DeltaStillHolds(delta_pipeline, draw_serial, draw_memory_serial, draw_map_serial,
+                        computed_checked);
     if (taken_revisit && delta_holds) {
         delta_pipeline->UnbindStageTextureBuffers();
     }
