@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -166,6 +167,47 @@ protected:
             std::is_same_v<std::invoke_result_t<Func, QueryLocation>, bool>;
         const u64 addr_begin = addr;
         const u64 addr_end = addr_begin + size;
+
+        // A read of a few words (the macro DMA reads of reports, ~1,700 a frame at Ocarina of
+        // Time's water) looks up the offsets a query overlapping it can start at, instead of
+        // walking every query of the page (hundreds there). Same queries, from the same pages.
+        static constexpr u64 MaxProbes = 32;
+        const u64 page_first = (addr_begin >> Core::DEVICE_PAGEBITS) << Core::DEVICE_PAGEBITS;
+        const u64 probe_first =
+            (std::max)(addr_begin >= sizeof(u32) - 1 ? addr_begin - (sizeof(u32) - 1) : 0,
+                       page_first);
+        if (addr_end > probe_first && addr_end - probe_first <= MaxProbes) {
+            std::scoped_lock lock(cache_mutex);
+            u64 cached_page = ~u64{0};
+            ::Common::unordered_map<u32, QueryLocation>* contents = nullptr;
+            for (u64 query_addr = probe_first; query_addr < addr_end; ++query_addr) {
+                const u64 page = query_addr >> Core::DEVICE_PAGEBITS;
+                if (page != cached_page) {
+                    cached_page = page;
+                    const auto it = cached_queries.find(page);
+                    contents = it != cached_queries.end() ? &it->second : nullptr;
+                }
+                if (contents == nullptr) {
+                    continue;
+                }
+                const auto query =
+                    contents->find(static_cast<u32>(query_addr & Core::DEVICE_PAGEMASK));
+                if (query == contents->end()) {
+                    continue;
+                }
+                if constexpr (RETURNS_BOOL) {
+                    if (func(query->second)) {
+                        return;
+                    }
+                } else {
+                    func(query->second);
+                }
+                if constexpr (remove_from_cache) {
+                    contents->erase(query);
+                }
+            }
+            return;
+        }
 
         const u64 page_end = addr_end >> Core::DEVICE_PAGEBITS;
         std::scoped_lock lock(cache_mutex);
