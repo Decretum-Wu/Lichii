@@ -66,8 +66,8 @@ sparse, layered, aliasing or unequal-sized images are rejected. The source is
 bound through an sRGB view, so sampling decodes it to linear colour before writing
 the float output. The spatial and sharpening passes write only RGB, preserving
 the alpha produced by the native pass and its separate output at `0x350`.
-Fire Emblem keeps its original format and upscale restrictions. No new shader
-fingerprints or slot-search heuristics are added.
+Fire Emblem keeps its original format and upscale restrictions. The colour-pair
+change itself added no shader fingerprints or slot-search heuristics.
 
 ## Docked cutscene prepass validation
 
