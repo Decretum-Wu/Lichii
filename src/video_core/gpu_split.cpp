@@ -366,8 +366,8 @@ void GpuSplit::NoteSemaphoreWrite(u64 device_address, u32 payload, bool known, b
     }
     if (semaphore_writes.size() >= semaphore_writes_limit) {
         // The words of releases in memory hold their values.
-        std::erase_if(semaphore_writes,
-                      [this](const auto& entry) { return InMemory(entry.second); });
+        boost::unordered::erase_if(semaphore_writes,
+                                   [this](const auto& entry) { return InMemory(entry.second); });
         semaphore_writes_limit = std::max<size_t>(1024, semaphore_writes.size() * 2);
     }
     // The release is in the last entry sent, or one before (a QMD signal valued late).

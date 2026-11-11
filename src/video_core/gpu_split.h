@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/container/unordered_map.h"
 #include "video_core/engines/engine_interface.h"
 
 namespace Core {
@@ -853,7 +854,7 @@ private:
         bool fenced;
     };
     /// The front's NoteSemaphoreWrite, by word address.
-    std::unordered_map<u64, SemaphoreWrite> semaphore_writes;
+    Common::unordered_map<u64, SemaphoreWrite> semaphore_writes;
     size_t semaphore_writes_limit = 1024; ///< Forget what the back ran past this many
     /// After the last entry that may write guest memory or the GPU caches anywhere (NoteAnyWrite,
     /// NoteUnplacedWrite, NoteCacheWrite), the last one that may write guest memory itself
