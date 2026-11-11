@@ -215,6 +215,30 @@ TEST_CASE("Fast draw records bind and constant data changes, keeps index buffer 
     CHECK_FALSE(FastDraw::g_delta.Empty());
 }
 
+TEST_CASE("Fast draw takes the delta's ranges in use and clears it", "[fast_draw]") {
+    FastDraw::g_delta = {};
+    FastDraw::NoteBind(2, 5);
+    FastDraw::NoteConstantData(0x1000, 0x1010);
+    FastDraw::NoteConstantData(0x3000, 0x3008);
+    FastDraw::NoteDeviceData(0x9000, 0x9010);
+    FastDraw::Delta out;
+    out.write_begin.fill(0xdead);
+    FastDraw::TakeDelta(out);
+    CHECK(out.binds[2] == 1U << 5);
+    REQUIRE(out.num_writes == 2);
+    CHECK(out.write_begin[0] == 0x1000);
+    CHECK(out.write_end[1] == 0x3008);
+    REQUIRE(out.num_device_writes == 1);
+    CHECK(out.device_end[0] == 0x9010);
+    CHECK_FALSE(out.no_uniform_keeps);
+    CHECK(FastDraw::g_delta.Empty());
+    CHECK(FastDraw::g_delta.num_device_writes == 0);
+    // Another take keeps nothing of the first one.
+    FastDraw::TakeDelta(out);
+    CHECK(out.Empty());
+    CHECK(out.num_device_writes == 0);
+}
+
 TEST_CASE("Fast draw breaks on state and texture headers", "[fast_draw]") {
     DeltaFixture f;
     f.Write(MAXWELL3D_REG_INDEX(tex_header.address_high), 0);

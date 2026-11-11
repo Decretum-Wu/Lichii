@@ -417,6 +417,24 @@ struct Delta {
 
 inline thread_local Delta g_delta;
 
+/// Moves g_delta into `out` and clears it, copying only the ranges in use (Delta is ~0.5 KiB and
+/// taken for every draw).
+inline void TakeDelta(Delta& out) {
+    Delta& delta = g_delta;
+    out.binds = delta.binds;
+    out.num_writes = delta.num_writes;
+    std::copy_n(delta.write_begin.begin(), delta.num_writes, out.write_begin.begin());
+    std::copy_n(delta.write_end.begin(), delta.num_writes, out.write_end.begin());
+    out.num_device_writes = delta.num_device_writes;
+    std::copy_n(delta.device_begin.begin(), delta.num_device_writes, out.device_begin.begin());
+    std::copy_n(delta.device_end.begin(), delta.num_device_writes, out.device_end.begin());
+    out.no_uniform_keeps = delta.no_uniform_keeps;
+    delta.binds = {};
+    delta.num_writes = 0;
+    delta.num_device_writes = 0;
+    delta.no_uniform_keeps = false;
+}
+
 /// Adds [begin, end) to a delta's range list: extends a range it touches or overlaps, else
 /// appends it. A full list widens the range that grows least instead (true then), which only
 /// makes Reaches more conservative.
