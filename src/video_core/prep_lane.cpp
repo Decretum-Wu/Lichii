@@ -1251,11 +1251,12 @@ bool Maxwell3DLane::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface
 bool Maxwell3DLane::AccelerateTemporalUpscale(
     const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
     const Tegra::Engines::Fermi2D::Surface& motion_vectors, const Tegra::Texture::TICEntry* depth,
-    std::array<f32, 2> jitter, std::array<f32, 2> motion_scale, bool use_history) {
+    std::array<f32, 2> jitter, std::array<f32, 2> motion_scale, bool use_history,
+    std::optional<std::array<u32, 2>> render_region) {
     bool result{};
     Wait([&] {
         result = rasterizer->AccelerateTemporalUpscale(src, dst, motion_vectors, depth, jitter,
-                                                       motion_scale, use_history);
+                                                       motion_scale, use_history, render_region);
     });
     return result;
 }

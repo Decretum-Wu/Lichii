@@ -86,9 +86,9 @@ public:
         cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
                                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, READ_BARRIER);
         for (const Group& group : batch_groups) {
-            cmdbuf.CopyBuffer(group.src, group.dst,
-                              vk::Span<VkBufferCopy>(batch_copies.data() + group.first,
-                                                     group.count));
+            cmdbuf.CopyBuffer(
+                group.src, group.dst,
+                vk::Span<VkBufferCopy>(batch_copies.data() + group.first, group.count));
         }
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
                                vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0, WRITE_BARRIER);

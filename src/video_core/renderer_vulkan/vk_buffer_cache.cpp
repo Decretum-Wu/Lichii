@@ -782,8 +782,9 @@ void BufferCacheRuntime::PostCopyBarrier() {
     };
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([](vk::CommandBuffer cmdbuf) {
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, vk::PIPELINE_STAGE_GRAPHICS_COMPUTE,
-                               0, WRITE_BARRIER);
+        // Copies bracketed explicitly need the same ordering as CopyBuffer(barrier = true).
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0, WRITE_BARRIER);
     });
 }
 

@@ -161,7 +161,8 @@ public:
         const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
         const Tegra::Engines::Fermi2D::Surface& motion_vectors,
         const Tegra::Texture::TICEntry* depth, std::array<f32, 2> jitter,
-        std::array<f32, 2> motion_scale, bool use_history) override;
+        std::array<f32, 2> motion_scale, bool use_history,
+        std::optional<std::array<u32, 2>> render_region) override;
     [[nodiscard]] bool SupportsGameDlssNetwork() const override;
     [[nodiscard]] bool UsesNvidiaDlss() const override;
     [[nodiscard]] bool CanProbeGameDlssOutput() const override;

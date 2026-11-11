@@ -12,9 +12,9 @@ namespace VideoCommon::Nx2Perf {
     return value != nullptr && value[0] == '1';
 }
 
-/// EDEN_NX2_PERF_VERIFY=1. A plain flag: Maxwell3D::CallMethod checks it on every 3D write,
-/// and a function's static is checked for its initialization on every call (MSVC reads a
-/// thread-local for it).
+/// EDEN_NX2_PERF_VERIFY=1. A plain flag: the buffer cache, the memory tracker and the 3D engine
+/// check it on hot paths, and a function's static is checked for its initialization on every
+/// call (MSVC reads a thread-local for it).
 inline bool g_verify = VerifySwitchSet();
 
 /// Called by VideoCore::CreateGPU: static initialization runs before the frontend loads

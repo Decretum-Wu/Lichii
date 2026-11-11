@@ -3325,7 +3325,8 @@ private:
     void ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call);
 
     /// The value a write leaves in the register, as the shadow RAM mode has it: the argument
-    /// (tracked in shadow_state when tracking), or the shadow copy when replaying.
+    /// (tracked in shadow_state when tracking), or the shadow copy when replaying. Defined here,
+    /// as the hot method paths call it for nearly every write.
     u32 ProcessShadowRam(u32 method, u32 argument) {
         const auto control = shadow_state.shadow_ram_control;
         if (control == Regs::ShadowRamControl::Track ||
@@ -3348,16 +3349,16 @@ private:
     void LaneShadowWritten(u32 method);
     u32 LaneShadow(u32 method);
 
-    /// Stores a register's value and sets its dirty flags. Defined here, as the hot method paths
-    /// call it for nearly every write.
+    /// Stores a register's value and sets its dirty flags. Defined here for the same reason.
     void ProcessDirtyRegisters(u32 method, u32 argument) {
-        // The instances after the first are drawn together once their loop ends, and they must
-        // see the state they were begun with: NVN's draw macros reset the base instance (and its
-        // copy in c[0][0x644]) right after the loop, before the macro returns.
+        // The instances after the first are drawn together once their loop ends, and they must see
+        // the state they were begun with: NVN's draw macros reset the base instance (and its copy
+        // in c[0][0x644]) right after the loop, before the macro returns.
         if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method))
             [[unlikely]] {
             draw_manager.DrawDeferred(*this, true);
         }
+        // A changed register that doesn't only parameterize the next draw ends fast draw reuse.
         if (VideoCommon::Nx2FastDraw::Enabled() && regs.reg_array[method] != argument &&
             !IsFastDrawParameter(method)) {
             VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register, method);
@@ -3500,7 +3501,8 @@ private:
     // with their words. The differences must stay 0. Read per engine, as the switch above.
     const bool dma_read_verify = std::getenv("EDEN_NX2_DMA_READ_VERIFY") != nullptr;
     // EDEN_NX2_SKIP_SAME and EDEN_NX2_PERF_VERIFY, read per engine like the switch above. Every
-    // method checks them, so they are members rather than statics with a guard on the hot path.
+    // method checks them, so they are members rather than function statics (MSVC reads a
+    // thread-local to check a static's initialization on every call).
     const bool skip_same_value_writes = [] {
         const char* value = std::getenv("EDEN_NX2_SKIP_SAME");
         return value == nullptr || value[0] != '0';

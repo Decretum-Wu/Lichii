@@ -939,10 +939,19 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(base(0x5c10000000000000ULL) | (u64{source} << 8) | (u64{250} << 20));
                 break;
             }
-            if (insn.Bits(24, 8) != 255 || insn.Bits(64, 8) != 255 || insn.words[2] != 0x078e00ff) {
-                if ((insn.words[2] & ~0x2ffU) != 0x078e0000 || (opcode == 0x624 && insn.Bits(62, 2)))
+            const bool negated_cbuf_addend = opcode == 0x624 && insn.Bits(63, 1);
+            if (insn.Bits(24, 8) != 255 || insn.Bits(64, 8) != 255 || insn.words[2] != 0x078e00ff ||
+                negated_cbuf_addend) {
+                // Bit 63 negates the constant buffer addend (bit 62 would be its absolute value).
+                // A zero product with a negated addend also takes this path: 0 * 0 - c.
+                if ((insn.words[2] & ~0x2ffU) != 0x078e0000 || (opcode == 0x624 && insn.Bits(62, 1)))
                     return fail(index, "native multiply wide addend mode");
-                const u32 a = operand(0, false), b = operand(1, false), c = operand(2, false);
+                const u32 a = operand(0, false), b = operand(1, false);
+                u32 c = operand(2, false);
+                if (negated_cbuf_addend) {
+                    emit(0x5c10000000000000ULL | predicate | 252 | (u64{255} << 8) | (u64{c} << 20) | (u64{1} << 48));
+                    c = 252;
+                }
                 multiply_low(a, b, c, false);
                 break;
             }
@@ -2491,6 +2500,37 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 else target = second_dest + (i - 2);
                 if (target != 255)
                     emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{250 + i} << 20));
+            }
+            break;
+        }
+        case 0x364: { // TLD4.B (gather) with the handle in a register: packed 2D (x, y | handle).
+            // Like TEX 0x361 the handle follows the coordinates; no offsets, depth compare or F16.
+            const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
+            const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
+            const u32 limit = uses_uniform_bank ? high_uniform_base : 246U;
+            const u32 components = static_cast<u32>(std::popcount(mask));
+            const bool split = second_dest != 255;
+            const u32 low_count = split ? std::min(components, 2U) : components;
+            if (insn.Bits(40, 19) || !insn.Bits(59, 1) || !insn.Bits(60, 1) || insn.Bits(61, 3) != 1 ||
+                insn.Bits(76, 5) || insn.Bits(81, 3) != 7 || insn.Bits(89, 1) || insn.Bits(91, 1) ||
+                mask == 0 || source_a == 255 || source_a + 2 > limit || source_b >= limit ||
+                (dest != 255 && dest + low_count > limit) ||
+                (split && (components <= 2 || second_dest + components - 2 > limit)))
+                return fail(index, "native bindless texture gather mode");
+            const auto copy = [&](u32 target, u32 source) {
+                emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+            };
+            copy(250, source_a);
+            copy(251, source_a + 1);
+            copy(246, source_b);
+            // Maxwell TLD4.B: handle in Rb, component at 38.
+            emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
+                 (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
+                 (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+            for (u32 i = 0; i < components; ++i) {
+                const u32 target = !split || i < 2 ? (dest == 255 ? 255U : static_cast<u32>(dest) + i)
+                                                  : second_dest + (i - 2);
+                if (target != 255) copy(target, 250 + i);
             }
             break;
         }
