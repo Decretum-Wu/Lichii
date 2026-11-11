@@ -381,6 +381,7 @@ void Scheduler::FlushUploads() {
     upload_batch->copies.clear();
     upload_batch->groups.clear();
     uploads_pending = false;
+    ++record_serial;
     // Straight into the chunk, ahead of the draw commands a splice moves there after it.
     if (!chunk->Record(command)) {
         QueueChunk();
@@ -1059,6 +1060,7 @@ void Scheduler::SpliceCommands() {
     size_t index = 0;
     command_list->TakeAll([&](Command& command) {
         ++cmdlist_stats.commands;
+        ++record_serial;
         if (!command.MoveTo(*chunk)) {
             DispatchWork();
             (void)command.MoveTo(*chunk);
@@ -1185,6 +1187,7 @@ void Scheduler::SpliceList(PacketList& list) {
     };
     list.commands->TakeAll([&](Command& command) {
         apply_ops(index);
+        ++record_serial;
         if (!command.MoveTo(*chunk)) {
             DispatchWork();
             (void)command.MoveTo(*chunk);
