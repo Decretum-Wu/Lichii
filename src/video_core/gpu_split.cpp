@@ -299,8 +299,8 @@ void GpuSplit::NoteSemaphoreWrite(u64 device_address, u32 payload, bool known) {
     if (semaphore_writes.size() >= semaphore_writes_limit) {
         // The words of releases the back ran hold their values in memory.
         const u64 done = consumed.load(std::memory_order_acquire);
-        std::erase_if(semaphore_writes,
-                      [done](const auto& entry) { return entry.second.position <= done; });
+        boost::unordered::erase_if(
+            semaphore_writes, [done](const auto& entry) { return entry.second.position <= done; });
         semaphore_writes_limit = std::max<size_t>(1024, semaphore_writes.size() * 2);
     }
     semaphore_writes.insert_or_assign(device_address & ~u64{3},
