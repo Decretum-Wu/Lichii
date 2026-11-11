@@ -414,6 +414,7 @@ private slots:
     void OnInstallFirmware();
     void OnInstallFirmwareFromZIP();
     void OnInstallDecryptionKeys();
+    void OnWhatsNew();
     void OnAbout();
     void OnEdenDependencies();
     void OnApplyRecommendedSettings();

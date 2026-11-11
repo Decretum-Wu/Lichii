@@ -46,6 +46,7 @@
 #include "yuzu/nup_dialogs.h"
 #include "yuzu/recommended_settings_dialog.h"
 #include "yuzu/shader_warm_dialog.h"
+#include "yuzu/whats_new_dialog.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
 #ifdef LICHII_NX_TOOLS
 #include "yuzu/nx_tools.h"
@@ -407,6 +408,15 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     QIcon::setFallbackSearchPaths(QStringList(QStringLiteral(":/icons")));
 
     default_theme_paths = QIcon::themeSearchPaths();
+
+    // The first launch after an interface update switches to Lichii Dark and explains what moved.
+    const bool whats_new_pending =
+        UISettings::values.whats_new_version.GetValue() < WhatsNewDialog::Version;
+    if (whats_new_pending) {
+        UISettings::values.whats_new_version = WhatsNewDialog::Version;
+        UISettings::values.theme =
+            UISettings::themes[static_cast<size_t>(UISettings::Theme::LichiiDark)].second;
+    }
     UpdateUITheme();
 
     SetDiscordEnabled(UISettings::values.enable_discord_presence.GetValue());
@@ -458,6 +468,11 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         Core::Crypto::KeyManager::Instance().ReloadKeys();
     }
     game_list->PopulateAsync(UISettings::values.game_dirs);
+
+    if (whats_new_pending && !UISettings::values.first_start.GetValue() &&
+        UISettings::values.show_whats_new.GetValue()) {
+        QTimer::singleShot(0, this, &MainWindow::OnWhatsNew);
+    }
 
     // Set up game list mode checkboxes.
     SetGameListMode(UISettings::values.game_list_mode.GetValue());
@@ -1694,6 +1709,7 @@ void MainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Firmware_From_Folder, &MainWindow::OnInstallFirmware);
     connect_menu(ui->action_Firmware_From_ZIP, &MainWindow::OnInstallFirmwareFromZIP);
     connect_menu(ui->action_Install_Keys, &MainWindow::OnInstallDecryptionKeys);
+    connect_menu(ui->action_Whats_New, &MainWindow::OnWhatsNew);
     connect_menu(ui->action_About, &MainWindow::OnAbout);
     connect_menu(ui->action_Eden_Dependencies, &MainWindow::OnEdenDependencies);
     connect_menu(ui->action_Apply_Recommended_Settings, &MainWindow::OnApplyRecommendedSettings);
@@ -4240,6 +4256,14 @@ void MainWindow::OnInstallDecryptionKeys() {
     OnCheckFirmwareDecryption();
 }
 
+void MainWindow::OnWhatsNew() {
+    WhatsNewDialog dialog(this);
+    dialog.exec();
+    if (dialog.OpenConfigureRequested()) {
+        OnConfigure();
+    }
+}
+
 void MainWindow::OnAbout() {
     AboutDialog aboutDialog(this);
     aboutDialog.exec();
@@ -5704,7 +5728,9 @@ void MainWindow::filterBarSetChecked(bool state) {
 static void AdjustLinkColor() {
     QPalette new_pal(qApp->palette());
 
-    if (UISettings::IsDarkTheme())
+    if (UISettings::values.theme == "lichii")
+        new_pal.setColor(QPalette::Link, QColor(0xf4, 0x5a, 0x85));
+    else if (UISettings::IsDarkTheme())
         new_pal.setColor(QPalette::Link, QColor(0, 190, 255, 255));
     else
         new_pal.setColor(QPalette::Link, QColor(0, 140, 200, 255));
@@ -5713,12 +5739,56 @@ static void AdjustLinkColor() {
         qApp->setPalette(new_pal);
 }
 
+// Lichii Dark styles most widgets through its stylesheet; the palette covers what Qt draws
+// without one: item view text, disabled text, links and the native parts of dialogs.
+static QPalette LichiiPalette() {
+    QPalette palette;
+    const QColor window(0x17, 0x18, 0x1b);
+    const QColor surface(0x20, 0x21, 0x25);
+    const QColor text(0xec, 0xec, 0xef);
+    const QColor disabled(0x55, 0x57, 0x5d);
+    const QColor accent(0xf0, 0x38, 0x6b);
+    palette.setColor(QPalette::Window, window);
+    palette.setColor(QPalette::WindowText, text);
+    palette.setColor(QPalette::Base, window);
+    palette.setColor(QPalette::AlternateBase, QColor(0x1b, 0x1c, 0x20));
+    palette.setColor(QPalette::ToolTipBase, QColor(0x23, 0x24, 0x29));
+    palette.setColor(QPalette::ToolTipText, text);
+    palette.setColor(QPalette::PlaceholderText, QColor(0x6f, 0x71, 0x78));
+    palette.setColor(QPalette::Text, text);
+    palette.setColor(QPalette::Button, surface);
+    palette.setColor(QPalette::ButtonText, text);
+    palette.setColor(QPalette::BrightText, Qt::white);
+    palette.setColor(QPalette::Light, QColor(0x34, 0x36, 0x3c));
+    palette.setColor(QPalette::Midlight, QColor(0x2a, 0x2c, 0x31));
+    palette.setColor(QPalette::Mid, QColor(0x23, 0x24, 0x29));
+    palette.setColor(QPalette::Dark, QColor(0x14, 0x15, 0x18));
+    palette.setColor(QPalette::Shadow, Qt::black);
+    palette.setColor(QPalette::Highlight, accent);
+    palette.setColor(QPalette::HighlightedText, Qt::white);
+    palette.setColor(QPalette::Link, QColor(0xf4, 0x5a, 0x85));
+    palette.setColor(QPalette::LinkVisited, QColor(0xd4, 0x2c, 0x5a));
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, disabled);
+    palette.setColor(QPalette::Disabled, QPalette::Text, disabled);
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, disabled);
+    return palette;
+}
+
 void MainWindow::UpdateUITheme() {
     const QString default_theme = QString::fromUtf8(UISettings::themes[size_t(UISettings::default_theme)].second);
     QString current_theme = QString::fromStdString(UISettings::values.theme);
 
     if (current_theme.isEmpty())
         current_theme = default_theme;
+
+    static bool lichii_palette = false;
+    if (current_theme == QStringLiteral("lichii")) {
+        qApp->setPalette(LichiiPalette());
+        lichii_palette = true;
+    } else if (lichii_palette) {
+        qApp->setPalette(QPalette());
+        lichii_palette = false;
+    }
 
 #ifdef _WIN32
     QIcon::setThemeName(current_theme);
