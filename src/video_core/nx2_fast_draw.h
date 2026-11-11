@@ -311,15 +311,27 @@ inline u64 MemorySerial() {
 /// Whether a delta draw after which only computed handles can have changed evaluates them once
 /// and resolves only theirs (GraphicsPipeline::RetextureComputed), instead of checking them and
 /// then reading every handle again. EDEN_NX2_TEST_RETEXTURE_ONCE=0 (TEST): the latter.
-/// TEST: EDEN_NX2_TEST_TOGGLE_FILE=<path> turns it off while that file exists (the drawing thread
-/// looks every 1024 draws), so one run compares both.
-inline bool g_test_toggled{};
 [[nodiscard]] inline bool RetextureComputedOnce() {
     static const bool once = [] {
         const char* value = std::getenv("EDEN_NX2_TEST_RETEXTURE_ONCE");
         return value == nullptr || value[0] != '0';
     }();
-    return once && !g_test_toggled;
+    return once;
+}
+
+/// TEST: EDEN_NX2_TEST_TOGGLE_FILE=<path> turns the switch under test off while that file exists
+/// (the drawing thread looks every 1024 draws), so one run compares both.
+inline std::atomic<bool> g_test_toggled{};
+
+/// Whether a guest write that untracks buffer cache pages changes their host protection after
+/// dropping the cache's lock (RasterizerVulkan::OnCPUWrite). EDEN_NX2_TEST_DEFER_PROTECT=0
+/// (TEST): under it. Follows the test toggle.
+[[nodiscard]] inline bool DeferPageProtection() {
+    static const bool defer = [] {
+        const char* value = std::getenv("EDEN_NX2_TEST_DEFER_PROTECT");
+        return value == nullptr || value[0] != '0';
+    }();
+    return defer && !g_test_toggled.load(std::memory_order_relaxed);
 }
 
 /// The device memory a GPU range maps to. A write through another GPU address that maps the

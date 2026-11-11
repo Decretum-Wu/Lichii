@@ -914,7 +914,9 @@ void RasterizerVulkan::ReportFastDraws() {
         }
     }
     LOG_INFO(Render_Vulkan, "Fast draw full draws by reason (TEST){}{}", full_costs,
-             VideoCommon::Nx2FastDraw::g_test_toggled ? " | test toggle on" : "");
+             VideoCommon::Nx2FastDraw::g_test_toggled.load(std::memory_order_relaxed)
+                 ? " | test toggle on"
+                 : "");
     stats = FastDrawStats{.window_start = now};
 }
 
@@ -1049,7 +1051,8 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     // TEST (EDEN_NX2_TEST_TOGGLE_FILE): the switches under test follow that file.
     static const char* const toggle_file = std::getenv("EDEN_NX2_TEST_TOGGLE_FILE");
     if (toggle_file != nullptr && (++toggle_checks & 1023) == 0) {
-        FastDraw::g_test_toggled = std::filesystem::exists(toggle_file);
+        FastDraw::g_test_toggled.store(std::filesystem::exists(toggle_file),
+                                       std::memory_order_relaxed);
     }
     const u64 fast_draw_start = fast_draw_timed ? Profile::Now() : 0;
     {
@@ -3094,8 +3097,28 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     DEBUG_ASSERT(addr != 0 || size != 0);
     {
-        std::scoped_lock lock{buffer_cache.mutex};
-        if (buffer_cache.OnCPUWrite(addr, size)) {
+        // The pages the write untracks change their host protection after the lock is dropped:
+        // drawing waited for those system calls (~1 µs each, thousands a second at Ocarina of
+        // Time's water). A write trapping on a page still protected until then finds the page
+        // already untracked and changes nothing.
+        static thread_local VideoCommon::DeferredPageCaching deferred;
+        const bool defer = VideoCommon::t_deferred_page_caching == nullptr &&
+                           VideoCommon::Nx2FastDraw::DeferPageProtection();
+        bool gpu_modified;
+        {
+            std::scoped_lock lock{buffer_cache.mutex};
+            if (defer) {
+                VideoCommon::t_deferred_page_caching = &deferred;
+            }
+            gpu_modified = buffer_cache.OnCPUWrite(addr, size);
+            if (defer) {
+                VideoCommon::t_deferred_page_caching = nullptr;
+            }
+        }
+        if (defer) {
+            deferred.ApplyAll();
+        }
+        if (gpu_modified) {
             return true;
         }
     }
