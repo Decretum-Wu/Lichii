@@ -16,6 +16,7 @@
 #include <utility>
 #include <queue>
 #include <source_location>
+#include <span>
 #include <vector>
 
 #include "common/alignment.h"

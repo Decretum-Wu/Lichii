@@ -528,7 +528,7 @@ void Scheduler::DispatchWork() {
         VideoCommon::GpuSplit::CheckOwner("Scheduler::DispatchWork");
     }
     if (uploads_pending) {
-        // What the worker gets is everything recorded so far.
+        // The worker must receive everything recorded so far.
         FlushUploads();
     }
     if (chunk && !chunk->Empty()) {
@@ -555,14 +555,20 @@ void Scheduler::RecordUpload(VkBuffer src, VkBuffer dst, std::span<const VkBuffe
     if (copies.empty()) {
         return;
     }
-    if (uploads_pending && !upload_batch->CanAdd(src, dst, copies)) {
-        FlushUploads();
-    }
     if (!uploads_pending) {
         upload_batch_site = location;
     }
-    upload_batch->Add(src, dst, copies);
-    uploads_pending = true;
+    // Check each region so even a single upload larger than the capacity stays bounded, and
+    // overlapping regions within that upload cannot enter the same batch.
+    for (const VkBufferCopy& copy : copies) {
+        const std::span<const VkBufferCopy> region{&copy, 1};
+        if (uploads_pending && !upload_batch->CanAdd(src, dst, region)) {
+            FlushUploads();
+            upload_batch_site = location;
+        }
+        upload_batch->Add(src, dst, region);
+        uploads_pending = true;
+    }
 }
 
 void Scheduler::FlushUploads() {
@@ -1128,7 +1134,7 @@ void Scheduler::TraceGpuSubmission() {
 u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,
                                 std::source_location cause) {
     if (uploads_pending) {
-        // In the tick they were recorded at.
+        // Keep the copies in the tick that protects their staging regions and buffer lifetimes.
         FlushUploads();
     }
     if (VideoCommon::Nx2Profile::Enabled()) {
