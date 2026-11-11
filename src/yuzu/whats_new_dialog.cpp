@@ -6,9 +6,11 @@
 #include <QIcon>
 #include <QLabel>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QVBoxLayout>
 
 #include "qt_common/config/uisettings.h"
+#include "yuzu/configuration/configuration_shared.h"
 #include "yuzu/whats_new_dialog.h"
 
 namespace {
@@ -54,7 +56,8 @@ WhatsNewDialog::WhatsNewDialog(QWidget* parent) : QDialog(parent) {
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    auto* const body = new QVBoxLayout;
+    auto* const content = new QWidget;
+    auto* const body = new QVBoxLayout(content);
     body->setContentsMargins(24, 20, 24, 8);
     body->setSpacing(0);
 
@@ -96,7 +99,12 @@ WhatsNewDialog::WhatsNewDialog(QWidget* parent) : QDialog(parent) {
                          tr("Configure is in Emulation > Configure (Ctrl+,). Right-click a game "
                             "and choose Properties for its own settings. Help > What's New in "
                             "Lichii shows this again.")));
-    root->addLayout(body);
+    auto* const scroll = new QScrollArea;
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(content);
+    root->addWidget(scroll, 1);
 
     auto* const footer = new QWidget;
     footer->setObjectName(QStringLiteral("WhatsNewFooter"));
@@ -121,9 +129,9 @@ WhatsNewDialog::WhatsNewDialog(QWidget* parent) : QDialog(parent) {
     buttons->addWidget(got_it);
     root->addWidget(footer);
 
-    setFixedWidth(560);
     ensurePolished();
-    resize(560, root->heightForWidth(560));
+    ConfigurationShared::FitToScreen(
+        this, QSize(560, body->heightForWidth(560) + footer->sizeHint().height()));
 }
 
 WhatsNewDialog::~WhatsNewDialog() = default;
