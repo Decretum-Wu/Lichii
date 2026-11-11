@@ -10,6 +10,7 @@
 #include <memory>
 #include <source_location>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <algorithm>
 #include <vector>
@@ -331,6 +332,9 @@ void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size) {
     size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
     size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
     device_inter->InvalidateRegion(address, size);
+    while (deferred_cached_updates.load(std::memory_order_acquire) != 0) {
+        std::this_thread::yield();
+    }
     std::scoped_lock lk(kept_mutex, mapping_guard);
     if (!kept_pages.empty()) {
         for (size_t i = 0; i < num_pages; i++) {
