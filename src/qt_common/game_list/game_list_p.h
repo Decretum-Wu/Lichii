@@ -192,7 +192,7 @@ public:
             const std::array<QString, 4> row_data{{
                 QString::fromStdString(filename),
                 data(FileTypeRole).toString(),
-                QString::fromStdString(fmt::format("{:#016x}", data(ProgramIdRole).toULongLong())),
+                QString::fromStdString(fmt::format("{:016X}", data(ProgramIdRole).toULongLong())),
                 data(TitleRole).toString(),
             }};
 

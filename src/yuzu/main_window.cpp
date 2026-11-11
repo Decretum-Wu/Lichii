@@ -348,9 +348,10 @@ const int MainWindow::max_recent_files_item;
 
 namespace {
 
-constexpr std::array<std::pair<u32, const char*>, 5> default_game_icon_sizes{
+constexpr std::array<std::pair<u32, const char*>, 6> default_game_icon_sizes{
     std::make_pair(0, QT_TRANSLATE_NOOP("MainWindow", "None")),
     std::make_pair(32, QT_TRANSLATE_NOOP("MainWindow", "Small (32x32)")),
+    std::make_pair(44, QT_TRANSLATE_NOOP("MainWindow", "Medium (44x44)")),
     std::make_pair(64, QT_TRANSLATE_NOOP("MainWindow", "Standard (64x64)")),
     std::make_pair(128, QT_TRANSLATE_NOOP("MainWindow", "Large (128x128)")),
     std::make_pair(256, QT_TRANSLATE_NOOP("MainWindow", "Full Size (256x256)")),

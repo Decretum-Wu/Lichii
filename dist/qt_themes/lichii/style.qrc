@@ -294,6 +294,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
         <file>icons/sliders@2x.png</file>
         <file>icons/sliders_active.png</file>
         <file>icons/sliders_active@2x.png</file>
+        <file>icons/star_accent.png</file>
+        <file>icons/star_accent@2x.png</file>
         <file>icons/system.png</file>
         <file>icons/system@2x.png</file>
         <file>icons/system_active.png</file>
