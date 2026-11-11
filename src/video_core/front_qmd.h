@@ -6,9 +6,11 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <deque>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -33,7 +35,9 @@ namespace VideoCommon {
 ///   writes placed in its granule and the unplaced ones), on pages GPU work never wrote
 ///   (Nx2MayBeGpuWritten);
 /// - from the inline QMD a LOAD_INLINE_QMD_DATA still queued writes there, when that is the last
-///   write sent there (NoteInlineWrite).
+///   write sent there (NoteInlineWrite);
+/// - from the words an inline upload still queued writes there, when that is the last write sent
+///   there, and around them from memory once the back ran the writes before it (NoteUpload).
 /// No change of the GPU's mappings may be queued either (GpuSplit::LastMappingChange). Memory holds
 /// what the back finds there only while the back has not run the signal's entry yet: the front
 /// sends and values it under a GpuSplit::PublishHold.
@@ -140,6 +144,7 @@ public:
     void Lose() {
         synced = false;
         inline_writes_count = 0;
+        uploads_count = 0;
         ClearWaiting();
     }
 
@@ -164,6 +169,65 @@ public:
         written.position = split.Position();
         written.qmd = qmd;
         written.overwritten = false;
+    }
+
+    /// Inline upload bytes the front keeps for QMDs it reads before the back wrote them, and the
+    /// uploads into one QMD it reads past.
+    static constexpr u32 MaxUploadWords = 256;
+    static constexpr size_t MaxChainedUploads = 8;
+
+    /// A data method of an inline upload (the compute engine's data_upload) was just sent, before
+    /// the front places its write (GpuSplit::NoteWrite): running it, the back writes `words`, all
+    /// of a linear upload of one line of `size` bytes to `address`, if `known`. `serial` tells
+    /// the upload's data methods from another's. Until the back ran it, the front reads a QMD the
+    /// upload wrote last from the words, and the bytes around them from memory once the back ran
+    /// what was written there before the upload (ReadDescriptor). Games write a QMD that way right
+    /// before they signal it: Ocarina of Time's water had the front wait ~700 times a second.
+    template <typename Memory>
+    void NoteUpload(const GpuSplit& split, const Memory& memory, u64 serial, GPUVAddr address,
+                    u64 size, std::span<const u32> words, bool known) {
+        // The granules a QMD it writes into lies in.
+        const GPUVAddr first = address & ~GPUVAddr{0xff};
+        const GPUVAddr end = (address + size + 0xff) & ~GPUVAddr{0xff};
+        const u64 before = memory.WritesTarget(split, first, end - first);
+        UploadWrite* record = nullptr;
+        if (uploads_count != 0) {
+            UploadWrite& last = uploads[(uploads_count - 1) % uploads.size()];
+            if (last.serial == serial && last.memory == memory.Id()) {
+                record = &last;
+            }
+        }
+        if (record == nullptr) {
+            record = &uploads[uploads_count++ % uploads.size()];
+            *record = UploadWrite{};
+            record->serial = serial;
+            record->memory = memory.Id();
+            record->before = before;
+            record->clean = true;
+        } else if (before != record->position) {
+            // Written by something else since the upload's last data method.
+            record->clean = false;
+        }
+        record->position = split.Position();
+        record->usable = false;
+        const auto device = memory.Device(address);
+        record->device = device.value_or(0); // TEST: logged when unusable
+        record->size = static_cast<u32>((std::min<u64>)(size, u64{MaxUploadWords} * 4));
+        record->why = !known                         ? 1
+                      : !record->clean               ? 2
+                      : size == 0 || size > u64{MaxUploadWords} * 4 ? 3
+                      : u64{words.size()} * 4 < size ? 4
+                                                     : 5;
+        if (record->why != 5) {
+            return;
+        }
+        const auto last_device = memory.Device(address + size - 1);
+        if (!device || !last_device || *last_device != *device + size - 1) {
+            return;
+        }
+        record->why = 0;
+        std::memcpy(record->bytes.data(), words.data(), size);
+        record->usable = true;
     }
 
     /// The scheduling of PCAS action `argument` on the QMD at `address` that the back runs at the
@@ -228,6 +292,23 @@ private:
         u64 position{};
         Descriptor qmd{};
         bool overwritten{}; ///< A release of the same entry writes into it after
+    };
+
+    /// An inline upload (NoteUpload): the position after its last data method sent, and the
+    /// last write sent to its granules before its first; `usable`: the back writes `bytes` to
+    /// `device` at that position, and nothing else wrote its granules since `before`.
+    struct UploadWrite {
+        u64 serial{};
+        const void* memory{};
+        u64 before{};
+        u64 position{};
+        u64 device{};
+        u32 size{};
+        bool clean{};
+        bool usable{};
+        /// TEST: why not usable: 1 unknown words, 2 written over, 3 size, 4 incomplete, 5 mapping
+        u8 why{};
+        std::array<u8, MaxUploadWords * 4> bytes{};
     };
 
     /// A signal sent at `position` that waits to be valued (`inline_qmd` if `has_inline`).
@@ -506,7 +587,90 @@ private:
             Nx2AcquireStats::NoteQmdInlineRead(); // TEST
             return std::nullopt;
         }
+        if (const UploadWrite* upload = QueuedUpload(split, memory.Id(), *device, target)) {
+            // The bytes around the upload's are memory's once the back ran what came before it,
+            // or an earlier upload's still queued (a QMD written in parts).
+            std::array<const UploadWrite*, MaxChainedUploads> chain{upload};
+            size_t links = 1;
+            while (!split.Ran(chain[links - 1]->before)) {
+                const UploadWrite* earlier =
+                    links < chain.size()
+                        ? QueuedUpload(split, memory.Id(), *device, chain[links - 1]->before)
+                        : nullptr;
+                if (earlier == nullptr) {
+                    if (Nx2AcquireStats::g_enabled) [[unlikely]] {
+                        NoteUploadMiss(split, *chain[links - 1], links, position); // TEST
+                    }
+                    return Outcome{false, chain[links - 1]->before, lost, qmd_address};
+                }
+                chain[links++] = earlier;
+            }
+            memory.Read(qmd_address, descriptor.data(), sizeof(descriptor));
+            for (size_t i = links; i-- > 0;) {
+                const UploadWrite& part = *chain[i];
+                const u64 first = (std::max)(*device, part.device);
+                const u64 end = (std::min)(*device + sizeof(descriptor), part.device + part.size);
+                std::memcpy(reinterpret_cast<u8*>(descriptor.data()) + (first - *device),
+                            part.bytes.data() + (first - part.device), end - first);
+            }
+            return std::nullopt;
+        }
+        if (Nx2AcquireStats::g_enabled) [[unlikely]] {
+            NoteUploadMiss(split, *device, target, position); // TEST
+        }
         return Outcome{false, target, lost, qmd_address};
+    }
+
+    /// TEST (EDEN_NX2_ACQUIRE_STATS): logs the first QMD reads that wait although an upload wrote
+    /// the QMD: the last write `target` an upload no record could stand in for.
+    void NoteUploadMiss(const GpuSplit& split, u64 device, u64 target, u64 position) const {
+        static u32 logged{};
+        if (logged >= 24) {
+            return;
+        }
+        const size_t count = (std::min)(uploads_count, uploads.size());
+        for (size_t i = 1; i <= count; ++i) {
+            const UploadWrite& upload = uploads[(uploads_count - i) % uploads.size()];
+            if (upload.position == target) {
+                ++logged;
+                LOG_INFO(HW_GPU,
+                         "QMD view: upload at {} unusable for QMD {:#x} (signal at {}): device "
+                         "{:#x}+{:#x}, why {}, before {}, ran {}",
+                         target, device, position, upload.device, upload.size, upload.why,
+                         upload.before, split.Ran(upload.before));
+                return;
+            }
+        }
+    }
+    /// TEST: an upload whose earlier writes the chain could not stand in for.
+    void NoteUploadMiss(const GpuSplit& split, const UploadWrite& upload, size_t links,
+                        u64 position) const {
+        static u32 logged{};
+        if (logged >= 24) {
+            return;
+        }
+        ++logged;
+        LOG_INFO(HW_GPU,
+                 "QMD view: {} chained uploads (last {:#x}+{:#x} at {}) wait for {} before them, "
+                 "signal at {}, the back at {}",
+                 links, upload.device, upload.size, upload.position, upload.before, position,
+                 split.Position() - split.Backlog());
+    }
+
+    /// The inline upload the back writes at `target` into the QMD at `device`, if the front knows
+    /// what it writes and the back has not run it yet.
+    [[nodiscard]] const UploadWrite* QueuedUpload(const GpuSplit& split, const void* memory_id,
+                                                  u64 device, u64 target) const {
+        const size_t count = (std::min)(uploads_count, uploads.size());
+        for (size_t i = 1; i <= count; ++i) {
+            const UploadWrite& upload = uploads[(uploads_count - i) % uploads.size()];
+            if (upload.position == target && upload.usable && upload.memory == memory_id &&
+                upload.device < device + sizeof(Descriptor) &&
+                device < upload.device + upload.size && !split.Ran(upload.position)) {
+                return &upload;
+            }
+        }
+        return nullptr;
     }
 
     /// The last inline QMD sent to the QMD at `device` that the back has not written yet.
@@ -644,6 +808,9 @@ private:
     /// behind has some ten to write, a few times that in long frames.
     std::array<InlineWrite, 256> inline_writes{};
     size_t inline_writes_count{};
+    /// The last inline uploads sent (NoteUpload), oldest first from uploads_count on.
+    std::array<UploadWrite, 64> uploads{};
+    size_t uploads_count{};
     /// TEST (EDEN_NX2_DRAIN_CHECK): see TakeChecks.
     std::vector<Nx2DrainCheck::QmdRelease> checks;
     std::vector<Nx2DrainCheck::QmdRead> check_reads;

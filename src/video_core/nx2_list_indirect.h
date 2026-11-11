@@ -854,6 +854,7 @@ enum class Reason : u32 {
 /// - std::optional<u64> DeviceWord(u64 gpu_address): the device address of the 4 bytes there,
 ///   if they are mapped, on one page, as the back will find them;
 /// - void Emit(u32 method, u32 value): the engine's emit (FrontApply and the split);
+/// - void TaintUpload(): the upload data word emitted next is a placeholder;
 /// - void SendOwed(u64 device, u32 value): the back patches the slot word that `value` is the
 ///   placeholder of into the constant buffers compute dispatches bind there;
 /// - void Release(u32 slot): the back drops the front's hold of the slot;
@@ -1096,6 +1097,9 @@ private:
         }
         for (size_t i = 0; i < run.emits.size(); ++i) {
             const TaggedWrite& emit = run.emits[i];
+            if (emit.address == UploadData && emit.tagged) {
+                ctx.TaintUpload();
+            }
             ctx.Emit(emit.address, emit.value);
             if (emit.address == UploadData && emit.tagged) {
                 ctx.SendOwed(owed[i], emit.value);
