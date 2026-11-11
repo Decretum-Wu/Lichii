@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <deque>
 #include <utility>
@@ -21,6 +22,8 @@ protected:
     // own cache line, so neither thread pulls the line from the other at every report.
     alignas(64) std::atomic<size_t> added{};
     alignas(64) std::atomic<size_t> dropped{};
+    /// Keeps a derived bank's members off dropped's line (MSVC's layout puts them right after).
+    std::array<char, 64 - sizeof(std::atomic<size_t>)> dropped_padding{};
 
 public:
     explicit BankBase(size_t bank_size_) : base_bank_size{bank_size_}, bank_size(bank_size_) {}

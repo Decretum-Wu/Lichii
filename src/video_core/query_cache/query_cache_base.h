@@ -63,6 +63,11 @@ public:
     ~QueryCacheBase();
 
     void InvalidateRegion(VAddr addr, std::size_t size) {
+        // Compute inline writes come by the thousand a frame, mostly where no report ever was:
+        // pages never registered (page_filter) need no look under cache_mutex.
+        if (!page_filter.Any(addr, size)) {
+            return;
+        }
         IterateCache<true>(addr, size,
                            [this](QueryLocation location) { InvalidateQuery(location); });
     }
@@ -75,6 +80,9 @@ public:
 
     /// Writes out the finalized reports in the region. True when some still wait for host results.
     bool SemiFlushRegion(VAddr addr, std::size_t size) {
+        if (!page_filter.Any(addr, size)) {
+            return false;
+        }
         bool result = false;
         // Visits every query in the range: each final value not written yet is written here.
         IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
@@ -101,6 +109,9 @@ public:
         constexpr u64 report_size = 16;
         const u64 begin = addr >= report_size - 1 ? addr - (report_size - 1) : 0;
         const u64 end = addr + size;
+        if (!page_filter.Any(begin, end - begin)) {
+            return false;
+        }
         std::scoped_lock lock(cache_mutex);
         for (u64 page = begin >> Core::DEVICE_PAGEBITS; page <= (end - 1) >> Core::DEVICE_PAGEBITS;
              ++page) {
@@ -121,6 +132,9 @@ public:
 
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size) {
+        if (!page_filter.Any(addr, size)) {
+            return false;
+        }
         bool result = false;
         IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
             result |= IsQueryDirty(location);
