@@ -348,12 +348,13 @@ const int MainWindow::max_recent_files_item;
 
 namespace {
 
-constexpr std::array<std::pair<u32, const char*>, 6> default_game_icon_sizes{
+constexpr std::array<std::pair<u32, const char*>, 7> default_game_icon_sizes{
     std::make_pair(0, QT_TRANSLATE_NOOP("MainWindow", "None")),
     std::make_pair(32, QT_TRANSLATE_NOOP("MainWindow", "Small (32x32)")),
     std::make_pair(44, QT_TRANSLATE_NOOP("MainWindow", "Medium (44x44)")),
     std::make_pair(64, QT_TRANSLATE_NOOP("MainWindow", "Standard (64x64)")),
     std::make_pair(128, QT_TRANSLATE_NOOP("MainWindow", "Large (128x128)")),
+    std::make_pair(160, QT_TRANSLATE_NOOP("MainWindow", "Cover (160x160)")),
     std::make_pair(256, QT_TRANSLATE_NOOP("MainWindow", "Full Size (256x256)")),
 };
 
@@ -1629,19 +1630,14 @@ void MainWindow::ConnectMenuEvents() {
     game_size_actions->setExclusive(true);
 
     for (size_t i = 0; i < default_game_icon_sizes.size(); i++) {
-        const auto current_size = UISettings::values.game_icon_size.GetValue();
         const auto size = default_game_icon_sizes[i].first;
         QAction* action = ui->menuGame_Icon_Size->addAction(GetTranslatedGameIconSize(i));
         action->setCheckable(true);
-
-        if (current_size == size)
-            action->setChecked(true);
-
         game_size_actions->addAction(action);
 
         connect(action, &QAction::triggered, this, [this, size](bool checked) {
             if (checked) {
-                UISettings::values.game_icon_size.SetValue(size);
+                UISettings::CurrentGameIconSize().SetValue(size);
                 CheckIconSize();
 
                 game_list->UpdateIconSizes();
@@ -3790,30 +3786,25 @@ void MainWindow::SetCarouselView() {
 }
 
 void MainWindow::CheckIconSize() {
+    auto& setting = UISettings::CurrentGameIconSize();
+
     // When in grid/carousel view mode, with text off
     // there is no point in having icons turned off
-    auto actions = game_size_actions->actions();
-    if (UISettings::values.game_list_mode.GetValue() != Settings::GameListMode::TreeView &&
-        !UISettings::values.show_game_name.GetValue()) {
-        u32 newSize = UISettings::values.game_icon_size.GetValue();
-        if (newSize == 0) {
-            newSize = 64;
-            UISettings::values.game_icon_size.SetValue(newSize);
-        }
-
-        // Then disable the "none" action and update that menu.
-        for (size_t i = 0; i < default_game_icon_sizes.size(); i++) {
-            const auto current_size = newSize;
-            const auto size = default_game_icon_sizes[i].first;
-            if (current_size == size)
-                actions.at(i)->setChecked(true);
-        }
-
-        // Update this if you add anything before None.
-        actions.at(0)->setEnabled(false);
-    } else {
-        actions.at(0)->setEnabled(true);
+    const bool icons_required =
+        UISettings::values.game_list_mode.GetValue() != Settings::GameListMode::TreeView &&
+        !UISettings::values.show_game_name.GetValue();
+    if (icons_required && setting.GetValue() == 0) {
+        setting.SetValue(setting.GetDefault());
     }
+
+    auto actions = game_size_actions->actions();
+    for (size_t i = 0; i < default_game_icon_sizes.size(); i++) {
+        if (setting.GetValue() == default_game_icon_sizes[i].first)
+            actions.at(i)->setChecked(true);
+    }
+
+    // Update this if you add anything before None.
+    actions.at(0)->setEnabled(!icons_required);
 }
 
 void MainWindow::ToggleShowGameName() {

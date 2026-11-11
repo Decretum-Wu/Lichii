@@ -210,6 +210,8 @@ struct Values {
     // Game List
     Setting<bool> show_add_ons{linkage, true, "show_add_ons", Category::UiGameList};
     Setting<u32, true> game_icon_size{linkage, 44, 0, 512, "game_icon_size", Category::UiGameList};
+    Setting<u32, true> game_cover_size{
+        linkage, 160, 0, 512, "game_cover_size", Category::UiGameList};
     Setting<u32, true> folder_icon_size{linkage, 48, 8, 512, "folder_icon_size", Category::UiGameList};
     Setting<u8> row_1_text_id{linkage, 3, "row_1_text_id", Category::UiGameList};
     Setting<u8> row_2_text_id{linkage, 2, "row_2_text_id", Category::UiGameList};
@@ -241,6 +243,9 @@ struct Values {
 };
 
 extern Values values;
+
+// The list rows and the grid/carousel covers keep separate sizes.
+Setting<u32, true>& CurrentGameIconSize();
 
 u32 CalculateWidth(u32 height, Settings::AspectRatio ratio);
 

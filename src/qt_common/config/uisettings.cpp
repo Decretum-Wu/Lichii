@@ -85,6 +85,12 @@ bool IsDarkTheme() {
 
 Values values = {};
 
+Setting<u32, true>& CurrentGameIconSize() {
+    return values.game_list_mode.GetValue() == Settings::GameListMode::TreeView
+               ? values.game_icon_size
+               : values.game_cover_size;
+}
+
 u32 CalculateWidth(u32 height, Settings::AspectRatio ratio) {
     switch (ratio) {
     case Settings::AspectRatio::R4_3:

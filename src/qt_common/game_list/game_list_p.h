@@ -168,7 +168,7 @@ public:
 
         setData(tooltip, Qt::ToolTipRole);
 
-        const u32 size = UISettings::values.game_icon_size.GetValue();
+        const u32 size = UISettings::CurrentGameIconSize().GetValue();
 
         QPixmap picture;
         if (!picture.loadFromData(picture_data.data(), static_cast<u32>(picture_data.size()))) {
