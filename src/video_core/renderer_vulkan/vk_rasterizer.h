@@ -248,9 +248,9 @@ private:
             u64 begin;
             u64 size;
             u64 hash;
-            u32 slot;      ///< VideoCommon::DrawStages read slot
-            bool fresh;    ///< This packet set the binding (else held from an earlier one)
-            bool streamed; ///< A uniform A copied to the stream buffer at the draw
+            u32 slot;
+            bool fresh;
+            bool streamed;
         };
         std::vector<Read> reads;
         std::chrono::steady_clock::time_point committed_at{};
