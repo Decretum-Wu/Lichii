@@ -39,11 +39,13 @@ struct Passes {
     bool render_region = false;
     u64 alternate_prepass{};
 
+    /// Match either captured prepass; a zero alternate key means no alternate is configured.
     constexpr bool IsPrepass(u64 key) const {
         return key == prepass || (alternate_prepass != 0 && key == alternate_prepass);
     }
 };
 
+/// Return validated prepass/output fingerprints only for the supported game titles.
 constexpr std::optional<Passes> CapturedPasses(u64 program_id) {
     if (program_id == ProgramId) {
         return Passes{PrepassProgramKey, OutputProgramKey, false};

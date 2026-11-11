@@ -784,6 +784,8 @@ constexpr u32 DLSS_NETWORK_BAD_CHECKS = 10;
 constexpr u32 DLSS_CHECK_MISMATCH_PERCENT = 3;
 } // Anonymous namespace
 
+/// Track captured network passes and return whether native dispatch should be skipped.
+/// Spatial-only chains still dispatch natively and replace the display output afterward.
 bool KeplerCompute::ProcessGameDlss(u64 program_id, u64 native_key) {
     using namespace VideoCommon::FireEmblemUpscale;
     const auto passes = CapturedPasses(program_id);
