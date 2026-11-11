@@ -239,7 +239,7 @@ and legacy Aggressive VRAM mode keep draws inline; they need submitting waits du
   captures left on other threads, so a later ring cannot revive an old capture pointer.
 
 `EDEN_NX2_BACK_STAGES_VERIFY=1` makes A hash each range B reads (its first 256 KiB). B hashes
-the range again before it records the packet and checks that packets arrive in order. B logs the
+the range again after it records the packet and checks that packets arrive in order. B logs the
 first 16 differences. Every 10 s a `Back stages verify` line gives the packets, the ranges
 checked, those that changed after A built the packet, the packets out of order, and packets
 recorded after the address-space serial changed. B does not resolve the addresses again: the
@@ -247,6 +247,37 @@ packet holds device addresses only. The content hash and remap count cover the f
 they do not prove that a GPU address still translates to the same device address. A
 `Back stages` line gives the ring's hand-overs, joins, full-ring waits, A's wait time, and B's
 sleeps and busy time. With `EDEN_NX2_GPU_PROFILE`, the profile line counts the joins by site.
+
+### Stage snapshots
+
+B uploads a packet's vertex, index and uniform buffers later than the old path did, at the draw.
+The guest CPU can write them in between, so A copies the bytes B would upload
+(`nx2_stage_snapshot.h`), and B uploads from the copy. Both behave as one stage at the draw did.
+
+- The buffer cache keeps a bitmap of clean device pages, with one atomic bit per page. Each CPU
+  mark of the memory tracker clears its pages: `MarkRegionAsCpuModified`, `CachedCpuWrite` and
+  `FlushCachedWrites`. Only B sets a page clean, under the lock. A reads the bitmap without the
+  lock. A page is clean only while the host buffer holds the guest's bytes and no mark has arrived
+  since. A mark racing with A comes before the write it announces, so A sees the old bytes or a
+  page that is not clean.
+- At each packet, A copies the pages that are not clean. The copy covers every vertex range B
+  binds, the index range of an indexed draw (all of it for 8-bit indices, which B reads from guest
+  memory), and the uniform ranges A did not stream. The copy is whole pages, sorted and merged,
+  and the packet's slot owns it. The slot is filled again only after B consumed the packet.
+- B scans the tracker only over the pages the copy holds, and uploads the CPU-modified ones from
+  the copy, less the GPU-modified ranges. A CPU mark on any other page came after A, so it stays
+  for the next draw. B then compares each copied page with guest memory. An equal page becomes
+  clean. A page that differs was written after A's copy, which the scan's clear would lose, so B
+  marks it CPU-modified again. The 8-bit indices and unaligned uniforms B reads directly come from
+  the copy when it holds them.
+- Storage, texel and indirect buffers still upload from guest memory at B.
+- The `Back stages snapshots` line, every 10 s, gives A's copies in KiB per frame and ranges per
+  second, A's copy time in ms/s, B's uploads from them in KiB per frame, and the pages B marked
+  again. A's copy time is also the `packet snapshot` zone of `EDEN_NX2_GPU_PROFILE`.
+- With `EDEN_NX2_BACK_STAGES_VERIFY`, A hashes each copied chunk, and B checks the hashes after
+  it records the packet. B also notes every guest range it read. A changed vertex, index or uniform
+  range counts as a difference only where B read guest memory over it. Otherwise, the
+  `Back stages verify` line counts it as taken from the snapshots or B's buffers.
 
 ## Verify
 

@@ -48,6 +48,10 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
     void(slot_buffers.insert(runtime, NullBufferParams{}));
     gpu_modified_ranges.Clear();
     inline_buffer_id = NULL_BUFFER_ID;
+    if (DrawStages::BackStagesRequested()) {
+        clean_pages.Enable();
+        memory_tracker.SetCleanPages(&clean_pages);
+    }
 #ifdef YUZU_LEGACY
     immediately_free = (Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive);
 #endif
@@ -2437,8 +2441,8 @@ void BufferCache<P>::BindHostIndexBuffer(const GraphicsBufferPacket& packet) {
             } else if (guest_size != 0 &&
                        !IsRegionGpuModified(channel_state->index_buffer.device_addr, guest_size)) {
                 guest_uint8_indices.resize(guest_size);
-                device_memory.ReadBlockUnsafe(channel_state->index_buffer.device_addr,
-                                              guest_uint8_indices.data(), guest_size);
+                ReadGuest(channel_state->index_buffer.device_addr, guest_uint8_indices.data(),
+                          guest_size);
                 indices = guest_uint8_indices;
             }
             if (!indices.empty()) {
@@ -2762,10 +2766,14 @@ bool BufferCache<P>::BindStagedUniformBuffer(const GraphicsBufferPacket::Uniform
         if (unaligned) {
             // Streamed as the inline path does, but from guest memory as it is now.
             const std::span<u8> span = runtime.BindStagedStreamUniform(size);
-            device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
+            ReadGuest(device_addr, span.data(), size);
             return true;
         }
-        SynchronizeBuffer(buffer, device_addr, size);
+        if (stage_snapshot != nullptr && !bind.streamed) {
+            SettleSnapshot(buffer, device_addr, size);
+        } else {
+            SynchronizeBuffer(buffer, device_addr, size);
+        }
         buffer.MarkUsage(offset, size);
         runtime.BindUniformBuffer(buffer, offset, size);
     }
@@ -4051,6 +4059,12 @@ void BufferCache<P>::SynchronizeGeometryBuffer(u32 slot, BufferId buffer_id, DAd
     Buffer& buffer = slot_buffers[buffer_id];
     // The deletion count keeps a freed and reused buffer id from passing for the scanned one.
     GeometrySync& sync = geometry_syncs[slot];
+    if (stage_snapshot != nullptr) {
+        // The scan leaves CPU marks made after A: the range is not synchronized.
+        sync.deletions = ~u64{0};
+        SettleSnapshot(buffer, device_addr, size);
+        return;
+    }
     ++geometry_stats.syncs;
     if (memory_tracker.IsSynchronized(slot) && sync.buffer_id == buffer_id &&
         sync.device_addr == device_addr && sync.size == size &&
@@ -4069,6 +4083,68 @@ void BufferCache<P>::SynchronizeGeometryBuffer(u32 slot, BufferId buffer_id, DAd
         .deletions = buffer_deletions.load(std::memory_order_relaxed),
     };
     memory_tracker.WatchSynchronized(slot, device_addr, size);
+}
+
+template <class P>
+void BufferCache<P>::SettleSnapshot(Buffer& buffer, DAddr device_addr, u32 size) {
+    upload_copies.clear();
+    u64 total_size_bytes = 0;
+    u64 largest_copy = 0;
+    const DAddr buffer_start = buffer.CpuAddr();
+    const auto add_upload = [&](DAddr start, DAddr end) {
+        if (start == end) {
+            return;
+        }
+        const u64 range_size = end - start;
+        ForgetUploadedEarlyLanded(start, range_size);
+        upload_copies.push_back(BufferCopy{
+            .src_offset = total_size_bytes,
+            .dst_offset = start - buffer_start,
+            .size = range_size,
+        });
+        total_size_bytes += range_size;
+        largest_copy = (std::max)(largest_copy, range_size);
+    };
+    DrawStages::SettleSnapshot(
+        *stage_snapshot, device_addr, size, clean_pages,
+        [this](u64 begin, u64 length, auto&& found) {
+            memory_tracker.ForEachDirtyUploadRange(begin, length, found);
+        },
+        [&](u64 begin, u64 length) {
+            DAddr upload_start = begin;
+            gpu_modified_ranges.ForEachInRange(begin, length, [&](DAddr gpu_start, DAddr gpu_end) {
+                add_upload(upload_start, gpu_start);
+                upload_start = gpu_end;
+            });
+            add_upload(upload_start, begin + length);
+        },
+        [this](u64 begin, u8* out, u64 length) { device_memory.ReadBlockUnsafe(begin, out, length); },
+        [this](u64 begin, u64 length) {
+            memory_tracker.MarkRegionAsCpuModified(begin, length);
+            MarkVertexBuffersStale(begin, length);
+            ++stage_snapshot_stats.marked_again;
+        },
+        settle_scratch);
+    if (total_size_bytes == 0) {
+        return;
+    }
+    stage_snapshot_stats.uploaded_bytes += total_size_bytes;
+    upload_from_snapshot = true;
+    UploadMemory(buffer, total_size_bytes, largest_copy,
+                 std::span<BufferCopy>(upload_copies.data(), upload_copies.size()));
+    upload_from_snapshot = false;
+}
+
+template <class P>
+void BufferCache<P>::ReadGuest(DAddr device_addr, u8* out, u64 size) {
+    if (stage_snapshot != nullptr) {
+        if (const u8* const bytes = stage_snapshot->Find(device_addr, size)) {
+            std::memcpy(out, bytes, size);
+            return;
+        }
+    }
+    device_memory.ReadBlockUnsafe(device_addr, out, size);
+    NoteStageLiveRead(device_addr, size);
 }
 
 template <class P>
@@ -4118,7 +4194,13 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
         for (BufferCopy& copy : copies) {
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
-            device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
+            if (const u8* const bytes =
+                    upload_from_snapshot ? stage_snapshot->Find(device_addr, copy.size) : nullptr) {
+                std::memcpy(src_pointer, bytes, copy.size);
+            } else {
+                device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
+                NoteStageLiveRead(device_addr, copy.size);
+            }
             // Large uploads are mostly geometry the host GPU now has its own copy of: TickFrame
             // marks their guest memory cold (see TextureCache::RefreshContents).
             if (copy.size >= 256_KiB) {

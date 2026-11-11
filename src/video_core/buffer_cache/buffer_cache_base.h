@@ -47,6 +47,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_back_stages.h"
+#include "video_core/nx2_stage_snapshot.h"
 #include "video_core/nx2_download_trace.h"
 #include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_fast_draw.h"
@@ -681,6 +682,13 @@ public:
     /// stopped: buffers deleted while it ran were not taken out of them).
     void ForgetGraphicsUniformBuffers();
 
+    /// Stage B (EDEN_NX2_BACK_STAGES=1): the packet it records takes its CPU-modified vertex,
+    /// index and uniform bytes from A's copy (nx2_stage_snapshot.h); nullptr after it.
+    void SetStageSnapshot(const DrawStages::StageSnapshot* snapshot) noexcept {
+        stage_snapshot = snapshot;
+        stage_live_reads.clear();
+    }
+
     void SetDrawIndirect(
         const Tegra::Engines::Maxwell3D::DrawManager::IndirectParams* current_draw_indirect_) {
         current_draw_indirect = current_draw_indirect_;
@@ -708,6 +716,16 @@ public:
 
     BufferCacheLock mutex;
     Runtime& runtime;
+    /// Read by stage A without the lock (nx2_stage_snapshot.h).
+    DrawStages::CleanPages clean_pages;
+    /// EDEN_NX2_BACK_STAGES_VERIFY: the guest memory B read for the packet it records.
+    std::vector<std::pair<DAddr, u64>> stage_live_reads;
+    bool note_stage_live_reads{};
+    /// Stage B: what the stage snapshots uploaded, and pages written after A's copy.
+    struct {
+        u64 uploaded_bytes{};
+        u64 marked_again{};
+    } stage_snapshot_stats;
     bool any_buffer_uploaded = false;
     /// Indirectly read banks of native programs already uploaded this frame.
     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
@@ -827,6 +845,18 @@ private:
 
     /// SynchronizeBuffer for vertex buffer slots 0-31 and the index buffer (slot 32).
     void SynchronizeGeometryBuffer(u32 slot, BufferId buffer_id, DAddr device_addr, u32 size);
+
+    /// SynchronizeBuffer with a stage snapshot (DrawStages::SettleSnapshot).
+    void SettleSnapshot(Buffer& buffer, DAddr device_addr, u32 size);
+
+    /// Guest memory B reads directly: from the stage snapshot when it holds the range.
+    void ReadGuest(DAddr device_addr, u8* out, u64 size);
+
+    void NoteStageLiveRead(DAddr device_addr, u64 size) {
+        if (stage_snapshot != nullptr && note_stage_live_reads) {
+            stage_live_reads.emplace_back(device_addr, size);
+        }
+    }
 
     void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
                       std::span<BufferCopy> copies);
@@ -1244,6 +1274,9 @@ private:
     size_t immediate_buffer_capacity = 0;
     Common::ScratchBuffer<u8> immediate_buffer_alloc;
     std::vector<u8> guest_uint8_indices;
+    const DrawStages::StageSnapshot* stage_snapshot{};
+    bool upload_from_snapshot{};
+    std::vector<u8> settle_scratch;
     /// Guest memory large uploads came from since the last cold hint (device address, size).
     std::vector<std::pair<DAddr, u64>> uploaded_buffer_ranges;
 

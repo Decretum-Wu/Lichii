@@ -11,6 +11,7 @@ add_executable(tests
     video_core/draw_packet.cpp
     video_core/draw_stages.cpp
     video_core/back_stages.cpp
+    video_core/stage_snapshot.cpp
     video_core/transform_feedback_query_state.cpp
     video_core/unswizzle_workers.cpp
     video_core/block_linear_swizzle.cpp

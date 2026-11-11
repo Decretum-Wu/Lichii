@@ -238,8 +238,9 @@ inline constexpr u32 SlotCount = IndirectCountSlot + 1;
     return 33 + 5 * 64 + 5 * 32 + (order < UniformSlots ? order : UniformSlots - 1);
 }
 
-[[nodiscard]] constexpr bool HostCachedVertexRead(u32 slot, bool cpu_modified) {
-    return slot >= VertexSlot(0) && slot < StorageSlot(0, 0) && !cpu_modified;
+/// Stage snapshots: the read slots B takes from A's copy or leaves to the host buffer.
+[[nodiscard]] constexpr bool SnapshotSlot(u32 slot) {
+    return slot < StorageSlot(0, 0) || (slot >= UniformSlot(0) && slot < IndirectSlot);
 }
 
 /// The device ranges stage B read for the last Window packets, standing in for the packets in

@@ -210,17 +210,17 @@ TEST_CASE("Back stages: what runs after a join from stage A runs between draws",
     ring.Stop();
 }
 
-TEST_CASE("Back stages verify: only a CPU-clean vertex range counts as host-cached",
-          "[back_stages][verify_cached_vertex]") {
-    REQUIRE(DrawStages::HostCachedVertexRead(DrawStages::VertexSlot(0), false));
-    REQUIRE(DrawStages::HostCachedVertexRead(DrawStages::VertexSlot(31), false));
-    REQUIRE_FALSE(DrawStages::HostCachedVertexRead(DrawStages::VertexSlot(1), true));
-    REQUIRE_FALSE(DrawStages::HostCachedVertexRead(DrawStages::IndexSlot, false));
-    REQUIRE_FALSE(DrawStages::HostCachedVertexRead(DrawStages::StorageSlot(0, 0), false));
-    REQUIRE_FALSE(DrawStages::HostCachedVertexRead(DrawStages::TexelSlot(4, 31), false));
-    REQUIRE_FALSE(DrawStages::HostCachedVertexRead(DrawStages::UniformSlot(0), false));
-    REQUIRE_FALSE(DrawStages::HostCachedVertexRead(DrawStages::IndirectSlot, false));
-    REQUIRE_FALSE(DrawStages::HostCachedVertexRead(DrawStages::IndirectCountSlot, false));
+TEST_CASE("Back stages verify: index, vertex and uniform ranges come from the snapshot",
+          "[back_stages][verify_snapshot_slots]") {
+    REQUIRE(DrawStages::SnapshotSlot(DrawStages::IndexSlot));
+    REQUIRE(DrawStages::SnapshotSlot(DrawStages::VertexSlot(0)));
+    REQUIRE(DrawStages::SnapshotSlot(DrawStages::VertexSlot(31)));
+    REQUIRE(DrawStages::SnapshotSlot(DrawStages::UniformSlot(0)));
+    REQUIRE(DrawStages::SnapshotSlot(DrawStages::UniformSlot(DrawStages::UniformSlots - 1)));
+    REQUIRE_FALSE(DrawStages::SnapshotSlot(DrawStages::StorageSlot(0, 0)));
+    REQUIRE_FALSE(DrawStages::SnapshotSlot(DrawStages::TexelSlot(4, 31)));
+    REQUIRE_FALSE(DrawStages::SnapshotSlot(DrawStages::IndirectSlot));
+    REQUIRE_FALSE(DrawStages::SnapshotSlot(DrawStages::IndirectCountSlot));
 }
 
 TEST_CASE("Back stages: stopping and restarting a ring invalidates another thread's capture",

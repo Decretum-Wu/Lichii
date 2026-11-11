@@ -18,6 +18,7 @@
 #include "common/alignment.h"
 #include "common/common_types.h"
 #include "video_core/buffer_cache/word_manager.h"
+#include "video_core/nx2_stage_snapshot.h"
 
 namespace VideoCommon {
 
@@ -74,6 +75,9 @@ public:
     /// Mark region as CPU modified, notifying the device_tracker about this change
     void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
         ForgetSynchronized(dirty_cpu_addr, query_size);
+        if (clean_pages) {
+            clean_pages->Clear(dirty_cpu_addr, query_size);
+        }
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size);
         });
@@ -118,6 +122,9 @@ public:
     /// but don't mark it as modified until FlusHCachedWrites is called.
     void CachedCpuWrite(VAddr dirty_cpu_addr, u64 query_size) {
         ForgetSynchronized(dirty_cpu_addr, query_size);
+        if (clean_pages) {
+            clean_pages->Clear(dirty_cpu_addr, query_size);
+        }
         IteratePages<true>(dirty_cpu_addr, query_size, [this](Manager* manager, u64 offset, size_t size) {
             const VAddr cpu_address = manager->cpu_addr + offset;
             manager->ChangeRegionState(Type::CachedCPU, true, cpu_address, size);
@@ -128,7 +135,10 @@ public:
     /// Flushes cached CPU writes, and notify the device_tracker about the deltas
     void FlushCachedWrites(VAddr query_cpu_addr, u64 query_size) noexcept {
         synchronized_mask = 0;
-        IteratePages<false>(query_cpu_addr, query_size, [](Manager* manager, [[maybe_unused]] u64 offset, [[maybe_unused]] size_t size) {
+        IteratePages<false>(query_cpu_addr, query_size, [this](Manager* manager, [[maybe_unused]] u64 offset, [[maybe_unused]] size_t size) {
+            if (clean_pages) {
+                clean_pages->Clear(manager->cpu_addr, HIGHER_PAGE_SIZE);
+            }
             manager->FlushCachedWrites();
         });
     }
@@ -138,9 +148,17 @@ public:
             synchronized_mask = 0;
         }
         for (auto id : cached_pages) {
+            if (clean_pages) {
+                clean_pages->Clear(VAddr{id} << HIGHER_PAGE_BITS, HIGHER_PAGE_SIZE);
+            }
             top_tier[id]->FlushCachedWrites();
         }
         cached_pages.clear();
+    }
+
+    /// Stage snapshots (EDEN_NX2_BACK_STAGES=1): every CPU mark clears its pages there.
+    void SetCleanPages(DrawStages::CleanPages* pages) noexcept {
+        clean_pages = pages;
     }
 
     /// A range an upload scan just cleared (BufferCache::SynchronizeGeometryBuffer). Only a CPU
@@ -330,6 +348,7 @@ private:
     ::Common::unordered_set<u32> cached_pages;
     std::array<std::pair<VAddr, VAddr>, 64> synchronized_ranges{};
     u64 synchronized_mask{};
+    DrawStages::CleanPages* clean_pages{};
     DeviceTracker* device_tracker = nullptr;
 };
 

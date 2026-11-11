@@ -20,6 +20,7 @@
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2_back_stages.h"
+#include "video_core/nx2_stage_snapshot.h"
 #include "video_core/oot_network.h"
 #include "video_core/ocarina_upscale.h"
 #include "video_core/rasterizer_interface.h"
@@ -254,6 +255,8 @@ private:
         };
         std::vector<Read> reads;
         std::chrono::steady_clock::time_point committed_at{};
+        /// The CPU-modified vertex, index and uniform bytes B uploads, as A read them.
+        VideoCommon::DrawStages::StageSnapshot snapshot;
     };
     void StartBackStages();
     void StopBackStages();
@@ -413,6 +416,14 @@ private:
     std::array<std::pair<u64, u64>, VideoCommon::DrawStages::SlotCount> back_held{};
     std::vector<u32> back_active; ///< Read slots in back_held with a range
     std::array<bool, VideoCommon::DrawStages::SlotCount> back_read_active{};
+    std::vector<VideoCommon::DrawStages::StageSnapshot::Range> back_snapshot_ranges;
+    /// Stage A's snapshots, for B's 10 s report.
+    struct {
+        std::atomic<u64> bytes{};
+        std::atomic<u64> ranges{};
+        std::atomic<u64> copy_ns{};
+        std::atomic<u64> frames{};
+    } back_snapshot;
     BackView back_view;
     /// Stage B: the latest value of each dynamic state group A took.
     DynamicStatePacket back_dynamic;
@@ -428,7 +439,8 @@ private:
         u64 out_of_order{};
         u64 remapped{};  ///< Packets recorded after the address space changed
         u64 b_submits{}; ///< Packets B recorded all of the dynamic state for after its own submit
-        u64 vertex_cached{};
+        u64 snapshot_served{};  ///< Changed ranges B took from the snapshot or its own buffers
+        u64 snapshot_changed{}; ///< Snapshot chunks changed after A copied them
         u32 logged{};
         std::chrono::steady_clock::time_point last_report{};
     } back_verify;

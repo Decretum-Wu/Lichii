@@ -2261,6 +2261,13 @@ void RasterizerVulkan::StartBackStages() {
     back_b_resets = back_resets_seen;
     back_dynamic = {};
     back_verify = {};
+    back_verify.last_report = std::chrono::steady_clock::now();
+    for (auto* counter : {&back_snapshot.bytes, &back_snapshot.ranges, &back_snapshot.copy_ns,
+                          &back_snapshot.frames}) {
+        counter->store(0, std::memory_order_relaxed);
+    }
+    buffer_cache.stage_snapshot_stats = {};
+    buffer_cache.note_stage_live_reads = DrawStages::BackStagesVerifyRequested();
     descriptor_buffer_ring.PrepareFrame(scheduler);
     // The first packets carry every dynamic state group, B's running copy starts from them.
     state_tracker.InvalidateCommandBufferState();
@@ -2401,6 +2408,42 @@ void RasterizerVulkan::NoteBackReads(BackSlot& slot) {
         return true;
     });
     const bool verify = DrawStages::g_threaded_verify;
+    back_snapshot_ranges.clear();
+    for (const u32 read_slot : back_active) {
+        const auto [begin, size] = back_held[read_slot];
+        if (read_slot == DrawStages::IndexSlot) {
+            if (buffers.is_indexed) {
+                back_snapshot_ranges.push_back(
+                    {begin, size, buffers.index_format == Maxwell::IndexFormat::UnsignedByte});
+            }
+        } else if (read_slot < DrawStages::StorageSlot(0, 0)) {
+            back_snapshot_ranges.push_back({begin, size, false});
+        } else if (read_slot >= DrawStages::UniformSlot(0) && read_slot < DrawStages::IndirectSlot) {
+            const u32 order = read_slot - DrawStages::UniformSlot(0);
+            if (order < buffers.uniform_binds.size() && !buffers.uniform_binds[order].streamed) {
+                back_snapshot_ranges.push_back({begin, size, false});
+            }
+        }
+    }
+    {
+        VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::PacketSnapshot};
+        u64 copy_ns = 0;
+        slot.snapshot.Capture(
+            back_snapshot_ranges, buffer_cache.clean_pages,
+            [this, &copy_ns](u64 addr, u8* out, u64 size) {
+                const auto start = std::chrono::steady_clock::now();
+                device_memory.ReadBlockUnsafe(addr, out, size);
+                copy_ns += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                std::chrono::steady_clock::now() - start)
+                                                .count());
+            },
+            verify);
+        if (const u64 bytes = slot.snapshot.Bytes(); bytes != 0) {
+            back_snapshot.bytes.fetch_add(bytes, std::memory_order_relaxed);
+            back_snapshot.ranges.fetch_add(slot.snapshot.chunks.size(), std::memory_order_relaxed);
+            back_snapshot.copy_ns.fetch_add(copy_ns, std::memory_order_relaxed);
+        }
+    }
     slot.reads.clear();
     if (verify) {
         slot.committed_at = std::chrono::steady_clock::now();
@@ -2453,6 +2496,18 @@ void RasterizerVulkan::VerifyBackReads(const BackSlot& slot) {
     // B reads by device address, as A resolved it at the draw. A change of the address space
     // since is counted: only a change of the bytes below is a difference.
     stats.remapped += slot.map_serial != gpu_memory->MapSerial() ? 1 : 0;
+    for (const auto& chunk : slot.snapshot.chunks) {
+        if (slot.snapshot.HashChunk(chunk) == chunk.hash) {
+            continue;
+        }
+        ++stats.snapshot_changed;
+        if (stats.logged++ < 16) {
+            LOG_ERROR(Render_Vulkan,
+                      "Back stages verify: packet {} (draw {}) snapshot {:#x}+{:#x} changed after "
+                      "stage A copied it",
+                      slot.committed, slot.packet.sequence, chunk.begin, chunk.size);
+        }
+    }
     for (const auto& read : slot.reads) {
         const u64 begin = read.begin;
         const u64 size = read.size;
@@ -2460,15 +2515,13 @@ void RasterizerVulkan::VerifyBackReads(const BackSlot& slot) {
         if (HashDeviceRange(device_memory, begin, size) == read.hash) {
             continue;
         }
-        if (VideoCommon::DrawStages::HostCachedVertexRead(
-                read.slot, buffer_cache.IsRegionCpuModified(begin, size))) {
-            if (stats.vertex_cached++ < 4) {
-                LOG_INFO(Render_Vulkan,
-                         "Back stages cached vertex: packet {} (draw {}) slot {} (vertex {}) "
-                         "{:#x}+{:#x} changed after stage A with no CPU-modified page at B",
-                         slot.committed, slot.packet.sequence, read.slot,
-                         read.slot - VideoCommon::DrawStages::VertexSlot(0), begin, size);
-            }
+        namespace DrawStages = VideoCommon::DrawStages;
+        const bool read_live =
+            std::ranges::any_of(buffer_cache.stage_live_reads, [&](const auto& live) {
+                return live.first < begin + size && begin < live.first + live.second;
+            });
+        if (DrawStages::SnapshotSlot(read.slot) && !read_live) {
+            ++stats.snapshot_served;
             continue;
         }
         ++stats.differing;
@@ -2477,7 +2530,6 @@ void RasterizerVulkan::VerifyBackReads(const BackSlot& slot) {
                       "Back stages verify: packet {} (draw {}) reads {:#x}+{:#x}, which changed "
                       "after stage A built it",
                       slot.committed, slot.packet.sequence, begin, size);
-            namespace DrawStages = VideoCommon::DrawStages;
             const u32 s = read.slot;
             const std::string kind =
                 s == DrawStages::IndexSlot ? std::string{"index"}
@@ -2498,12 +2550,12 @@ void RasterizerVulkan::VerifyBackReads(const BackSlot& slot) {
                       "Back stages verify: that range is slot {} ({}), set by {}, streamed {}; "
                       "draw indexed {} (index format {}, {} bytes, index set by this packet {}), "
                       "indirect {}; at B the range is CPU-modified {}, GPU-modified {} (anywhere "
-                      "in it); packet age {} us",
+                      "in it), read from guest memory {}; packet age {} us",
                       s, kind, read.fresh ? "this packet" : "an earlier packet", read.streamed,
                       buffers.is_indexed, static_cast<u32>(buffers.index_format),
                       buffers.index_format_size, buffers.index_dirty, slot.indirect,
                       buffer_cache.IsRegionCpuModified(begin, size),
-                      buffer_cache.IsRegionGpuModified(begin, size),
+                      buffer_cache.IsRegionGpuModified(begin, size), read_live,
                       std::chrono::duration_cast<std::chrono::microseconds>(
                           std::chrono::steady_clock::now() - slot.committed_at)
                           .count());
@@ -2521,12 +2573,11 @@ void RasterizerVulkan::RecordBackDraw(BackSlot& slot) {
     namespace Profile = VideoCommon::Nx2Profile;
     const DrawPacket& packet = slot.packet;
     query_cache_runtime.SetStageTransformFeedbackState(&packet.query_tfb);
+    buffer_cache.SetStageSnapshot(&slot.snapshot);
     SCOPE_EXIT {
         query_cache_runtime.SetStageTransformFeedbackState(nullptr);
+        buffer_cache.SetStageSnapshot(nullptr);
     };
-    if (DrawStages::g_threaded_verify) {
-        VerifyBackReads(slot);
-    }
     scheduler.SpliceList(slot.list);
     GraphicsPipeline* const pipeline = packet.pipeline;
     buffer_cache_runtime.SetVertexRepackMask(packet.vertex_repack_mask);
@@ -2568,10 +2619,14 @@ void RasterizerVulkan::RecordBackDraw(BackSlot& slot) {
             back_native_failed.store(true, std::memory_order_relaxed);
         }
     }
+    if (DrawStages::g_threaded_verify) {
+        VerifyBackReads(slot);
+    }
     const auto now = std::chrono::steady_clock::now();
     if (now - back_verify.last_report < std::chrono::seconds{10}) {
         return;
     }
+    const double seconds = std::chrono::duration<double>(now - back_verify.last_report).count();
     back_verify.last_report = now;
     const auto& stats = back_ring->stats;
     LOG_INFO(Render_Vulkan,
@@ -2582,13 +2637,31 @@ void RasterizerVulkan::RecordBackDraw(BackSlot& slot) {
              stats.full_waits.load(), stats.a_wait_ns.load() / 1'000'000, stats.b_sleeps.load(),
              stats.b_busy_ns.load() / 1'000'000, back_verify.b_submits,
              descriptor_buffer_ring.FullOnStageB());
+    const u64 frames = back_snapshot.frames.exchange(0, std::memory_order_relaxed);
+    const double per_frame = 1.0 / 1024.0 / static_cast<double>((std::max<u64>)(frames, 1));
+    auto& settled = buffer_cache.stage_snapshot_stats;
+    LOG_INFO(Render_Vulkan,
+             "Back stages snapshots: A copied {:.1f} KiB per frame ({} frames), {:.0f} ranges/s, "
+             "for {:.2f} ms/s; B uploaded {:.1f} KiB per frame from them and marked {} pages "
+             "CPU-modified again (written after A's copy)",
+             static_cast<double>(back_snapshot.bytes.exchange(0, std::memory_order_relaxed)) *
+                 per_frame,
+             frames,
+             static_cast<double>(back_snapshot.ranges.exchange(0, std::memory_order_relaxed)) /
+                 seconds,
+             static_cast<double>(back_snapshot.copy_ns.exchange(0, std::memory_order_relaxed)) /
+                 1e6 / seconds,
+             static_cast<double>(settled.uploaded_bytes) * per_frame, settled.marked_again);
+    settled = {};
     if (DrawStages::g_threaded_verify) {
         LOG_INFO(Render_Vulkan,
                  "Back stages verify: {} packets, {} ranges checked, {} changed after A built "
                  "the packet, {} out of order; {} packets recorded after the address space "
-                 "changed; {} vertex ranges changed with no CPU-modified page at B (host-cached)",
+                 "changed; {} changed ranges B took from snapshots or its buffers, {} snapshots "
+                 "changed after A copied them",
                  back_verify.packets, back_verify.ranges, back_verify.differing,
-                 back_verify.out_of_order, back_verify.remapped, back_verify.vertex_cached);
+                 back_verify.out_of_order, back_verify.remapped, back_verify.snapshot_served,
+                 back_verify.snapshot_changed);
     }
 }
 
@@ -4327,6 +4400,9 @@ void RasterizerVulkan::FrameDumpPass(const Framebuffer* framebuffer) {
 
 void RasterizerVulkan::TickFrame() {
     VideoCommon::DrawStages::JoinB(VideoCommon::DrawStages::Join::Frame);
+    if (back_ring) {
+        back_snapshot.frames.fetch_add(1, std::memory_order_relaxed);
+    }
     if (VideoCore::Nx2Debug::HasRequests()) {
         if (auto capture = VideoCore::Nx2Debug::TakeCapture()) {
             frame_dump.Arm(std::move(capture->directory), capture->sampled, capture->buffers,

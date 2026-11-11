@@ -61,6 +61,7 @@ enum class Zone : u32 {
     PacketGeometry, ///< Stage A reads the index, vertex and indirect buffers into the packet
     PacketCapture,  ///< Stage A's packet finish outside render targets
     PacketEntries,  ///< Stage B's storage and texel buffer entries outside bind stage buffers
+    PacketSnapshot, ///< Stage A copies the CPU-modified bytes stage B uploads (stage snapshots)
     DynamicState,
     DrawRecord,
     TextureUpload,
@@ -92,6 +93,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "record", "packet geometry", "packet capture", "packet entries",
+    "packet snapshot",
     "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait",
     "writer wait", "list submit wait", "list GPU wait", "graphics pipeline miss",

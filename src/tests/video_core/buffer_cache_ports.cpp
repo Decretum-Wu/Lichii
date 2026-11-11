@@ -373,6 +373,17 @@ struct BufferCacheTestAccess {
     static const auto& ReadChecks(Cache& cache) {
         return cache.read_check;
     }
+    static void EnableSnapshots(Cache& cache) {
+        cache.clean_pages.Enable();
+        cache.memory_tracker.SetCleanPages(&cache.clean_pages);
+        cache.note_stage_live_reads = true;
+    }
+    /// Stage B binds [address, address + size) of buffer `id` as vertex stream 0 for a packet.
+    static void BackVertexSync(Cache& cache, const DrawStages::StageSnapshot& snapshot, BufferId id,
+                               DAddr address, u32 size) {
+        cache.SetStageSnapshot(&snapshot);
+        cache.SynchronizeGeometryBuffer(0, id, address, size);
+    }
 };
 
 } // namespace VideoCommon
@@ -2338,4 +2349,54 @@ TEST_CASE("Draw packets carry the storage buffers stage A read, and stage B bind
     packet.storage_stages = 1;
     f.cache->UpdateGraphicsBuffers(packet);
     REQUIRE(f.channel->enabled_storage_buffers[0] == 0);
+}
+
+TEST_CASE("Stage snapshots: B uploads A's bytes and keeps the CPU marks made after A",
+          "[buffer_ports][stage_snapshot]") {
+    namespace DrawStages = VideoCommon::DrawStages;
+    Fixture f;
+    Access::EnableSnapshots(*f.cache);
+    const auto id = Access::Add(*f.cache, 0x10000, 0x10000);
+    const auto copy = [&](u64 addr, u8* out, u64 size) {
+        std::memcpy(out, f.bytes + (addr - 0x10000), size);
+    };
+    const std::array<DrawStages::StageSnapshot::Range, 1> ranges{{{0x10000, 0x8000, false}}};
+    DrawStages::StageSnapshot first;
+    first.Capture(ranges, f.cache->clean_pages, copy, false);
+    REQUIRE(first.Bytes() == 0x8000);
+    Access::BackVertexSync(*f.cache, first, id, 0x10000, 0x8000);
+    REQUIRE(f.runtime.upload_bytes == 0);
+    DrawStages::StageSnapshot second;
+    second.Capture(ranges, f.cache->clean_pages, copy, false);
+    REQUIRE(second.Bytes() == 0);
+
+    // The CPU writes two pages before A's draw, then one of them again (no new mark: the page
+    // is CPU-modified already) and another page after it.
+    Access::MarkCpuModified(*f.cache, 0x12000, 0x2000);
+    std::memset(f.bytes + 0x2000, 0x11, 0x2000);
+    DrawStages::StageSnapshot third;
+    third.Capture(ranges, f.cache->clean_pages, copy, false);
+    REQUIRE(third.Bytes() == 0x2000);
+    std::memset(f.bytes + 0x3000, 0x22, 16);
+    Access::MarkCpuModified(*f.cache, 0x15000, 0x1000);
+    std::memset(f.bytes + 0x5000, 0x33, 0x1000);
+
+    Access::BackVertexSync(*f.cache, third, id, 0x10000, 0x8000);
+    REQUIRE(f.cache->stage_live_reads.empty());
+    f.cache->SetStageSnapshot(nullptr);
+    const auto& buffer = Access::Get(*f.cache, id);
+    REQUIRE(f.runtime.upload_bytes == 0x2000);
+    REQUIRE(buffer.bytes[0x2000] == 0x11);
+    REQUIRE(buffer.bytes[0x3000] == 0x11);
+    REQUIRE(buffer.bytes[0x5000] == 0);
+    REQUIRE_FALSE(f.cache->IsRegionCpuModified(0x12000, 0x1000));
+    REQUIRE(f.cache->IsRegionCpuModified(0x13000, 0x1000));
+    REQUIRE(f.cache->IsRegionCpuModified(0x15000, 0x1000));
+    REQUIRE(f.cache->stage_snapshot_stats.marked_again == 1);
+
+    // The next draw on the old path brings the newer bytes.
+    Access::Upload(*f.cache, id, 0x10000, 0x8000);
+    REQUIRE(buffer.bytes[0x3000] == 0x22);
+    REQUIRE(buffer.bytes[0x3010] == 0x11);
+    REQUIRE(buffer.bytes[0x5000] == 0x33);
 }
