@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdlib>
@@ -25,7 +26,8 @@ class MemoryManager;
 /// when they reach the pipeline's texture handles at their GPU addresses or through another
 /// mapping of their device memory). Anything else that could change what a resolve produces bumps
 /// a serial: a 3D register that changes, any 3D method with side effects (uploads, reports,
-/// clears, barriers, ...), constant buffer data reaching the texture or sampler headers (the same
+/// clears, barriers, ...; counter resets and render enable writes change query state only and
+/// don't), constant buffer data reaching the texture or sampler headers (the same
 /// way), any other engine, deferred calls on the split's back (except the ones marked
 /// GpuSplit::FastDrawNeutral), GPU::TickWork requests, texture cache writes, unmaps and
 /// deletions, shader removals, fence releases, HLE macros and frames. The rasterizer takes the
@@ -48,7 +50,6 @@ enum class Reason : u8 {
     IndirectReset,
     Frame,
     TextureHeaders,
-    DeltaOverflow,
     Map,
     Count,
 };
@@ -57,7 +58,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
     "register",      "method",    "constant buffer data", "inline data",
     "other engine",  "deferred call", "tick work",        "invalidation",
     "fence release", "indirect reset", "frame",           "texture header data",
-    "delta overflow", "memory map",
+    "memory map",
 };
 
 inline std::atomic<bool> g_enabled{true};
@@ -155,20 +156,22 @@ struct Delta {
 inline Delta g_delta;
 
 /// Appends [begin, end) to a delta's range list, or extends its last range when that ends at
-/// begin. False when the list is full.
-inline bool AppendRange(std::array<u64, Delta::MaxWrites>& begins,
+/// begin. A full list widens its last range to cover the write: only overlap checks read the
+/// ranges, so a wider one is conservative.
+inline void AppendRange(std::array<u64, Delta::MaxWrites>& begins,
                         std::array<u64, Delta::MaxWrites>& ends, u32& count, u64 begin, u64 end) {
     if (count != 0 && ends[count - 1] == begin) {
         ends[count - 1] = end;
-        return true;
+        return;
     }
     if (count == Delta::MaxWrites) {
-        return false;
+        begins[count - 1] = (std::min)(begins[count - 1], begin);
+        ends[count - 1] = (std::max)(ends[count - 1], end);
+        return;
     }
     begins[count] = begin;
     ends[count] = end;
     ++count;
-    return true;
 }
 
 inline void NoteBind(size_t stage, u32 slot) {
@@ -183,9 +186,7 @@ inline void NoteConstantData(GPUVAddr begin, GPUVAddr end) {
         return;
     }
     Delta& delta = g_delta;
-    if (!AppendRange(delta.write_begin, delta.write_end, delta.num_writes, begin, end)) {
-        Break(Reason::DeltaOverflow);
-    }
+    AppendRange(delta.write_begin, delta.write_end, delta.num_writes, begin, end);
 }
 
 /// The device addresses [begin, end) that inline constant buffer data landed on.
@@ -194,9 +195,7 @@ inline void NoteDeviceData(DAddr begin, DAddr end) {
         return;
     }
     Delta& delta = g_delta;
-    if (!AppendRange(delta.device_begin, delta.device_end, delta.num_device_writes, begin, end)) {
-        Break(Reason::DeltaOverflow);
-    }
+    AppendRange(delta.device_begin, delta.device_end, delta.num_device_writes, begin, end);
 }
 
 } // namespace VideoCommon::Nx2FastDraw

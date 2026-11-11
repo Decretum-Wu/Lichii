@@ -215,7 +215,7 @@ TEST_CASE("Fast draw records bind and constant data changes, keeps index buffer 
     CHECK_FALSE(FastDraw::g_delta.Empty());
 }
 
-TEST_CASE("Fast draw breaks on state, texture headers and delta overflow",
+TEST_CASE("Fast draw breaks on state and texture headers, widens a full delta",
           "[fast_draw]") {
     DeltaFixture f;
     f.Write(MAXWELL3D_REG_INDEX(tex_header.address_high), 0);
@@ -244,13 +244,20 @@ TEST_CASE("Fast draw breaks on state, texture headers and delta overflow",
         f.SetConstantBuffer(0x40000, 0x1000, 0x100); // just past the headers
         f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), 1);
     }));
-    CHECK(breaks([&] {
+    CHECK_FALSE(breaks([&] {
         f.SetConstantBuffer(0x60000, 0x1000, 0);
         for (u32 i = 0; i <= FastDraw::Delta::MaxWrites; ++i) {
             f.Write(MAXWELL3D_REG_INDEX(const_buffer.offset), i * 0x20);
             f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), i);
         }
     }));
+    // The last range covers the writes past the limit.
+    constexpr u32 last = FastDraw::Delta::MaxWrites - 1;
+    REQUIRE(FastDraw::g_delta.num_writes == FastDraw::Delta::MaxWrites);
+    CHECK(FastDraw::g_delta.write_begin[last] == 0x60000 + last * 0x20);
+    CHECK(FastDraw::g_delta.write_end[last] == 0x60000 + FastDraw::Delta::MaxWrites * 0x20 + 4);
+    FastDraw::DeviceSpans spans;
+    CHECK(FastDraw::g_delta.Reaches(0x60000 + FastDraw::Delta::MaxWrites * 0x20, 4, spans));
 }
 
 TEST_CASE("Fast draw breaks on texture header data written through another mapping",
@@ -342,6 +349,20 @@ TEST_CASE("Fast draw keeps base vertex and instance as draw parameters", "[fast_
     f.Write(MAXWELL3D_REG_INDEX(global_base_instance_index),
             f.Reg(MAXWELL3D_REG_INDEX(global_base_instance_index)) + 1);
     f.DrawArrays(0, 3);
+    CHECK(f.Reusable());
+}
+
+TEST_CASE("Fast draw keeps reuse across vertex_id_base, counter resets and render enable",
+          "[fast_draw]") {
+    FastDrawFixture f;
+    f.DrawArrays(0, 3);
+    f.Write(MAXWELL3D_REG_INDEX(vertex_id_base), f.Reg(MAXWELL3D_REG_INDEX(vertex_id_base)) + 9);
+    f.Write(MAXWELL3D_REG_INDEX(clear_report_value),
+            f.Reg(MAXWELL3D_REG_INDEX(clear_report_value)) ^ 1);
+    f.Write(MAXWELL3D_REG_INDEX(render_enable.address_low),
+            f.Reg(MAXWELL3D_REG_INDEX(render_enable.address_low)) + 0x10);
+    f.Write(MAXWELL3D_REG_INDEX(render_enable.mode), 1); // True
+    f.DrawArrays(3, 3);
     CHECK(f.Reusable());
 }
 

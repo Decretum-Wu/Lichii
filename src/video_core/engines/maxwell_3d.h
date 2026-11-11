@@ -3278,6 +3278,8 @@ public:
     static bool IsFastDrawParameter(u32 method);
     /// Methods fast draw records as light changes (constant buffer data and binds).
     static bool IsFastDrawDeltaMethod(u32 method);
+    /// Methods with side effects no draw binding depends on (counter resets, render enable).
+    static bool IsFastDrawNeutralMethod(u32 method);
     /// A vertex stream's address, size or limit (not its stride or enable).
     static bool IsFastDrawVertexBuffer(u32 method);
     void NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end);
