@@ -500,8 +500,10 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
     const FastDraw::Delta delta = std::exchange(FastDraw::g_delta, FastDraw::Delta{});
     taken_delta = delta;
     taken_relookup = false;
+    last_full_reason = FullDraw::NoCandidate;
     const auto full = [&](FullDraw reason) -> GraphicsPipeline* {
         ++fast_draw_stats.full[static_cast<size_t>(reason)];
+        last_full_reason = reason;
         return nullptr;
     };
     if (draw.pipeline == nullptr) {
@@ -604,6 +606,7 @@ bool RasterizerVulkan::DeltaStillHolds(GraphicsPipeline* pipeline, u64 serial, u
                                        u64 map_serial) {
     const auto full = [&](FullDraw reason) {
         ++fast_draw_stats.full[static_cast<size_t>(reason)];
+        last_full_reason = reason;
         return false;
     };
     // TakeReusableDraw ran before the caches were locked, while other threads could still write,
@@ -786,6 +789,22 @@ void RasterizerVulkan::ReportFastDraws() {
              static_cast<double>(stats.relookup_same) / seconds,
              static_cast<double>(stats.relookup_moved) / seconds,
              static_cast<double>(stats.relookup_other) / seconds);
+    static constexpr std::array<const char*, static_cast<size_t>(FullDraw::Count)>
+        full_names{"after an ineligible draw", "kind", "state changed", "after a submit",
+                   "render pass", "pipeline without delta draws", "handle buffer bound",
+                   "handle data written", "sampled image to prepare", "computed handle changed",
+                   "vertex attribute types", "other pipeline"};
+    std::string full_costs;
+    for (size_t reason = 0; reason < stats.full_timed.size(); ++reason) {
+        if (stats.full_timed[reason] != 0) {
+            full_costs += fmt::format(" | {} {:.0f}/s {:.2f} us", full_names[reason],
+                                      static_cast<double>(stats.full_timed[reason]) / seconds,
+                                      static_cast<double>(stats.full_ns[reason]) / 1e3 /
+                                          static_cast<double>(stats.full_timed[reason]));
+        }
+    }
+    LOG_INFO(Render_Vulkan, "Fast draw full draws by reason (TEST){}{}", full_costs,
+             VideoCommon::Nx2FastDraw::g_test_toggled ? " | test toggle on" : "");
     stats = FastDrawStats{.window_start = now};
 }
 
@@ -914,6 +933,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         uniform_memory_serial = ~u64{0};
     }
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
+    // TEST (EDEN_NX2_TEST_TOGGLE_FILE): the switches under test follow that file.
+    static const char* const toggle_file = std::getenv("EDEN_NX2_TEST_TOGGLE_FILE");
+    if (toggle_file != nullptr && (++toggle_checks & 1023) == 0) {
+        FastDraw::g_test_toggled = std::filesystem::exists(toggle_file);
+    }
     const u64 fast_draw_start = fast_draw_on ? Profile::Now() : 0;
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
@@ -952,6 +976,8 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
             ++fast_draw_stats.relookup_moved;
         } else {
             ++fast_draw_stats.relookup_other;
+            ++fast_draw_stats.full[static_cast<size_t>(FullDraw::OtherPipeline)];
+            last_full_reason = FullDraw::OtherPipeline;
             delta_pipeline = nullptr;
         }
     }
@@ -1317,8 +1343,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         NoteResolvedDraw(pipeline, is_indexed, is_indirect, draw_serial, draw_memory_serial,
                          draw_map_serial);
         const size_t index = static_cast<size_t>(path);
-        fast_draw_stats.prepare_ns[index] += Profile::Now() - fast_draw_start;
+        const u64 elapsed = Profile::Now() - fast_draw_start;
+        fast_draw_stats.prepare_ns[index] += elapsed;
         ++fast_draw_stats.prepare_draws[index];
+        if (path == DrawPath::Full && !fast_draw_verify) {
+            fast_draw_stats.full_ns[static_cast<size_t>(last_full_reason)] += elapsed;
+            ++fast_draw_stats.full_timed[static_cast<size_t>(last_full_reason)];
+        }
     }
     static u32 native_capture_count{};
     if (maxwell3d->GetNativeMacroEngine().native_turing &&

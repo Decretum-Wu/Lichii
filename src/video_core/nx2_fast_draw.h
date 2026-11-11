@@ -242,12 +242,15 @@ inline u64 MemorySerial() {
 /// types) looks its pipeline up and keeps the previous draw's views, samplers and image
 /// descriptors when that pipeline resolves them alike. EDEN_NX2_TEST_RELOOKUP=0 (TEST): such
 /// draws resolve in full.
+/// TEST: EDEN_NX2_TEST_TOGGLE_FILE=<path> turns the switches under test off while that file
+/// exists (the drawing thread looks every 1024 draws), so one run compares both.
+inline bool g_test_toggled{};
 [[nodiscard]] inline bool RelookupDraws() {
     static const bool relookup = [] {
         const char* value = std::getenv("EDEN_NX2_TEST_RELOOKUP");
         return value == nullptr || value[0] != '0';
     }();
-    return relookup;
+    return relookup && !g_test_toggled;
 }
 
 /// The device memory a GPU range maps to. A write through another GPU address that maps the

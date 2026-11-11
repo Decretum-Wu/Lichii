@@ -426,6 +426,8 @@ private:
         SampledImages,
         ComputedHandles,
         VertexInput,
+        /// The pipeline looked up after pipeline-only changes resolves images differently.
+        OtherPipeline,
         Count,
     };
     /// Why a recorded draw can't be followed by a delta draw.
@@ -451,6 +453,9 @@ private:
         /// PrepareDraw time and draws per path.
         std::array<u64, static_cast<size_t>(DrawPath::Count)> prepare_ns{};
         std::array<u64, static_cast<size_t>(DrawPath::Count)> prepare_draws{};
+        /// TEST: full draws' PrepareDraw time and count by why they were full.
+        std::array<u64, static_cast<size_t>(FullDraw::Count)> full_ns{};
+        std::array<u64, static_cast<size_t>(FullDraw::Count)> full_timed{};
         /// EDEN_NX2_FAST_DRAW_VERIFY
         u64 verified{};
         u64 pipeline_mismatches{};
@@ -489,6 +494,8 @@ private:
     ReusableDraw reusable_draw;
     ReusableDraw taken_draw; ///< The draw TakeReusableDraw last returned the pipeline of
     bool taken_relookup{};
+    FullDraw last_full_reason{}; ///< TEST: why the draw resolves in full (FastDrawStats::full_ns)
+    u32 toggle_checks{};         ///< TEST: draws since EDEN_NX2_TEST_TOGGLE_FILE was looked at
     /// Device memory of the constant buffers TakeReusableDraw checks for texture handle writes.
     std::array<std::array<VideoCommon::Nx2FastDraw::DeviceSpans, Maxwell::MaxConstBuffers>,
                Maxwell::MaxShaderStage>
