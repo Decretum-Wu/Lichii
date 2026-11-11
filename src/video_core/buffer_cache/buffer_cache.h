@@ -19,6 +19,7 @@
 #include <vector>
 #include <fmt/ranges.h>
 
+#include "common/cityhash.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/multi_range_refresh.h"
@@ -115,6 +116,10 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
 
 template <class P>
 void BufferCache<P>::TickFrame() {
+    VideoCommon::g_hot_page_epoch.fetch_add(1, std::memory_order_relaxed);
+    if (VideoCommon::HotPagesEnabled()) {
+        memory_tracker.ForgetAllSynchronized();
+    }
     // Homebrew console apps don't create or bind any channels, so this will be nullptr.
     if (!channel_state) {
         return;
@@ -145,6 +150,14 @@ void BufferCache<P>::TickFrame() {
                      keep.kept, keep.streamed_binds, keep.verified, keep.mismatches);
         }
         keep.kept = keep.streamed_binds = keep.verified = keep.mismatches = 0;
+        if (hot_pages_verify) {
+            HotPageChecks& hot = hot_page_checks;
+            LOG_INFO(HW_GPU,
+                     "Hot pages verify in 600 frames: {} pages left out as uploaded this frame, "
+                     "{} changed since their upload, {} without a noted upload",
+                     hot.skipped, hot.stale, hot.unknown);
+            hot = {.logged = hot.logged};
+        }
         UniformPlanChecks& checks = uniform_plan_checks;
         if (checks.plans + checks.stale != 0 &&
             (Nx2Profile::Enabled() || VideoCommon::PlanWorkers::Verify())) {
@@ -4328,6 +4341,18 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             memory_tracker.ForEachUploadRange(device_addr, size, func);
         }
     };
+    // TEST (EDEN_NX2_HOT_PAGES_VERIFY): the hot pages the scan leaves out as sent this frame.
+    const bool hot_verify = hot_pages_verify && VideoCommon::HotPagesEnabled();
+    if (hot_verify) {
+        hot_clean_skips.clear();
+        VideoCommon::t_hot_clean_skips = &hot_clean_skips;
+    }
+    SCOPE_EXIT {
+        if (hot_verify) {
+            VideoCommon::t_hot_clean_skips = nullptr;
+            CheckHotPageSkips(buffer);
+        }
+    };
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else
@@ -4344,6 +4369,9 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             const u64 range_size = end - start;
             NoteReadCheckEvent(start, range_size, ReadCheckEvent::Upload); // TEST
             ForgetUploadedEarlyLanded(start, range_size);                   // TEST
+            if (hot_verify) {
+                NoteHotPageUpload(buffer, start, end); // TEST
+            }
             upload_copies.push_back(BufferCopy{
                 .src_offset = total_size_bytes,
                 .dst_offset = start - buffer_start,
@@ -4380,6 +4408,9 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         for_each_upload_range([&](u64 device_addr_out, u64 range_size) {
             NoteReadCheckEvent(device_addr_out, range_size, ReadCheckEvent::Upload); // TEST
             ForgetUploadedEarlyLanded(device_addr_out, range_size);                   // TEST
+            if (hot_verify) {
+                NoteHotPageUpload(buffer, device_addr_out, device_addr_out + range_size); // TEST
+            }
             copies.push_back(BufferCopy{
                 .src_offset = total_size_bytes,
                 .dst_offset = device_addr_out - buffer_start,
@@ -4395,6 +4426,63 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
         return false;
     }
+}
+
+template <class P>
+u64 BufferCache<P>::HashHotPage(DAddr begin, DAddr end) {
+    std::array<u8, DEVICE_PAGESIZE> bytes;
+    device_memory.ReadBlockUnsafe(begin, bytes.data(), end - begin);
+    return Common::CityHash64(reinterpret_cast<const char*>(bytes.data()), end - begin);
+}
+
+template <class P>
+void BufferCache<P>::NoteHotPageUpload(const Buffer& buffer, DAddr begin, DAddr end) {
+    const DAddr buffer_begin = buffer.CpuAddr();
+    const DAddr buffer_end = buffer_begin + buffer.SizeBytes();
+    for (DAddr page = Common::AlignDown(begin, DEVICE_PAGESIZE); page < end;
+         page += DEVICE_PAGESIZE) {
+        const DAddr page_begin = (std::max)(page, buffer_begin);
+        const DAddr page_end = (std::min)(page + DEVICE_PAGESIZE, buffer_end);
+        if (page_begin < page_end) {
+            hot_page_uploads[page] = HotPageUpload{
+                .begin = page_begin,
+                .end = page_end,
+                .hash = HashHotPage(page_begin, page_end),
+            };
+        }
+    }
+}
+
+template <class P>
+void BufferCache<P>::CheckHotPageSkips(const Buffer& buffer) {
+    const DAddr buffer_begin = buffer.CpuAddr();
+    const DAddr buffer_end = buffer_begin + buffer.SizeBytes();
+    for (const auto& [begin, size] : hot_clean_skips) {
+        for (DAddr page = begin; page < begin + size; page += DEVICE_PAGESIZE) {
+            const DAddr page_begin = (std::max)(page, buffer_begin);
+            const DAddr page_end = (std::min)(page + DEVICE_PAGESIZE, buffer_end);
+            if (page_begin >= page_end) {
+                continue;
+            }
+            ++hot_page_checks.skipped;
+            const auto it = hot_page_uploads.find(page);
+            if (it == hot_page_uploads.end() || it->second.begin != page_begin ||
+                it->second.end != page_end) {
+                ++hot_page_checks.unknown;
+                continue;
+            }
+            if (HashHotPage(page_begin, page_end) != it->second.hash) {
+                ++hot_page_checks.stale;
+                if (hot_page_checks.logged++ < 16) {
+                    LOG_ERROR(HW_GPU,
+                              "Hot pages verify: {:#x}+{:#x} changed since its upload this frame "
+                              "(frame {})",
+                              page_begin, page_end - page_begin, frame_tick);
+                }
+            }
+        }
+    }
+    hot_clean_skips.clear();
 }
 
 template <class P>
