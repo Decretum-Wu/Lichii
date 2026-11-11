@@ -6,6 +6,7 @@
 
 #include <fmt/format.h>
 
+#include "common/scope_exit.h"
 #include "common/thread.h"
 #include "video_core/nx2_back_stages.h"
 
@@ -228,8 +229,10 @@ void JoinNow(Join site) {
     if (g_after_join != nullptr) {
         // B is idle: what the hook records runs between draws, as under a JoinScope.
         const Stage stage = std::exchange(t_stage, Stage::Outside);
+        SCOPE_EXIT {
+            t_stage = stage;
+        };
         g_after_join(g_after_join_argument);
-        t_stage = stage;
     }
 }
 

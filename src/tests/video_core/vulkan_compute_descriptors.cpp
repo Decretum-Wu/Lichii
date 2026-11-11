@@ -28,6 +28,7 @@
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
@@ -63,9 +64,16 @@ TEST_CASE("Vulkan compute descriptors: a dispatch's buffers go to the queue Conf
           "while stage B has its own queue",
           "[vulkan_compute_descriptors]") {
     const auto library = Vulkan::OpenLibrary();
-    REQUIRE(library);
+    if (!library || !library->IsOpen()) {
+        SKIP("No Vulkan loader");
+    }
     Vulkan::vk::InstanceDispatch dld;
-    const Vulkan::vk::Instance instance = Vulkan::CreateInstance(*library, dld, VK_API_VERSION_1_1);
+    Vulkan::vk::Instance instance;
+    try {
+        instance = Vulkan::CreateInstance(*library, dld, VK_API_VERSION_1_1);
+    } catch (const Vulkan::vk::Exception&) {
+        SKIP("No Vulkan instance");
+    }
     std::optional<Vulkan::Device> device;
     for (const VkPhysicalDevice physical : instance.EnumeratePhysicalDevices()) {
         try {
@@ -124,6 +132,14 @@ TEST_CASE("Vulkan compute descriptors: a dispatch's buffers go to the queue Conf
     buffer_cache.BindToChannel(channel.bind_id);
     texture_cache.CreateChannel(channel);
     texture_cache.BindToChannel(channel.bind_id);
+    Vulkan::QueryCacheRuntime query_runtime{&null_rasterizer, device_memory,      buffer_cache,
+                                            *device,          allocator,          scheduler,
+                                            staging_pool,     compute_pass_queue, descriptor_pool,
+                                            texture_cache};
+    Vulkan::QueryCache query_cache{gpu, null_rasterizer, device_memory, query_runtime};
+    query_cache.CreateChannel(channel);
+    query_cache.BindToChannel(channel.bind_id);
+    scheduler.SetQueryCache(query_cache);
 
     // One uniform and one storage buffer, both read through constant buffer 0 (unmapped, so
     // they bind the null buffer: each still takes its descriptor entry).
@@ -170,6 +186,18 @@ TEST_CASE("Vulkan compute descriptors: a dispatch's buffers go to the queue Conf
     REQUIRE(guest_queue.UpdateCount() == 2);
     REQUIRE(configured);
     REQUIRE(&buffer_runtime.StageDescriptorQueue() == &guest_queue);
+
+    // The dispatch as DispatchCompute records it after Configure, submitted and run by the driver.
+    bool dispatched{};
+    scheduler.Record([&pipeline, &dispatched](Vulkan::vk::CommandBuffer cmdbuf) {
+        if (pipeline.IsBound()) {
+            cmdbuf.Dispatch(1, 1, 1);
+            dispatched = true;
+        }
+    });
+    scheduler.Finish();
+    REQUIRE(device->GetLogical().WaitIdle() == VK_SUCCESS);
+    REQUIRE(dispatched);
 
     // Stage B's thread binds into its own queue, which fills the entries A left.
     const Vulkan::GuestDescriptorQueue* stage_b_queue{};
