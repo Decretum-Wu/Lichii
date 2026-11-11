@@ -403,6 +403,7 @@ GraphicsPipeline::GraphicsPipeline(
             continue;
         }
         stage_infos[stage] = *info;
+        stage_enabled[stage] = true;
         enabled_uniform_buffer_masks[stage] = info->constant_buffer_mask;
         std::ranges::copy(info->constant_buffer_used_sizes, uniform_buffer_sizes[stage].begin());
         num_image_elements += Shader::NumDescriptors(info->texture_buffer_descriptors);
@@ -467,6 +468,7 @@ GraphicsPipeline::GraphicsPipeline(
         // the constant buffers bound and the data in memory then.
         const auto add = [&](const auto& desc) {
             if (desc.handle_program != ~0U) {
+                has_computed_handles = true;
                 return;
             }
             const u32 last = ((std::max)(desc.count, 1U) - 1) << desc.size_shift;
@@ -1163,6 +1165,45 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 
 bool GraphicsPipeline::DeltaImagesChange() const noexcept {
     return texture_cache.SampledViewsChange(delta_views);
+}
+
+bool GraphicsPipeline::SharesDeltaStateWith(const GraphicsPipeline& other) const noexcept {
+    if (delta_blocker != DeltaBlocker::None || other.delta_blocker != DeltaBlocker::None ||
+        mesh_emulation || other.mesh_emulation || stage_enabled != other.stage_enabled ||
+        uses_push_descriptor != other.uses_push_descriptor ||
+        uses_descriptor_buffer != other.uses_descriptor_buffer ||
+        num_image_elements != other.num_image_elements || num_textures != other.num_textures) {
+        return false;
+    }
+    // Computed handles are evaluated with the shader's own handle programs.
+    if ((has_computed_handles || other.has_computed_handles) &&
+        ShaderHashes() != other.ShaderHashes()) {
+        return false;
+    }
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        const Shader::Info& lhs = stage_infos[stage];
+        const Shader::Info& rhs = other.stage_infos[stage];
+        if (lhs.texture_buffer_descriptors != rhs.texture_buffer_descriptors ||
+            lhs.image_buffer_descriptors != rhs.image_buffer_descriptors ||
+            lhs.texture_descriptors != rhs.texture_descriptors ||
+            lhs.image_descriptors != rhs.image_descriptors) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void GraphicsPipeline::TakeDeltaStateFrom(GraphicsPipeline& other) noexcept {
+    delta_views.swap(other.delta_views);
+    delta_samplers.swap(other.delta_samplers);
+    delta_computed_handles.swap(other.delta_computed_handles);
+    kept_image_entries.swap(other.kept_image_entries);
+    configured_stages = other.configured_stages;
+    kept_image_ranges = other.kept_image_ranges;
+    kept_rescaling = other.kept_rescaling;
+    kept_scale_epoch = other.kept_scale_epoch;
+    delta_views_valid = std::exchange(other.delta_views_valid, false);
+    kept_images_valid = std::exchange(other.kept_images_valid, false);
 }
 
 bool GraphicsPipeline::ComputedHandlesChanged() const {

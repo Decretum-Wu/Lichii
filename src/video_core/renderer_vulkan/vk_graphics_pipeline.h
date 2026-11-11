@@ -366,6 +366,15 @@ public:
     /// ConfigureDelta prepares none, Configure does.
     [[nodiscard]] bool DeltaImagesChange() const noexcept;
 
+    /// Whether `other` resolves the same image views, samplers and image descriptors from the same
+    /// constant buffer words: the same stages, and the same texture and image descriptors in each
+    /// (the same shaders when a handle is computed at draw time). What one kept for delta draws
+    /// then stands for the other.
+    [[nodiscard]] bool SharesDeltaStateWith(const GraphicsPipeline& other) const noexcept;
+
+    /// Takes what `other` (SharesDeltaStateWith) kept for delta draws; `other` keeps nothing.
+    void TakeDeltaStateFrom(GraphicsPipeline& other) noexcept;
+
     template <typename Spec>
     static auto MakeConfigureSpecFunc() {
         return [](GraphicsPipeline* pl, bool is_indexed) { return pl->ConfigureImpl<Spec>(is_indexed); };
@@ -412,6 +421,9 @@ private:
     std::array<vk::ShaderModule, NUM_STAGES> spv_modules;
 
     std::array<Shader::Info, NUM_STAGES> stage_infos;
+    /// Stages with a shader, and whether a handle is computed at draw time (SharesDeltaStateWith).
+    std::array<bool, NUM_STAGES> stage_enabled{};
+    bool has_computed_handles{};
     std::array<u32, 5> enabled_uniform_buffer_masks{};
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
     u32 num_descriptor_entries{};

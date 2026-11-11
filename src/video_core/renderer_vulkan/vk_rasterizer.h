@@ -392,14 +392,25 @@ private:
     /// The current submission's arena, after its counter is reset.
     const MeshArena& AcquireMeshArena();
 
+    /// The registers resolving views and samplers reads besides the handles: the texture header
+    /// and sampler pools and how samplers are bound (TextureCache::SynchronizeDescriptors).
+    using TextureRegisters = std::array<u32, 7>;
+    [[nodiscard]] static TextureRegisters ReadTextureRegisters(const Maxwell& regs) noexcept {
+        return {regs.tex_header.address_high,  regs.tex_header.address_low,
+                regs.tex_header.limit,         regs.tex_sampler.address_high,
+                regs.tex_sampler.address_low,  regs.tex_sampler.limit,
+                static_cast<u32>(regs.sampler_binding)};
+    }
     /// Fast draw (nx2_fast_draw.h): what the last recorded draw left bound.
     struct ReusableDraw {
         GraphicsPipeline* pipeline{};
         const Tegra::Engines::Maxwell3D* maxwell3d{};
         u64 serial{};
+        u64 memory_serial{};
         u64 map_serial{};
         u64 tick{};
         u64 render_pass{};
+        TextureRegisters texture_registers{};
         Maxwell::PrimitiveTopology topology{};
         bool is_indexed{};
     };
@@ -450,22 +461,34 @@ private:
         /// StateChanged draws by the reason of the last break, and by its 3D method.
         std::array<u64, static_cast<size_t>(VideoCommon::Nx2FastDraw::Reason::Count)> breaks{};
         std::array<u32, Maxwell::NUM_REGS> break_methods{};
+        /// Draws that looked their pipeline up (RelookupDraws) by what made them, and how they
+        /// went: the same pipeline, another that took the kept state, or another that resolves
+        /// differently (resolved in full).
+        std::array<u64, 3> relookup_causes{};
+        u64 relookup_same{};
+        u64 relookup_moved{};
+        u64 relookup_other{};
         u64 window_start{};
     };
     /// The pipeline of a draw resolved in full: a plan worker's (PlanWorkers) when it still holds,
     /// else CurrentGraphicsPipeline.
     GraphicsPipeline* LookUpPipeline();
     /// The pipeline the draw can take the delta path with, or null for a full resolve. Clears
-    /// the remembered draw either way: only a recorded draw remembers one again.
+    /// the remembered draw either way: only a recorded draw remembers one again. With
+    /// taken_relookup set, the pipeline is only where the kept state is: the draw looks its own
+    /// up, and takes the delta path with it when it resolves alike (SharesDeltaStateWith).
     GraphicsPipeline* TakeReusableDraw(bool is_indexed, bool is_indirect);
-    /// Whether the draw TakeReusableDraw took still holds once the caches are locked (serial and
-    /// map_serial as read then), and the images it samples need no preparing.
-    bool DeltaStillHolds(u64 serial, u64 map_serial);
+    /// Whether the draw TakeReusableDraw took still holds once the caches are locked (serials
+    /// and map_serial as read then) for `pipeline`, which holds the kept state, and the images
+    /// it samples need no preparing.
+    bool DeltaStillHolds(GraphicsPipeline* pipeline, u64 serial, u64 memory_serial,
+                         u64 map_serial);
     void NoteResolvedDraw(GraphicsPipeline* pipeline, bool is_indexed, bool is_indirect, u64 serial,
-                          u64 map_serial);
+                          u64 memory_serial, u64 map_serial);
     void ReportFastDraws();
     ReusableDraw reusable_draw;
     ReusableDraw taken_draw; ///< The draw TakeReusableDraw last returned the pipeline of
+    bool taken_relookup{};
     /// Device memory of the constant buffers TakeReusableDraw checks for texture handle writes.
     std::array<std::array<VideoCommon::Nx2FastDraw::DeviceSpans, Maxwell::MaxConstBuffers>,
                Maxwell::MaxShaderStage>

@@ -238,6 +238,18 @@ inline u64 MemorySerial() {
     return keeps;
 }
 
+/// Whether a draw after only 3D register changes (or another draw kind or vertex attribute
+/// types) looks its pipeline up and keeps the previous draw's views, samplers and image
+/// descriptors when that pipeline resolves them alike. EDEN_NX2_TEST_RELOOKUP=0 (TEST): such
+/// draws resolve in full.
+[[nodiscard]] inline bool RelookupDraws() {
+    static const bool relookup = [] {
+        const char* value = std::getenv("EDEN_NX2_TEST_RELOOKUP");
+        return value == nullptr || value[0] != '0';
+    }();
+    return relookup;
+}
+
 /// The device memory a GPU range maps to. A write through another GPU address that maps the
 /// same device memory changes the range too.
 class DeviceSpans {
