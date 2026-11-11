@@ -21,6 +21,7 @@ add_executable(tests
     core/nx2_video_ready.cpp
     core/nx2_debug_server.cpp
     core/nx2_present_pacer.cpp
+    core/ldn_lan_protocol.cpp
     core/perf_stats.cpp
     common/display_hdr.cpp
     common/dkb_cpu_trace.cpp
