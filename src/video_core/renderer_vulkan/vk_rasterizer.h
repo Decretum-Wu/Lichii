@@ -243,8 +243,17 @@ private:
         bool native_turing{}; ///< A native macro launched the draw
         u64 committed{};      ///< The packet's position in the ring
         u64 map_serial{};     ///< The channel's address space as of stage A
-        /// EDEN_NX2_BACK_STAGES_VERIFY: the device ranges B reads (begin, size, hash at A).
-        std::vector<std::array<u64, 3>> reads;
+        /// EDEN_NX2_BACK_STAGES_VERIFY: the device ranges B reads, hashed at A.
+        struct Read {
+            u64 begin;
+            u64 size;
+            u64 hash;
+            u32 slot;      ///< VideoCommon::DrawStages read slot
+            bool fresh;    ///< This packet set the binding (else held from an earlier one)
+            bool streamed; ///< A uniform A copied to the stream buffer at the draw
+        };
+        std::vector<Read> reads;
+        std::chrono::steady_clock::time_point committed_at{};
     };
     void StartBackStages();
     void StopBackStages();

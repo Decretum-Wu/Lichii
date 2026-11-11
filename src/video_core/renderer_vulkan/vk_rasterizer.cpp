@@ -2402,11 +2402,39 @@ void RasterizerVulkan::NoteBackReads(BackSlot& slot) {
     });
     const bool verify = DrawStages::g_threaded_verify;
     slot.reads.clear();
+    if (verify) {
+        slot.committed_at = std::chrono::steady_clock::now();
+    }
+    const auto fresh = [&buffers](u32 read_slot) {
+        if (read_slot == DrawStages::IndexSlot) {
+            return buffers.index_dirty;
+        }
+        if (read_slot < DrawStages::StorageSlot(0, 0)) {
+            return ((buffers.vertex_resolve >> (read_slot - DrawStages::VertexSlot(0))) & 1) != 0;
+        }
+        if (read_slot < DrawStages::TexelSlot(0, 0)) {
+            return std::ranges::any_of(buffers.storage_buffers, [read_slot](const auto& buffer) {
+                return DrawStages::StorageSlot(buffer.stage, buffer.index) == read_slot;
+            });
+        }
+        if (read_slot < DrawStages::UniformSlot(0)) {
+            return std::ranges::any_of(buffers.texture_buffers, [read_slot](const auto& buffer) {
+                return DrawStages::TexelSlot(buffer.stage, buffer.index) == read_slot;
+            });
+        }
+        return true;
+    };
     for (const u32 read_slot : back_active) {
         const auto [begin, size] = back_held[read_slot];
         DrawStages::NoteReadAt(read_slot, begin, size, slot.committed);
         if (verify) {
-            slot.reads.push_back({begin, size, HashDeviceRange(device_memory, begin, size)});
+            const u32 order = read_slot - DrawStages::UniformSlot(0);
+            const bool streamed = read_slot >= DrawStages::UniformSlot(0) &&
+                                  read_slot < DrawStages::IndirectSlot &&
+                                  order < buffers.uniform_binds.size() &&
+                                  buffers.uniform_binds[order].streamed;
+            slot.reads.push_back({begin, size, HashDeviceRange(device_memory, begin, size),
+                                  read_slot, fresh(read_slot), streamed});
         }
     }
 }
@@ -2425,9 +2453,11 @@ void RasterizerVulkan::VerifyBackReads(const BackSlot& slot) {
     // B reads by device address, as A resolved it at the draw. A change of the address space
     // since is counted: only a change of the bytes below is a difference.
     stats.remapped += slot.map_serial != gpu_memory->MapSerial() ? 1 : 0;
-    for (const auto& [begin, size, hash] : slot.reads) {
+    for (const auto& read : slot.reads) {
+        const u64 begin = read.begin;
+        const u64 size = read.size;
         ++stats.ranges;
-        if (HashDeviceRange(device_memory, begin, size) == hash) {
+        if (HashDeviceRange(device_memory, begin, size) == read.hash) {
             continue;
         }
         ++stats.differing;
@@ -2436,6 +2466,36 @@ void RasterizerVulkan::VerifyBackReads(const BackSlot& slot) {
                       "Back stages verify: packet {} (draw {}) reads {:#x}+{:#x}, which changed "
                       "after stage A built it",
                       slot.committed, slot.packet.sequence, begin, size);
+            namespace DrawStages = VideoCommon::DrawStages;
+            const u32 s = read.slot;
+            const std::string kind =
+                s == DrawStages::IndexSlot ? std::string{"index"}
+                : s < DrawStages::StorageSlot(0, 0)
+                    ? fmt::format("vertex {}", s - DrawStages::VertexSlot(0))
+                : s < DrawStages::TexelSlot(0, 0)
+                    ? fmt::format("storage stage {} index {}", (s - DrawStages::StorageSlot(0, 0)) / 64,
+                                  (s - DrawStages::StorageSlot(0, 0)) % 64)
+                : s < DrawStages::UniformSlot(0)
+                    ? fmt::format("texel stage {} index {}", (s - DrawStages::TexelSlot(0, 0)) / 32,
+                                  (s - DrawStages::TexelSlot(0, 0)) % 32)
+                : s < DrawStages::IndirectSlot
+                    ? fmt::format("uniform bind {}", s - DrawStages::UniformSlot(0))
+                : s == DrawStages::IndirectSlot ? std::string{"indirect"}
+                                                : std::string{"indirect count"};
+            const auto& buffers = slot.packet.buffers;
+            LOG_ERROR(Render_Vulkan,
+                      "Back stages verify: that range is slot {} ({}), set by {}, streamed {}; "
+                      "draw indexed {} (index format {}, {} bytes, index set by this packet {}), "
+                      "indirect {}; at B the range is CPU-modified {}, GPU-modified {} (anywhere "
+                      "in it); packet age {} us",
+                      s, kind, read.fresh ? "this packet" : "an earlier packet", read.streamed,
+                      buffers.is_indexed, static_cast<u32>(buffers.index_format),
+                      buffers.index_format_size, buffers.index_dirty, slot.indirect,
+                      buffer_cache.IsRegionCpuModified(begin, size),
+                      buffer_cache.IsRegionGpuModified(begin, size),
+                      std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now() - slot.committed_at)
+                          .count());
         }
     }
 }
