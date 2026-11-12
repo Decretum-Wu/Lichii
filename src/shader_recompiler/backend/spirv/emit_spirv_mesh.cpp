@@ -349,8 +349,8 @@ void EmitMeshPrologue(EmitContext& ctx) {
     if (ctx.stage == Stage::Task) {
         if (!as_compute) {
             // A task that culls all its threads never writes the mesh workgroup count, and the
-            // payload starts undefined. Intel's garbage there launches enough workgroups to lose
-            // the device.
+            // payload starts undefined: launching that many mesh workgroups hangs the GPU.
+            // Every invocation stores the zero (upstream 8e87cf5a66).
             ctx.OpStore(PayloadWord(ctx, ctx.Const(1U)), ctx.u32_zero_value);
             Barrier(ctx);
             return;
