@@ -128,6 +128,7 @@ public:
         if (!delay_fence) {
             func();
         }
+        fences_in_flight.fetch_add(1, std::memory_order_relaxed);
         fences.push(std::move(new_fence));
         if (should_flush) {
             rasterizer.FlushCommands();
@@ -153,6 +154,11 @@ public:
         syncpoint_manager.IncrementGuest(value);
         std::function<void()> func([this, value] { syncpoint_manager.IncrementHost(value); });
         SignalFence(std::move(func));
+    }
+
+    /// Whether a fence's operations may still write guest memory (any thread).
+    [[nodiscard]] bool HasFencesInFlight() const {
+        return fences_in_flight.load(std::memory_order_acquire) != 0;
     }
 
     void WaitPendingFences([[maybe_unused]] bool force) {
@@ -245,6 +251,7 @@ private:
                 delayed_destruction_ring.Push(std::move(current_fence));
             }
             fences.pop();
+            fences_in_flight.fetch_sub(1, std::memory_order_release);
         }
     }
 
@@ -332,6 +339,7 @@ private:
                     delayed_destruction_ring.Push(std::move(released.fence));
                 }
             }
+            fences_in_flight.fetch_sub(static_cast<u32>(batch.size()), std::memory_order_release);
             batch.clear();
         }
     }
@@ -453,6 +461,8 @@ private:
     }
 
     std::queue<TFence> fences;
+    /// Fences made whose operations (guest memory writes among them) haven't all run yet.
+    std::atomic<u32> fences_in_flight{};
     // Vectors, not deques: MSVC's deque of std::function holds one element per block, so every
     // queued operation (one per query report, about 1000 a frame in busy scenes) allocated a block.
     using OperationList = std::vector<std::function<void()>>;

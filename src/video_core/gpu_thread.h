@@ -108,9 +108,9 @@ struct SynchState final {
     u64 last_fence{};
     std::atomic<u64> signaled_fence{};
     std::condition_variable_any cv;
-    /// Set by the GPU thread while every channel with work is suspended on an acquire and the back
-    /// ran everything.
-    std::atomic<bool> waiting_for_guest{};
+    /// Set by the GPU thread while it sleeps between polls of channels suspended on semaphores,
+    /// with no GPU work left that could release them.
+    alignas(64) std::atomic<bool> waiting_for_guest{};
 };
 
 /// Class used to manage the GPU thread
@@ -143,7 +143,8 @@ public:
     void NotifyShutdown();
 
     /// Whether the GPU can move again only once the CPU releases a semaphore: every channel with
-    /// work is suspended on one, the back ran everything and every pushed command was processed.
+    /// work is suspended on one, no GPU work that could release it is left, and every pushed
+    /// command was processed.
     [[nodiscard]] bool IsWaitingForGuest();
 
 private:
