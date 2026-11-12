@@ -1072,14 +1072,19 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     namespace CacheV2 = VideoCommon::ShaderCacheV2;
     pipeline_cache_filename = base_dir / CacheV2::FileName;
     // Left by a boot load that never finished (a driver crash, abort or hang): this boot builds
-    // nothing from the cache. Another emulator loading this title holds the lock and the marker.
+    // nothing from the cache. The lock is held for as long as the marker may be there, so while
+    // another emulator holds it, its load is running (or its crash dump is being written).
     auto boot_marker = pipeline_cache_filename;
     boot_marker += ".booting";
     auto boot_lock_path = boot_marker;
     boot_lock_path += ".lock";
     const Common::FS::FileLock boot_lock{boot_lock_path};
-    const bool build_at_boot = !boot_lock.Held() || !Common::FS::Exists(boot_marker);
-    if (!build_at_boot) {
+    const bool build_at_boot =
+        boot_lock.Held() ? !Common::FS::Exists(boot_marker) : !boot_lock.Busy();
+    if (boot_lock.Busy()) {
+        LOG_WARNING(Render_Vulkan, "Shader cache v2: another emulator is loading this title's "
+                                   "cache; building none at boot this time");
+    } else if (!build_at_boot) {
         LOG_WARNING(Render_Vulkan, "Shader cache v2: the last boot ended while building cached "
                                    "pipelines; building none at boot this time");
     }
