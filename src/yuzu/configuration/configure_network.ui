@@ -56,6 +56,91 @@
       </widget>
      </item>
      <item>
+      <widget class="QGroupBox" name="redirect_group">
+       <property name="title">
+        <string>Host redirect</string>
+       </property>
+       <layout class="QGridLayout" name="redirect_layout">
+        <item row="0" column="0" colspan="3">
+         <widget class="QCheckBox" name="online_service_redirect">
+          <property name="text">
+           <string>Redirect host names to a server you run</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0" colspan="3">
+         <widget class="QLabel" name="redirect_description">
+          <property name="text">
+           <string>For a server you run yourself. While this is on, the host names below and their subdomains resolve to 127.0.0.1, and connections to 127.0.0.1 on port 443 go to the server address. The CA certificate is trusted for every secure connection a game makes. Changes take effect when a game starts.</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="redirect_hosts_label">
+          <property name="text">
+           <string>Host names</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1" colspan="2">
+         <widget class="QLineEdit" name="redirect_hosts">
+          <property name="toolTip">
+           <string>Comma-separated host names, for example a.example, b.example. Each also covers its subdomains.</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0">
+         <widget class="QLabel" name="redirect_server_label">
+          <property name="text">
+           <string>Server address</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1" colspan="2">
+         <widget class="QLineEdit" name="redirect_server">
+          <property name="toolTip">
+           <string>IPv4 address and port of your server, for example 192.168.1.20:8443. Leave it empty if your server listens on this PC on port 443.</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="0">
+         <widget class="QLabel" name="redirect_ca_label">
+          <property name="text">
+           <string>CA certificate</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="1">
+         <widget class="QLineEdit" name="redirect_ca">
+          <property name="toolTip">
+           <string>The CA certificate (DER, at most 64 KiB) that signed your server's certificate. Optional.</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="2">
+         <widget class="QPushButton" name="redirect_ca_browse">
+          <property name="text">
+           <string>Browse...</string>
+          </property>
+         </widget>
+        </item>
+        <item row="5" column="0" colspan="3">
+         <widget class="QCheckBox" name="redirect_loopback_only">
+          <property name="toolTip">
+           <string>Other host names don't resolve, and games can reach only this PC and the server address. Multiplayer rooms are not affected.</string>
+          </property>
+          <property name="text">
+           <string>Block all other network access</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
       <widget class="QGroupBox" name="nextendo_group">
        <property name="title">
         <string>Nextendo Network</string>

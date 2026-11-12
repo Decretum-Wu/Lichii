@@ -19,6 +19,10 @@ public:
 
     void Refresh();
 
+    /// Whether DLSS Frame Generation is the chosen frame generation type: the panel then lists
+    /// its files and downloads them with the rest.
+    void SetFrameGenWanted(bool wanted);
+
 protected:
     void showEvent(QShowEvent* event) override;
 
@@ -29,6 +33,7 @@ private:
     QLabel* status_label;
     QPushButton* download_button;
     QPushButton* folder_button;
+    bool frame_gen_wanted{};
 };
 
 #endif
