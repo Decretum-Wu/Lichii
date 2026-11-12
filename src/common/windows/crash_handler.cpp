@@ -15,6 +15,8 @@
 #include "common/logging.h"
 #include "common/windows/crash_handler.h"
 
+#define LOG_CRASH(...) ::Common::Log::FmtCrashMessage(__FILE__, __LINE__, __func__, __VA_ARGS__)
+
 namespace Common::Windows {
 namespace {
 
@@ -85,17 +87,15 @@ void Report(EXCEPTION_POINTERS* pointers) {
     if (pointers) {
         const EXCEPTION_RECORD& record = *pointers->ExceptionRecord;
         const CodeAddress at = Locate(fault);
-        LOG_CRITICAL(Common,
-                     "Host crash: unhandled exception {:#010x} at {}+{:#x} on thread {} \"{}\", "
-                     "info {:#x} {:#x}; stack:{}",
-                     record.ExceptionCode, at.module, at.offset, GetCurrentThreadId(), thread_name,
-                     record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0,
-                     record.NumberParameters > 1 ? record.ExceptionInformation[1] : 0, stack);
+        LOG_CRASH("Host crash: unhandled exception {:#010x} at {}+{:#x} on thread {} \"{}\", "
+                  "info {:#x} {:#x}; stack:{}",
+                  record.ExceptionCode, at.module, at.offset, GetCurrentThreadId(), thread_name,
+                  record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0,
+                  record.NumberParameters > 1 ? record.ExceptionInformation[1] : 0, stack);
     } else {
-        LOG_CRITICAL(Common, "Host crash: abort() on thread {} \"{}\"; stack:{}",
-                     GetCurrentThreadId(), thread_name, stack);
+        LOG_CRASH("Host crash: abort() on thread {} \"{}\"; stack:{}", GetCurrentThreadId(),
+                  thread_name, stack);
     }
-    Common::Log::Stop();
 
     if (!write_dump) {
         return;
@@ -111,13 +111,13 @@ void Report(EXCEPTION_POINTERS* pointers) {
                    pointers ? &information : nullptr, nullptr, nullptr);
     const DWORD error = written ? 0 : GetLastError();
     CloseHandle(file);
-    LOG_CRITICAL(Common, "Host crash: minidump of process {} {} ({:#x})", GetCurrentProcessId(),
-                 written ? "written next to the log as eden_crash.dmp" : "failed", error);
-    Common::Log::Stop();
+    LOG_CRASH("Host crash: minidump of process {} {} ({:#x})", GetCurrentProcessId(),
+              written ? "written next to the log as eden_crash.dmp" : "failed", error);
 }
 
-// Only the first thread to crash reports; a second one waits for it to end the process, and a
-// crash inside the report falls through to the previous handling.
+// Only the first thread to crash reports. A second one waits a while for it to end the process,
+// then falls through to the previous handling, so a report stuck on a lock the second thread
+// holds cannot hang the process. A crash inside the report falls through at once.
 bool BeginReport() {
     DWORD expected = 0;
     const DWORD self = GetCurrentThreadId();
@@ -125,7 +125,7 @@ bool BeginReport() {
         return true;
     }
     if (expected != self) {
-        Sleep(INFINITE);
+        Sleep(10000);
     }
     return false;
 }
