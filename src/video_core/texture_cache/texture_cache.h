@@ -446,8 +446,8 @@ void TextureCache<P>::TickFrame() {
                             ? HostCriticalMemory(runtime.GetDeviceMemoryUsage(), *commit_room)
                             : (std::numeric_limits<u64>::max)();
                     critical_memory = (std::min)(critical_memory, host_critical);
-                    retention_limit = (std::min)(
-                        budget - (std::min)(pressure_margin + slack_margin, budget / 2), host_critical);
+                    const u64 room_margin = (std::min)(pressure_margin + slack_margin, budget / 2);
+                    retention_limit = (std::min)(budget - room_margin, host_critical);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all
