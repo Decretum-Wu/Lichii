@@ -2311,6 +2311,7 @@ void RasterizerVulkan::StopBackStages() {
     {
         std::scoped_lock lock{buffer_cache.mutex};
         scheduler.SpliceList(back_slot->list);
+        buffer_cache.ApplyStageStaleRanges(~u64{0});
         // B bound the graphics uniform buffers from the packets: the bindings' buffers were
         // not kept up while it ran.
         buffer_cache.ForgetGraphicsUniformBuffers();
@@ -2572,6 +2573,7 @@ void RasterizerVulkan::RecordBackDraw(BackSlot& slot) {
     namespace DrawStages = VideoCommon::DrawStages;
     namespace Profile = VideoCommon::Nx2Profile;
     const DrawPacket& packet = slot.packet;
+    buffer_cache.ApplyStageStaleRanges(slot.committed);
     query_cache_runtime.SetStageTransformFeedbackState(&packet.query_tfb);
     buffer_cache.SetStageSnapshot(&slot.snapshot);
     SCOPE_EXIT {
@@ -2653,6 +2655,17 @@ void RasterizerVulkan::RecordBackDraw(BackSlot& slot) {
                  1e6 / seconds,
              static_cast<double>(settled.uploaded_bytes) * per_frame, settled.marked_again);
     settled = {};
+    LOG_INFO(Render_Vulkan,
+             "Back stages tracker: A marked {:.0f} ranges/s under the tracker lock alone, {:.0f} "
+             "needed the cache's lock; A waited for the tracker lock {:.0f} times/s, {:.2f} ms/s",
+             static_cast<double>(back_tracker.marked.exchange(0, std::memory_order_relaxed)) /
+                 seconds,
+             static_cast<double>(back_tracker.locked.exchange(0, std::memory_order_relaxed)) /
+                 seconds,
+             static_cast<double>(back_tracker.waits.exchange(0, std::memory_order_relaxed)) /
+                 seconds,
+             static_cast<double>(back_tracker.wait_ns.exchange(0, std::memory_order_relaxed)) /
+                 1e6 / seconds);
     if (DrawStages::g_threaded_verify) {
         LOG_INFO(Render_Vulkan,
                  "Back stages verify: {} packets, {} ranges checked, {} changed after A built "
@@ -3658,9 +3671,42 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
     if (Settings::values.skip_cpu_inner_invalidation.GetValue()) {
         return;
     }
-    {
+    // With packets in flight, stage A marks the writes under the tracker lock alone instead of
+    // joining B, unless their pages hold GPU-written data.
+    std::span<const std::pair<DAddr, std::size_t>> locked = sequences;
+    if (back_ring && VideoCommon::DrawStages::OwnsRing() &&
+        VideoCommon::DrawStages::PacketsInFlight()) {
+        back_tracker_rest.clear();
+        const u64 packet = back_ring->Committed();
+        u64 marked = 0;
+        {
+            auto& tracker = buffer_cache.mutex.tracker;
+            if (!tracker.try_lock()) {
+                const auto start = std::chrono::steady_clock::now();
+                tracker.lock();
+                back_tracker.wait_ns.fetch_add(
+                    static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - start)
+                                         .count()),
+                    std::memory_order_relaxed);
+                back_tracker.waits.fetch_add(1, std::memory_order_relaxed);
+            }
+            std::scoped_lock lock{std::adopt_lock, tracker};
+            for (const auto& range : sequences) {
+                if (buffer_cache.TryStageWriteMemory(range.first, range.second, packet)) {
+                    ++marked;
+                } else {
+                    back_tracker_rest.push_back(range);
+                }
+            }
+        }
+        back_tracker.marked.fetch_add(marked, std::memory_order_relaxed);
+        back_tracker.locked.fetch_add(back_tracker_rest.size(), std::memory_order_relaxed);
+        locked = back_tracker_rest;
+    }
+    if (!locked.empty()) {
         std::scoped_lock lock{buffer_cache.mutex};
-        for (const auto& [addr, size] : sequences) {
+        for (const auto& [addr, size] : locked) {
             buffer_cache.WriteMemory(addr, size);
         }
     }

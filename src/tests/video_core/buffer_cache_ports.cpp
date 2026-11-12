@@ -378,6 +378,13 @@ struct BufferCacheTestAccess {
         cache.memory_tracker.SetCleanPages(&cache.clean_pages);
         cache.note_stage_live_reads = true;
     }
+    /// Takes the tracker's CPU marks over the range, as an upload does.
+    static void TakeCpuMarks(Cache& cache, DAddr address, u64 size) {
+        cache.memory_tracker.ForEachUploadRange(address, size, [](auto, auto) {});
+    }
+    static size_t StageStaleRanges(Cache& cache) {
+        return cache.stage_stale_ranges.size();
+    }
     /// Stage B binds [address, address + size) of buffer `id` as vertex stream 0 for a packet.
     static void BackVertexSync(Cache& cache, const DrawStages::StageSnapshot& snapshot, BufferId id,
                                DAddr address, u32 size) {
@@ -2399,4 +2406,78 @@ TEST_CASE("Stage snapshots: B uploads A's bytes and keeps the CPU marks made aft
     REQUIRE(buffer.bytes[0x3000] == 0x22);
     REQUIRE(buffer.bytes[0x3010] == 0x11);
     REQUIRE(buffer.bytes[0x5000] == 0x33);
+}
+
+TEST_CASE("Stage A marks guest writes under the tracker lock unless their pages hold GPU data",
+          "[buffer_ports][stage_snapshot]") {
+    namespace DrawStages = VideoCommon::DrawStages;
+    Fixture f;
+    Access::EnableSnapshots(*f.cache);
+    const auto id = Access::Add(*f.cache, 0x10000, 0x10000);
+    const auto copy = [&](u64 addr, u8* out, u64 size) {
+        std::memcpy(out, f.bytes + (addr - 0x10000), size);
+    };
+    const std::array<DrawStages::StageSnapshot::Range, 1> ranges{{{0x10000, 0x8000, false}}};
+    DrawStages::StageSnapshot first;
+    first.Capture(ranges, f.cache->clean_pages, copy, false);
+    Access::BackVertexSync(*f.cache, first, id, 0x10000, 0x8000);
+    f.cache->SetStageSnapshot(nullptr);
+
+    {
+        std::scoped_lock lock{f.cache->mutex.tracker};
+        REQUIRE(f.cache->TryStageWriteMemory(0x12010, 0x10, 5));
+        REQUIRE(f.cache->TryStageWriteMemory(0x13000, 0x10, 6));
+    }
+    REQUIRE(f.cache->IsRegionCpuModified(0x12000, 0x1000));
+    REQUIRE(f.cache->IsRegionCpuModified(0x13000, 0x1000));
+    DrawStages::StageSnapshot second;
+    second.Capture(ranges, f.cache->clean_pages, copy, false);
+    REQUIRE(second.Bytes() == 0x2000);
+
+    // GPU-written bytes on the page: the write needs the cache's lock.
+    Access::Dirty(*f.cache, 0x14000, 0x100);
+    REQUIRE_FALSE(f.cache->TryStageWriteMemory(0x14800, 0x10, 6));
+    REQUIRE_FALSE(f.cache->IsRegionCpuModified(0x14800, 0x10));
+
+    // The vertex buffers go stale once B reaches each write's packet.
+    REQUIRE(Access::StageStaleRanges(*f.cache) == 2);
+    f.cache->ApplyStageStaleRanges(4);
+    REQUIRE(Access::StageStaleRanges(*f.cache) == 2);
+    f.cache->ApplyStageStaleRanges(5);
+    REQUIRE(Access::StageStaleRanges(*f.cache) == 1);
+    f.cache->ApplyStageStaleRanges(6);
+    REQUIRE(Access::StageStaleRanges(*f.cache) == 0);
+}
+
+TEST_CASE("Stage A's tracker writes and stage B's cache lock exclude each other",
+          "[buffer_ports][stage_snapshot]") {
+    Fixture f;
+    Access::EnableSnapshots(*f.cache);
+    (void)Access::Add(*f.cache, 0x10000, 0x10000);
+    constexpr u64 Packets = 2000;
+    std::atomic<u64> committed{};
+    std::jthread b{[&] {
+        for (u64 packet = 0; packet < Packets;) {
+            if (packet >= committed.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+                continue;
+            }
+            std::scoped_lock lock{f.cache->mutex};
+            f.cache->ApplyStageStaleRanges(packet);
+            Access::TakeCpuMarks(*f.cache, 0x10000, 0x8000);
+            ++packet;
+        }
+    }};
+    u64 marked = 0;
+    for (u64 packet = 0; packet < Packets; ++packet) {
+        {
+            std::scoped_lock lock{f.cache->mutex.tracker};
+            marked += f.cache->TryStageWriteMemory(0x10000 + (packet % 8) * 0x1000, 0x10, packet);
+        }
+        committed.store(packet + 1, std::memory_order_release);
+    }
+    b.join();
+    REQUIRE(marked == Packets);
+    std::scoped_lock lock{f.cache->mutex};
+    REQUIRE(Access::StageStaleRanges(*f.cache) == 0);
 }

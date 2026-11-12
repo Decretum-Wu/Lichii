@@ -218,19 +218,32 @@ struct GraphicsBufferPacket {
 
 /// The buffer cache's lock. Stage B (on its own thread, EDEN_NX2_BACK_STAGES=1) uses the cache
 /// under it: on the thread that draws, taking it first waits until B consumed every packet.
+/// Holding it holds the tracker lock too, which alone lets stage A mark guest writes (the memory
+/// tracker, clean pages and the stale vertex ranges) while B records.
 class BufferCacheLock {
 public:
     void lock() {
         DrawStages::JoinB(DrawStages::Join::ABufferLock);
         mutex.lock();
+        tracker.lock();
     }
     bool try_lock() {
         DrawStages::JoinB(DrawStages::Join::ABufferLock);
-        return mutex.try_lock();
+        if (!mutex.try_lock()) {
+            return false;
+        }
+        if (!tracker.try_lock()) {
+            mutex.unlock();
+            return false;
+        }
+        return true;
     }
     void unlock() {
+        tracker.unlock();
         mutex.unlock();
     }
+
+    Common::SpinRecursiveMutex tracker;
 
 private:
     Common::SpinRecursiveMutex mutex;
@@ -385,6 +398,14 @@ public:
     /// `keep_page_gpu_data`: download GPU-written bytes sharing the written pages first (false
     /// when the memory is going away).
     void WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data = true);
+
+    /// Stage A with packets in flight, under mutex.tracker alone: WriteMemory when the written
+    /// pages hold no GPU-written data. The vertex buffers it overlaps go stale once B reaches
+    /// `packet`. False when the write needs the cache's lock.
+    [[nodiscard]] bool TryStageWriteMemory(DAddr device_addr, u64 size, u64 packet);
+
+    /// Stage B, before recording `packet`: marks the vertex buffers stale for A's writes until it.
+    void ApplyStageStaleRanges(u64 packet);
 
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
@@ -964,6 +985,13 @@ private:
 
     u32 enabled_vertex_buffers_mask = 0;
     u32 stale_vertex_buffers_mask = 0;
+    struct StageStaleRange {
+        u64 packet;
+        DAddr device_addr;
+        u64 size;
+    };
+    /// TryStageWriteMemory's writes, in packet order, under mutex.tracker.
+    std::vector<StageStaleRange> stage_stale_ranges;
     u64 vertex_buffers_serial = 0;
     std::array<Binding, 32> v_buffer{};
 

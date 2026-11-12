@@ -297,6 +297,31 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
 }
 
 template <class P>
+bool BufferCache<P>::TryStageWriteMemory(DAddr device_addr, u64 size, u64 packet) {
+    if (!early_landed.empty() || Nx2Perf::Verify()) {
+        return false;
+    }
+    const DAddr page_begin = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
+    const DAddr page_end = Common::AlignUp(device_addr + size, DEVICE_PAGESIZE);
+    if (gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) {
+        return false;
+    }
+    Nx2NoteListHostWrite(device_addr, size);
+    memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+    stage_stale_ranges.push_back({packet, device_addr, size});
+    return true;
+}
+
+template <class P>
+void BufferCache<P>::ApplyStageStaleRanges(u64 packet) {
+    auto it = stage_stale_ranges.begin();
+    for (; it != stage_stale_ranges.end() && it->packet <= packet; ++it) {
+        MarkVertexBuffersStale(it->device_addr, it->size);
+    }
+    stage_stale_ranges.erase(stage_stale_ranges.begin(), it);
+}
+
+template <class P>
 void BufferCache<P>::CachedWriteMemory(DAddr device_addr, u64 size) {
     const bool is_dirty = IsRegionRegistered(device_addr, size);
     if (!is_dirty) {

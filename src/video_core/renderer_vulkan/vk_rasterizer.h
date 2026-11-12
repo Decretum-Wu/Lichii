@@ -424,6 +424,14 @@ private:
         std::atomic<u64> copy_ns{};
         std::atomic<u64> frames{};
     } back_snapshot;
+    /// Stage A's writes marked under the tracker lock (InnerInvalidation), for B's 10 s report.
+    struct {
+        std::atomic<u64> marked{};
+        std::atomic<u64> locked{};
+        std::atomic<u64> waits{};
+        std::atomic<u64> wait_ns{};
+    } back_tracker;
+    std::vector<std::pair<DAddr, std::size_t>> back_tracker_rest;
     BackView back_view;
     /// Stage B: the latest value of each dynamic state group A took.
     DynamicStatePacket back_dynamic;
