@@ -1615,6 +1615,12 @@ void KeplerCompute::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit&
     }
 }
 
+bool KeplerCompute::FrontRunsMacroWord(u32 method) const {
+    const auto& executing = front ? front->executing_macro : native_executing_macro;
+    return method >= 0xe00 && method < native_registers.size() &&
+           (executing || (method & 1) == 0);
+}
+
 void KeplerCompute::FrontNoteReport(VideoCommon::GpuSplit& split, const FrontState& fs,
                                     u32 control) {
     // SET_REPORT_SEMAPHORE_D was sent: what ProcessNativeReportSemaphore will write on the back.

@@ -349,7 +349,9 @@ bool DmaPusher::Step() {
                            ->GetNativeMacroEngine()
                            .native_turing
                      : type == Engines::EngineTypes::KeplerCompute &&
-                           static_cast<Engines::KeplerCompute*>(engine)->FrontRunsMacros());
+                           static_cast<Engines::KeplerCompute*>(engine)->FrontRunsMacros() &&
+                           static_cast<Engines::KeplerCompute*>(engine)->FrontRunsMacroWord(
+                               dma_state.method));
             ListTrace::EndEntry(front_macro ? engine : nullptr, dma_state.method_count);
         };
         if (submitted) {
