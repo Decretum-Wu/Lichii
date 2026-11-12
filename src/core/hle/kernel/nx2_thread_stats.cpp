@@ -11,7 +11,6 @@
 #include <fmt/format.h>
 #include "common/cpu_features.h"
 #include "common/logging.h"
-#include "core/core.h"
 #include "core/hardware_properties.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
@@ -94,6 +93,8 @@ std::mutex g_registry_mutex;
 std::vector<Entry> g_registry;
 
 std::array<Totals<CoreFields>, Core::Hardware::NUM_CPU_CORES> g_cores{};
+// PresentClientBuffer calls; unlike Core::g_nx2_present_count, a new session doesn't reset it.
+std::atomic<u64> g_presents{};
 
 // The report's state, under g_report_mutex.
 std::mutex g_report_mutex;
@@ -153,10 +154,7 @@ Counters* Get(KThread* thread) {
 
 void Report(u64 now) {
     const s64 now_ns = SteadyNs();
-    const u64 presents_now = Core::g_nx2_present_count.load(std::memory_order_relaxed);
-    // A new emulation session starts the count again (Nvidia::Module).
-    const u64 presents =
-        presents_now >= g_window_presents ? presents_now - g_window_presents : presents_now;
+    const u64 presents = g_presents.load(std::memory_order_relaxed) - g_window_presents;
     const double frames = static_cast<double>(std::max<u64>(presents, 1));
     const double seconds = static_cast<double>(now_ns - g_window_ns) / 1e9;
     const double ns_per_tick = static_cast<double>(now_ns - g_window_ns) /
@@ -262,7 +260,7 @@ void MaybeReport(u64 now) {
     }
     g_window_ticks = now;
     g_window_ns = SteadyNs();
-    g_window_presents = Core::g_nx2_present_count.load(std::memory_order_relaxed);
+    g_window_presents = g_presents.load(std::memory_order_relaxed);
     g_next_report.store(now + ReportSeconds * Common::g_wall_clock.GetGuestCNTFRQ(),
                         std::memory_order_relaxed);
 }
@@ -351,6 +349,7 @@ void OnStateChanged(KThread* thread, s64 now, bool was_waiting, bool now_runnabl
 }
 
 void OnPresent(KThread* client) {
+    g_presents.fetch_add(1, std::memory_order_relaxed);
     if (Counters* c = Get(client)) {
         AddShared(c->totals[Presents], 1);
     }
