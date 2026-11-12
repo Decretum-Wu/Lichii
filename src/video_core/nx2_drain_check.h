@@ -591,6 +591,17 @@ enum class Resume : u32 {
     Count,
 };
 
+/// How the GPU thread's waits for suspended channels ended (gpu_thread.cpp).
+enum class FrontWait : u32 {
+    Hardware,     ///< Waits in hardware (Nx2PendingWake::Poll)
+    Os,           ///< ...and in the OS (Nx2PendingWake::Sleep)
+    Woken,        ///< Of those: ended by a wake (Nx2PendingWake)
+    Stored,       ///< ...by a store to a word a channel waits on (WordStored)
+    FoundPolling, ///< Channels found moving after a timed-out hardware wait
+    FoundLate,    ///< ...and after a timed-out OS wait
+    Count,
+};
+
 using Source = Tegra::Nx2SemaphoreWaiters::Source;
 
 struct State {
@@ -616,6 +627,7 @@ struct State {
     u64 suspended_never_noted{}; ///< No release the front sent: QMD releases, the CPU
     std::array<u64, static_cast<size_t>(Resume::Count)> resumes{};
     std::array<u64, static_cast<size_t>(Source::Count)> latches{};
+    std::array<u64, static_cast<size_t>(FrontWait::Count)> front_waits{};
     u64 resumes_after_flush{};
     u64 wait_ns{};
     u64 wait_max_ns{};
@@ -852,6 +864,13 @@ inline void NoteResume(Resume how, Source latch_source, bool after_flush,
     }
 }
 
+/// The GPU thread, waiting for suspended channels.
+inline void NoteFrontWait(FrontWait what) {
+    if (g_enabled) {
+        ++Get().front_waits[static_cast<size_t>(what)];
+    }
+}
+
 /// The front, between commands.
 inline void MaybeReport() {
     if (!g_enabled) {
@@ -898,6 +917,13 @@ inline void MaybeReport() {
              resumes[2], resumes[3], state.resumes_after_flush,
              static_cast<double>(state.wait_ns) / 1e6, static_cast<double>(state.wait_max_ns) / 1e6,
              state.waits_over_1ms);
+    const auto& front = state.front_waits;
+    LOG_INFO(HW_GPU,
+             "GPU thread waits for suspended channels in {:.1f} s (EDEN_NX2_ACQUIRE_STATS): {} in "
+             "hardware, {} in the OS, {} ended by a wake, {} by a store to a semaphore word; "
+             "channels that moved without either: {} found while polling, {} found late in the OS "
+             "wait",
+             seconds, front[0], front[1], front[2], front[3], front[4], front[5]);
     const auto& lost = state.qmd_lost;
     const auto& notes = state.qmd_notes;
     const auto& syncs = state.qmd_syncs;

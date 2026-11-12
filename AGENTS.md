@@ -32,6 +32,15 @@ Users report game bugs with Lichii logs (`eden_log.txt`, `eden_log.txt.old`). Ea
 | 0100606026F12000 | Final Fantasy Resonance |
 | 010019A01E2F2000 | Metroid Prime 4: Beyond - Nintendo Switch 2 Edition |
 | 0100152000022000 | Mario Kart 8 Deluxe (Switch 1) |
+| 040032B023CA4000 | Orbitals |
+| 0400921025B32000 | Sonic Frontiers (Switch 2 Edition) |
+| 04003F40232DE000 | Hyrule Warriors: Age of Imprisonment |
+| 040015100B514001 | Super Mario Bros. Wonder - Nintendo Switch 2 Edition + Meetup in Bellabel Park |
+| 01004D300C5AE000 | Kirby and the Forgotten Land (Switch 1) |
+| 01007EF00011E000 | The Legend of Zelda: Breath of the Wild (Switch 1) |
+| 0100F2C0115B6000 | The Legend of Zelda: Tears of the Kingdom (Switch 1) |
+| 01006D0017F7A000 | Mario & Luigi: Brothership (Switch 1) |
+| 010051F0207B2000 | Tomodachi Life: Living the Dream (Switch 1) |
 
 Add ids here when a report identifies a new game.
 
@@ -86,6 +95,7 @@ Use these before guessing. All are off unless the variable is set; pass them as 
 | Video playback | `EDEN_NX2_VDEC_TRACE=1`, `EDEN_NX2_VDEC_DUMP=<dir>` | Decoder submit, decode and composite trace; decoded frames. |
 | Performance and frame pacing | `EDEN_NX2_GPU_PROFILE=1`, `EDEN_DKB_FRAME_TRACE=1` | GPU thread, back thread and Vulkan worker time per second by zone, GPU waits by the zone they happen in, waits for the back by site, and spin mutex contention (with the lock and the thread that held it); per-present interval, CPU and fence timing. The #805 integration also logs `GPU waits in ... s` every 10 s (with `EDEN_NX2_GPU_PROFILE=1` or `EDEN_NX2_GPU_WAITS=1`) with guest reads, reactive flushes and front/back waits; it retains #805's read tracing rather than the port's duplicate async-readback counters. |
 | HostTiming CPU or timer lateness (late guest timers, audio or vsync jitter) | `EDEN_NX2_HOSTTIMING_STATS=1`, or live with the debug server's `host_timing {"stats": true}` | One `HostTiming wait` line per second: waits, waits woken by newly scheduled events, OS sleep and `WaitFor` time (ms/s), how late timed waits ended and how late events fired (p50/p99/max µs), and the thread's CPU %. |
+| Guest cores' idle CPU or wake-up latency (time in PhysicalCore::Idle) | `EDEN_NX2_IDLE_STATS=1` | One `Guest core N idle` line per core every 10 s: idle periods, how many the poll caught, the average time polled, how many blocked and how long those took to wake after the interrupt (p50/p99 µs), and the current poll. |
 | Shader stutter or not, boot and cache costs | `EDEN_NX2_STUTTER_TRACE=1` | One `Nx2Stutter` line per frame presented over 33 ms after the last, with its top cause (gfx/compute pipeline built on the GPU thread, pipeline wait, shader capture, texture, buffer, query/fence, present, other) and each GPU thread's ms; `Nx2StutterSummary` every 10 s (frame-time histogram, builds, cache lookups, cache file size); `Nx2Boot` boot phases with commit and peak commit. Frames over `EDEN_NX2_STUTTER_DETAIL_MS` (default 50) also get `Nx2StutterDetail`: each GPU thread's eight largest zones (ms/calls) and the rare sites that ran (device memory allocate/free, staging, buffer and image create/delete/GC, synchronous downloads, `Scheduler::Finish`), with each run over 2 ms by thread; the summary adds the sites per 10 s. The category totals in the summary are every frame's steady cost, not hitch time. `python3 -I tools/nx2/cache_metrics.py parse <log>` turns a log into JSON, `compare` A/B runs; `tools/nx2/cache_bench.py` runs the cold/warm matrix on the PC. |
 | Command corruption or pop-in | `EDEN_NX2_PB_CHECK=1`; A/B with `EDEN_NX2_PB_SNAPSHOT=0` or `EDEN_NX2_FETCH_DRAIN=1` | How many pushbuffer entries change between submit and parse. |
 | Commands read from memory instead of their submit-time copy (frames ahead, #392) | `EDEN_NX2_LIVE_READ_CHECK=1` | Every 10000 such entries, `Entries parsed from memory (<reason>): N checked, M differ` per reason, plus the first four differing entries per reason. GPU-written pages differ by design (the GPU rewrote them after submit), so compare against a frames-ahead-0 run. |

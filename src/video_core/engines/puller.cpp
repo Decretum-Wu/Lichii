@@ -333,6 +333,23 @@ bool PollPassStands(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire
     return PassStands(dma_pusher, acquire, waiter, device, true, how);
 }
 
+// Registers `waiter` for the releases that meet `acquire`, whose word is at `device`. The word in
+// memory is watched for the guest CPU's stores (Nx2SemaphoreWaiters::WordStored).
+void AddWaiter(DmaPusher& dma_pusher, const void* waiter, const Puller::PendingAcquire& acquire,
+               u64 device) {
+    u32* word = reinterpret_cast<u32*>(dma_pusher.memory_manager.GetPointer(acquire.address));
+    if (reinterpret_cast<uintptr_t>(word) % alignof(u32) != 0) {
+        word = nullptr;
+    }
+    if (!Nx2SemaphoreWaiters::Get().Add(waiter, device, acquire.value, acquire.operation, word)) {
+        if (static std::atomic<u32> full{}; full.fetch_add(1) < 8) {
+            LOG_ERROR(HW_GPU, "Channel {} waits on semaphore {:#x} unlatched: {} channels wait",
+                      dma_pusher.channel_state.bind_id, acquire.address,
+                      Nx2SemaphoreWaiters::MaxWaiters);
+        }
+    }
+}
+
 // TEST: a suspended acquire resumes (EDEN_NX2_ACQUIRE_STATS).
 void NoteResumed(const void* waiter, const Puller::PendingAcquire& acquire,
                  VideoCommon::Nx2AcquireStats::Resume how) {
@@ -691,7 +708,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         // even if a later one overwrites it.
         auto& waiters = Nx2SemaphoreWaiters::Get();
         if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(acquire.address)) {
-            waiters.Add(this, *device, acquire.value, acquire.operation);
+            AddWaiter(dma_pusher, this, acquire, *device);
         }
         ReleaseFences(dma_pusher);
         if (!waiters.Latched(this) && !acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
@@ -788,7 +805,7 @@ bool Puller::AcquireWithoutDrain(DmaPusher& dma_pusher, PendingAcquire& acquire)
     }
     // Suspended: a release the back runs latches the waiter, registered before any fence work,
     // and the polls see the others in memory or in the view (PollWithoutDrain).
-    Nx2SemaphoreWaiters::Get().Add(this, *device, acquire.value, acquire.operation);
+    AddWaiter(dma_pusher, this, acquire, *device);
     MaybeReleaseFences(dma_pusher, acquire);
     pending_acquire = acquire;
     dma_pusher.suspensions.fetch_add(1, std::memory_order_release);

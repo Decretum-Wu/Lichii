@@ -1368,6 +1368,8 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
     // This network backend supports IPv4 only. Let callers fall back instead of returning a
     // descriptor backed by a failed host socket.
     if (domain != Domain::Unspecified && domain != Domain::INET) {
+        LOG_INFO(Service, "Refusing socket domain={} type={} protocol={}: only IPv4 is supported",
+                 static_cast<u32>(domain), static_cast<u32>(type), static_cast<u32>(protocol));
         return {-1, Errno::AFNOSUPPORT};
     }
 

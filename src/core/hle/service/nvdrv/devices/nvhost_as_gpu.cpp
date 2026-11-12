@@ -343,8 +343,13 @@ void nvhost_as_gpu::Nx2BackSparse(u64 gpu_address, u64 cpu_address, u64 size) {
     if (size > region_size || gpu_address - start > region_size - size) {
         return;
     }
-    system.Host1x().MemoryManager().Map(device_address + (gpu_address - start), cpu_address, size,
-                                        session->asid, true);
+    auto& smmu = system.Host1x().MemoryManager();
+    const DAddr device = device_address + (gpu_address - start);
+    if (cpu_address == 0) {
+        smmu.KeepWrites(device, size);
+        return;
+    }
+    smmu.Map(device, cpu_address, size, session->asid, true);
 }
 
 void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {

@@ -377,6 +377,8 @@ DmaPusher::~DmaPusher() {
 
 bool DmaPusher::CanResumeAcquire() {
     if (pending_list_tick) {
+        // Before the check: a tick the host GPU passes after it wakes the GPU thread.
+        Nx2PendingWake::Get().WaitForGpuTick(*pending_list_tick);
         return rasterizer->IsGpuTickDone(*pending_list_tick);
     }
     return puller.CanResumeAcquire(*this);
