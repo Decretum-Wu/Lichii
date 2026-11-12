@@ -178,6 +178,10 @@ public:
     virtual void Nx2KeepListWords([[maybe_unused]] u64 keep_id, [[maybe_unused]] GPUVAddr address,
                                   [[maybe_unused]] u64 hash,
                                   [[maybe_unused]] std::span<const u32> real) {}
+    /// On the split's back, before the inline write that carries it: the word at `device_addr`
+    /// will be the marker of word `index` of list `keep_id`, to be patched from its kept copy.
+    virtual void Nx2ExpectKeptWord([[maybe_unused]] DAddr device_addr,
+                                   [[maybe_unused]] u64 keep_id, [[maybe_unused]] u32 index) {}
     /// On the split's back: the words kept as `keep_id`, after waiting for the host GPU's copy.
     /// False if none are kept, or a later list took the slot.
     [[nodiscard]] virtual bool Nx2ReadKeptListWords([[maybe_unused]] u64 keep_id,

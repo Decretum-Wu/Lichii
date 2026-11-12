@@ -1642,6 +1642,15 @@ void KeplerCompute::FrontApply(FrontState& fs, u32 method, u32 argument) {
         if (const auto* const list = grid_marker->Find(argument)) {
             fs.upload_lists.push_back(list->keep_id);
         }
+    } else if (method == 0x107 && grid_marker != nullptr) {
+        // The inline QMD ProcessNativeMethod writes: its grid words are the grid registers'.
+        const GPUVAddr qmd = ((GPUVAddr{fs.registers[0xc6]} << 32) | fs.registers[0xc7]) << 8;
+        for (u32 i = 0; i < 3; ++i) {
+            const u32 word = fs.registers[Nx2ListGrid::QmdGridRegister + i];
+            if (Nx2ListGrid::IsMarker(word)) {
+                FrontExpectKeptWord(qmd + (12 + i) * sizeof(u32), word);
+            }
+        }
     }
     fs.upload.Apply(method, argument);
     if (method == Nx2ListGrid::DataUploadMethod && !fs.upload.InFlight()) {
@@ -1894,6 +1903,20 @@ void KeplerCompute::FrontTakeListGrid(VideoCommon::GpuSplit& split, u32 method, 
     }
 }
 
+void KeplerCompute::FrontExpectKeptWord(GPUVAddr address, u32 marker) {
+    const auto* const list = grid_marker->Find(marker);
+    if (list == nullptr) {
+        return;
+    }
+    VideoCommon::GpuSplit::Get().Defer(
+        [this, address, keep_id = list->keep_id, index = Nx2ListGrid::MarkerIndex(marker)] {
+            if (const auto device = memory_manager.GpuToCpuAddress(address)) {
+                rasterizer->Nx2ExpectKeptWord(*device, keep_id, index);
+            }
+        },
+        0, VideoCommon::GpuSplit::Writes::Noted);
+}
+
 void KeplerCompute::FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState& fs,
                                        MacroEngine& macro, u32 start) {
     namespace ListGrid = Nx2ListGrid;
@@ -1923,6 +1946,10 @@ void KeplerCompute::FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState&
         return;
     }
     if (admission == ListGrid::Admission::Moves) {
+        // The back patches exactly the upload words the markers go to (PlanPatches).
+        for (const auto& [address, marker] : ListGrid::UploadMarkerWords(result, fs.upload)) {
+            FrontExpectKeptWord(address, marker);
+        }
         if (ListGrid::g_verify) {
             // The same call on the real words, where every list's were read the old way.
             const auto real_word = [this](u32 marker) -> std::optional<u32> {

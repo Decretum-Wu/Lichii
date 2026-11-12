@@ -323,9 +323,6 @@ public:
     /// empty.
     void KeepListWords(u64 keep_id, VkBuffer source, VkDeviceSize offset, u64 hash,
                        std::span<const u32> real);
-    [[nodiscard]] bool HasKeptLists() const noexcept {
-        return static_cast<bool>(list_keep_buffer);
-    }
     /// The keep id ending in `keep_bits` whose slot still holds its words.
     [[nodiscard]] std::optional<u64> FindKeptList(u32 keep_bits) const;
     /// The kept words, after waiting for their copy. False if the slot holds another list.

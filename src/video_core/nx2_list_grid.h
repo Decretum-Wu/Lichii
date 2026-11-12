@@ -513,6 +513,10 @@ struct UploadState {
     [[nodiscard]] bool InFlight() const {
         return offset < Size();
     }
+    /// Where the next data word lands in memory (a linear upload).
+    [[nodiscard]] u64 NextWordAddress() const {
+        return address + offset / line_length * pitch + offset % line_length;
+    }
     /// Whether the next data word, a marker, lands where the back patches it: in a linear
     /// upload, inside one line, 4-byte aligned in memory (RasterizerVulkan::
     /// AccelerateInlineToMemory finds aligned words only).
@@ -520,9 +524,7 @@ struct UploadState {
         if ((exec & 1) == 0 || line_length == 0 || offset + 4 > Size()) {
             return false;
         }
-        const u64 line = offset / line_length;
-        const u64 in_line = offset % line_length;
-        return in_line + 4 <= line_length && ((address + line * pitch + in_line) & 3) == 0;
+        return offset % line_length + 4 <= line_length && (NextWordAddress() & 3) == 0;
     }
 };
 
@@ -959,6 +961,20 @@ enum class Admission {
     return result.read_grid ? Admission::Moves : Admission::Unaffected;
 }
 
+/// Where an admitted call (Admit: Moves) puts its markers in inline upload data: each word's
+/// address in memory, with the marker. Data that only equals a marker is not among them.
+[[nodiscard]] inline std::vector<std::pair<u64, u32>> UploadMarkerWords(const DryRunResult& result,
+                                                                       UploadState upload) {
+    std::vector<std::pair<u64, u32>> words;
+    for (const Emit& emit : result.emits) {
+        if (emit.grid && emit.method == DataUploadMethod) {
+            words.emplace_back(upload.NextWordAddress(), emit.value);
+        }
+        upload.Apply(emit.method, emit.value);
+    }
+    return words;
+}
+
 /// A marker an inline write carries, and the list it stands for.
 struct KeptPatch {
     u32 offset; ///< Byte offset in the write
@@ -966,12 +982,13 @@ struct KeptPatch {
     u32 index; ///< The list word it stands for
 };
 
-/// The markers among the aligned words of an inline write of `data` to `address` whose list
-/// `keep_of(bits)` still knows (it gives the full keep id, or nothing): the words the back copies
-/// the kept words over.
-template <typename KeepOf>
-[[nodiscard]] std::vector<KeptPatch> PlanPatches(GPUVAddr address, std::span<const u8> data,
-                                                 KeepOf&& keep_of) {
+/// The words of an inline write of `data` to device address `address` the back copies kept
+/// words over: those the front said would carry a marker there (`expected(address)`: keep id
+/// and word, RasterizerInterface::Nx2ExpectKeptWord) and that hold exactly that marker. A data
+/// word that only looks like a marker (a buffer address can) is never patched.
+template <typename Expected>
+[[nodiscard]] std::vector<KeptPatch> PlanPatches(u64 address, std::span<const u8> data,
+                                                 Expected&& expected) {
     std::vector<KeptPatch> patches;
     for (size_t offset = (4 - (address & 3)) & 3; offset + 4 <= data.size(); offset += 4) {
         u32 word;
@@ -979,8 +996,9 @@ template <typename KeepOf>
         if (!IsMarker(word)) {
             continue;
         }
-        if (const std::optional<u64> keep_id = keep_of(MarkerKeepBits(word))) {
-            patches.push_back({static_cast<u32>(offset), *keep_id, MarkerIndex(word)});
+        const std::optional<std::pair<u64, u32>> marker = expected(address + offset);
+        if (marker && word == Marker(marker->first, marker->second)) {
+            patches.push_back({static_cast<u32>(offset), marker->first, marker->second});
         }
     }
     return patches;

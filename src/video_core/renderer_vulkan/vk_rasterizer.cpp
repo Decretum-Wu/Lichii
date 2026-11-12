@@ -2584,6 +2584,10 @@ void RasterizerVulkan::Nx2KeepListWords(u64 keep_id, GPUVAddr address, u64 hash,
                     keep_id, address, kept[0], kept[1], kept[2], real[0], real[1], real[2]));
 }
 
+void RasterizerVulkan::Nx2ExpectKeptWord(DAddr device_addr, u64 keep_id, u32 index) {
+    nx2_expected_words[device_addr] = {keep_id, index};
+}
+
 bool RasterizerVulkan::Nx2ReadKeptListWords(u64 keep_id, std::span<u32> words) {
     return buffer_cache_runtime.ReadKeptListWords(keep_id, words);
 }
@@ -3765,10 +3769,18 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
     }
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
     // Markers of a list-fed grid (nx2_list_grid.h): its kept words go over them.
-    if (buffer_cache_runtime.HasKeptLists()) {
+    if (!nx2_expected_words.empty()) {
         const auto data = memory.first((std::min)(copy_size, memory.size()));
         const auto patches = Tegra::Nx2ListGrid::PlanPatches(
-            address, data, [this](u32 bits) { return buffer_cache_runtime.FindKeptList(bits); });
+            *cpu_addr, data, [this](DAddr word) -> std::optional<std::pair<u64, u32>> {
+                const auto it = nx2_expected_words.find(word);
+                return it != nx2_expected_words.end() ? std::optional{it->second}
+                                                      : std::nullopt;
+            });
+        for (DAddr word = (*cpu_addr + 3) & ~DAddr{3}; word + 4 <= *cpu_addr + data.size();
+             word += 4) {
+            nx2_expected_words.erase(word);
+        }
         if (!patches.empty()) {
             InlineKeptWords(*cpu_addr, data, patches);
             return;

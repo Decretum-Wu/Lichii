@@ -303,6 +303,8 @@ private:
     /// The macro at `start` of `engine`'s current code: its CodeHash and, for an HleMacros
     /// entry, where it stores its parameters.
     const FrontMacro& FrontMacroInfo(FrontState& state, const MacroEngine& engine, u32 start);
+    /// Tells the back that the word at `address` will carry `marker`, to patch from its kept copy.
+    void FrontExpectKeptWord(GPUVAddr address, u32 marker);
     /// Before a macro runs while markers are live: runs it dry and gives it the real words
     /// unless it only moves the markers (Nx2ListGrid::Admit).
     void FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState& state, MacroEngine& engine,

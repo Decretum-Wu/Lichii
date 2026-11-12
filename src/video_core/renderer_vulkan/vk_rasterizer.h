@@ -9,6 +9,7 @@
 #include <array>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <boost/container/static_vector.hpp>
@@ -120,6 +121,7 @@ public:
     [[nodiscard]] bool Nx2ListGridSupported() const override;
     void Nx2KeepListWords(u64 keep_id, GPUVAddr address, u64 hash,
                           std::span<const u32> real) override;
+    void Nx2ExpectKeptWord(DAddr device_addr, u64 keep_id, u32 index) override;
     [[nodiscard]] bool Nx2ReadKeptListWords(u64 keep_id, std::span<u32> words) override;
     [[nodiscard]] std::optional<u64> Nx2FindKeptWord(DAddr device_addr, u32 marker) override;
     bool MustFlushRegion(DAddr addr, u64 size,
@@ -224,6 +226,8 @@ private:
     /// with the kept words copied over the markers on the host GPU.
     void InlineKeptWords(DAddr device_addr, std::span<const u8> data,
                          std::span<const Tegra::Nx2ListGrid::KeptPatch> patches);
+    /// Nx2ExpectKeptWord's words not yet written: keep id and word by device address (back).
+    std::unordered_map<DAddr, std::pair<u64, u32>> nx2_expected_words;
 
     /// Records the dynamic state of the draw being prepared with `pipeline` (null for
     /// DrawTexture's blit).

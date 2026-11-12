@@ -151,6 +151,86 @@ ListGrid::DryRunResult Run(std::span<const u32> code, u32 start, std::span<const
         });
 }
 
+// Mario Kart World's two readers of the words 055743923e135e09 stores in the data RAM, with the
+// parameters of a call each (EDEN_NX2_LIST_MACRO_TRACE dumps). 70d6cdec2430674c (method 0xe76)
+// moves them into the inline QMD's grid registers.
+constexpr std::array<u32, 105> MkwQmdReader{
+    0x00000003, 0x18c0000b, 0x3191fb00, 0x00000087, 0x190f8008, 0x31917b00, 0x0078431f, 0x18c00008,
+    0xb1907b00, 0x40600003, 0x18c00000, 0x31810066, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003,
+    0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300,
+    0x40600003, 0x18c00000, 0x318c0300, 0x20200003, 0x01c00000, 0x302c0300, 0x30200003, 0x18c00000,
+    0x300c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003,
+    0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300,
+    0x40600003, 0x18c00000, 0x318c0300, 0x20200093, 0x19c78008, 0xf19c7b00, 0x2020009b, 0x19c78009,
+    0x719c7b00, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003,
+    0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300,
+    0x40600003, 0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003, 0x18c00000,
+    0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x40600003,
+    0x18c00000, 0x318c0300, 0x40600003, 0x18c00000, 0x318c0300, 0x50600003, 0x18c00000, 0x318c0300,
+    0x50a00003, 0x18c00000, 0x318c0300, 0x50a00003, 0x18c00000, 0x318c0301, 0x40600003, 0x18c00000,
+    0x318c0300
+};
+constexpr std::array<u32, 53> MkwQmdParameters{
+    0x21457cf2, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000060, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x04030000, 0x21457ccc, 0x80000009, 0x34040000,
+    0x0040ff30, 0x00010001, 0x00020e19, 0x00000000, 0x00000000, 0x00000000, 0x05650010, 0x44800021,
+    0x00000001, 0x00000000, 0x457cf300, 0x00800021, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x7e8f1300, 0x00800022, 0x7e8f2300, 0x00800022, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x4ca5d300, 0x00000011, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0xff40ff10, 0x00000000, 0x00000b07
+};
+// e2203512be240fe5 (method 0xe7a) uploads them, with buffer addresses, to compute constant
+// buffer 0 at +0x4/+0x8/+0xc.
+constexpr std::array<u32, 33> MkwUploadReader{
+    0x0000068f, 0x980c0000, 0x31c10300, 0x00184183, 0x18c00000, 0xb2100300, 0x60200007, 0x18c003e8,
+    0x018c4300, 0x40600003, 0x18c00000, 0x318c0300, 0x00d40107, 0x18c0001b, 0x318c0300, 0x00540840,
+    0x58c4001b, 0x718c0300, 0x20200087, 0x19c78008, 0x319c7b00, 0x0040008b, 0x19c78000, 0xb01c5f00,
+    0x40600003, 0x18c00000, 0x318c0300, 0x00000003, 0x18c00000, 0x318c0301, 0x00000003, 0x18c00000,
+    0x318c0300
+};
+constexpr std::array<u32, 31> MkwUploadParameters{
+    0x00800070, 0x00000021, 0x457cf300, 0x7e8f1300, 0x00000022, 0x00000080, 0x00000000, 0x7e8f2300,
+    0x00000022, 0x00000100, 0x00000000, 0x7eb0e000, 0x00000022, 0x00571800, 0x00000000, 0x7fafe000,
+    0x00000022, 0x00000bc0, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x7eafa840,
+    0x00000022, 0x00001600, 0x00000000, 0x7eafbe40, 0x00000022, 0x00000040, 0x00000000
+};
+
+// A call of one of them on the markers, the data RAM otherwise as captured.
+ListGrid::DryRunResult RunMkw(std::span<const u32> code, std::span<const u32> parameters) {
+    ListGrid::DataRam ram{};
+    ram[0x2c] = 1;
+    for (u32 i = 0; i < 3; ++i) {
+        ram[Cells[i]] = ListGrid::Marker(KeepId, i);
+    }
+    auto state = MarkerState();
+    return ListGrid::DryRun(
+        code, 0, parameters, ram, Cells, state.Marked(ram), [](u32) { return 0U; },
+        [](u32, u32) { return false; });
+}
+
+// The words the back patches in an inline write of `words` to `address`, the front having said
+// `markers` (address, marker) land there: offset and list word of each.
+std::vector<std::pair<u32, u32>> Patched(u64 address, std::span<const u32> words,
+                                         const std::vector<std::pair<u64, u32>>& markers) {
+    std::vector<u8> data(words.size_bytes());
+    std::memcpy(data.data(), words.data(), data.size());
+    const auto patches = ListGrid::PlanPatches(
+        address, data, [&markers](u64 word) -> std::optional<std::pair<u64, u32>> {
+            for (const auto& [at, marker] : markers) {
+                if (at == word) {
+                    return std::pair{KeepId, ListGrid::MarkerIndex(marker)};
+                }
+            }
+            return std::nullopt;
+        });
+    std::vector<std::pair<u32, u32>> patched;
+    for (const auto& patch : patches) {
+        CHECK(patch.keep_id == KeepId);
+        patched.emplace_back(patch.offset, patch.index);
+    }
+    return patched;
+}
+
 } // namespace
 
 TEST_CASE("List grid recognizes the store macro by its hash", "[list_grid]") {
@@ -326,23 +406,34 @@ TEST_CASE("List grid resolves a list's markers before its kept slot is reused", 
     CHECK(ListGrid::g_slot_owners[next % ListGrid::KeptSlots].keep_id == 0);
 }
 
-TEST_CASE("List grid patches the markers of kept lists", "[list_grid]") {
-    const std::array<u32, 6> words{1, ListGrid::Marker(KeepId, 0), ListGrid::Marker(KeepId, 2), 2,
-                                   ListGrid::Marker(9, 1), 3};
+TEST_CASE("List grid patches only the words the front expects", "[list_grid]") {
+    const u64 list = 0x10000 + KeepId;
+    const std::array<u32, 6> words{1, ListGrid::Marker(list, 0), ListGrid::Marker(list, 2), 2,
+                                   ListGrid::Marker(list, 1), 3};
     std::array<u8, sizeof(words)> data{};
     std::memcpy(data.data(), words.data(), sizeof(words));
-    const auto keep_of = [](u32 bits) -> std::optional<u64> {
-        return bits == KeepId ? std::optional<u64>{0x10000 + KeepId} : std::nullopt;
+    // Words 1 and 2 carry the list's markers; word 4 only looks like one.
+    const auto expected = [list](u64 address) -> std::optional<std::pair<u64, u32>> {
+        switch (address) {
+        case 0x1004:
+            return std::pair{list, 0U};
+        case 0x1008:
+            return std::pair{list, 2U};
+        case 0x100c:
+            return std::pair{list, 1U}; // A word that holds no marker after all
+        default:
+            return std::nullopt;
+        }
     };
-    const auto patches = ListGrid::PlanPatches(0x1000, data, keep_of);
+    const auto patches = ListGrid::PlanPatches(0x1000, data, expected);
     REQUIRE(patches.size() == 2);
     CHECK(patches[0].offset == 4);
-    CHECK(patches[0].keep_id == 0x10000 + KeepId);
+    CHECK(patches[0].keep_id == list);
     CHECK(patches[0].index == 0);
     CHECK(patches[1].offset == 8);
     CHECK(patches[1].index == 2);
     // Only words aligned in memory.
-    CHECK(ListGrid::PlanPatches(0x1002, data, keep_of).empty());
+    CHECK(ListGrid::PlanPatches(0x1002, data, expected).empty());
 }
 
 TEST_CASE("List grid dispatches a list's markers from its kept words", "[list_grid]") {
@@ -390,4 +481,74 @@ TEST_CASE("List grid verify compares a run on the markers with the real run", "[
     const Pairs unknown{{0x6d, ListGrid::Marker(KeepId, 1)}};
     CHECK_FALSE(ListGrid::MatchesRealRun(unknown, Pairs{{0x6d, ListGrid::Marker(KeepId, 1)}},
                                          real_word));
+}
+
+TEST_CASE("List grid admits Mario Kart World's inline QMD reader", "[list_grid]") {
+    CHECK(Hash(MkwQmdReader, 0) == 0x70d6cdec2430674c);
+    constexpr u64 qmd_address = u64{MkwQmdParameters[0]} << 8;
+    const auto check = [](std::span<const u32> parameters) {
+        const auto result = RunMkw(MkwQmdReader, parameters);
+        REQUIRE(result.completed);
+        CHECK(ListGrid::Admit(result, {}) == ListGrid::Admission::Moves);
+        std::vector<std::pair<u32, u32>> grid;
+        std::array<u32, 64> qmd{};
+        for (const auto& emit : result.emits) {
+            if (emit.grid) {
+                grid.emplace_back(emit.method, emit.value);
+            }
+            if (emit.method - 0xc8 < qmd.size()) {
+                qmd[emit.method - 0xc8] = emit.value;
+            }
+        }
+        // Each marker into the grid register of its word, then the QMD is written (0x107).
+        CHECK(grid == std::vector<std::pair<u32, u32>>{{0xd4, ListGrid::Marker(KeepId, 0)},
+                                                       {0xd5, ListGrid::Marker(KeepId, 1)},
+                                                       {0xd6, ListGrid::Marker(KeepId, 2)}});
+        CHECK(result.emits.back().method == 0x107);
+        // As KeplerCompute::FrontApply expects them at 0x107: the grid words of the QMD.
+        std::vector<std::pair<u64, u32>> markers;
+        for (u32 i = 0; i < 3; ++i) {
+            if (ListGrid::IsMarker(qmd[12 + i])) {
+                markers.emplace_back(qmd_address + (12 + i) * 4, qmd[12 + i]);
+            }
+        }
+        CHECK(Patched(qmd_address, qmd, markers) ==
+              std::vector<std::pair<u32, u32>>{{48, 0}, {52, 1}, {56, 2}});
+    };
+    check(MkwQmdParameters);
+    // A buffer address that looks like the list's marker (QMD word 38) stays as it is.
+    auto parameters = MkwQmdParameters;
+    REQUIRE(parameters[32] == 0x7e8f1300);
+    parameters[32] = ListGrid::Marker(KeepId, 1);
+    check(parameters);
+}
+
+TEST_CASE("List grid admits Mario Kart World's constant buffer reader", "[list_grid]") {
+    CHECK(Hash(MkwUploadReader, 0) == 0xe2203512be240fe5);
+    constexpr u64 cbuf = 0x21457cf300;
+    const auto check = [](std::span<const u32> parameters) {
+        const auto result = RunMkw(MkwUploadReader, parameters);
+        REQUIRE(result.completed);
+        CHECK(ListGrid::Admit(result, {}) == ListGrid::Admission::Moves);
+        // The markers go to constant buffer 0 at +0x4/+0x8/+0xc, after the first word.
+        const auto markers = ListGrid::UploadMarkerWords(result, {});
+        CHECK(markers == std::vector<std::pair<u64, u32>>{{cbuf + 0x4, ListGrid::Marker(KeepId, 0)},
+                                                          {cbuf + 0x8, ListGrid::Marker(KeepId, 1)},
+                                                          {cbuf + 0xc, ListGrid::Marker(KeepId, 2)}});
+        std::vector<u32> data;
+        for (const auto& emit : result.emits) {
+            if (emit.method == ListGrid::DataUploadMethod) {
+                data.push_back(emit.value);
+            }
+        }
+        REQUIRE(data.size() == 32);
+        CHECK(Patched(cbuf, data, markers) ==
+              std::vector<std::pair<u32, u32>>{{4, 0}, {8, 1}, {12, 2}});
+    };
+    check(MkwUploadParameters);
+    // A buffer address that looks like the list's marker (upload word 4) stays as it is.
+    auto parameters = MkwUploadParameters;
+    REQUIRE(parameters[3] == 0x7e8f1300);
+    parameters[3] = ListGrid::Marker(KeepId, 0);
+    check(parameters);
 }
