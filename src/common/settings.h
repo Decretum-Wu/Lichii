@@ -730,6 +730,14 @@ struct Values {
     SwitchableSetting<bool> mkw_dynamic_fps{linkage, false, "mkw_dynamic_fps",
                                             Category::RendererAdvanced};
 
+    // Hyrule Warriors: Age of Imprisonment: 30 FPS at normal game speed while 60 can't be held,
+    // or always (core/hle/service/nx2_frame_interval.h).
+    SwitchableSetting<bool> hyrule_dynamic_fps{linkage, false, "hyrule_dynamic_fps",
+                                               Category::RendererAdvanced, Specialization::Default,
+                                               true, true};
+    SwitchableSetting<bool> hyrule_30fps{linkage, false, "hyrule_30fps", Category::RendererAdvanced,
+                                         Specialization::Default, true, true};
+
     SwitchableSetting<bool> use_reactive_flushing{linkage,
 #ifdef __ANDROID__
                                                   false,
@@ -1087,6 +1095,18 @@ struct Values {
                                         Category::Network};
     Setting<std::string> nextendo_client_id{linkage, "nxc_eHeSgpYwMkFV", "nextendo_client_id",
                                            Category::Network};
+    // Host redirect to a server the user runs (core/internal_network/local_redirect.h). Off: the
+    // online_redirect_* values are ignored.
+    Setting<bool> online_service_redirect{linkage, false, "online_service_redirect",
+                                          Category::Network};
+    Setting<std::string> online_redirect_hosts{linkage, std::string(), "online_redirect_hosts",
+                                               Category::Network};
+    Setting<std::string> online_redirect_server{linkage, std::string(), "online_redirect_server",
+                                                Category::Network};
+    Setting<std::string> online_redirect_ca{linkage, std::string(), "online_redirect_ca",
+                                            Category::Network};
+    Setting<bool> online_redirect_loopback_only{linkage, false, "online_redirect_loopback_only",
+                                                Category::Network};
 
     // WebService
     Setting<std::string> web_api_url{linkage, "api.ynet-fun.xyz", "web_api_url",
