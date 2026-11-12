@@ -108,3 +108,22 @@ TEST_CASE("NX2 fixed-period pacing matches the previous algorithm", "[core][nx2_
         }
     }
 }
+
+TEST_CASE("NX2 Mario Kart World waits only for the previous frame", "[core][nx2_present_pacer]") {
+    using Service::Nx2PresentWait;
+    using Service::SelectPresentWait;
+    constexpr std::uint64_t MarioKartWorld = 0x0400C3F00006E000ULL;
+    constexpr std::uint64_t DonkeyKongBananza = 0x040074A01BF12000ULL;
+    constexpr std::uint64_t OcarinaOfTime = 0x0400486024DEC000ULL;
+    constexpr std::uint64_t KirbyAirRiders = 0x040077201BE50000ULL;
+    REQUIRE(SelectPresentWait(-1, MarioKartWorld) == Nx2PresentWait::PreviousOnly);
+    REQUIRE(SelectPresentWait(-1, DonkeyKongBananza) == Nx2PresentWait::Current);
+    REQUIRE(SelectPresentWait(-1, OcarinaOfTime) == Nx2PresentWait::Previous);
+    REQUIRE(SelectPresentWait(-1, KirbyAirRiders) == Nx2PresentWait::CurrentUnlessGpuWaits);
+    // EDEN_NX2_FRAMES_AHEAD overrides every title.
+    for (const auto program_id :
+         {MarioKartWorld, DonkeyKongBananza, OcarinaOfTime, KirbyAirRiders}) {
+        REQUIRE(SelectPresentWait(0, program_id) == Nx2PresentWait::Current);
+        REQUIRE(SelectPresentWait(1, program_id) == Nx2PresentWait::Previous);
+    }
+}

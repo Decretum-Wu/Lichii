@@ -2017,19 +2017,8 @@ private:
             const char* value = std::getenv("EDEN_NX2_FRAMES_AHEAD");
             return value == nullptr ? -1 : value[0] == '1' ? 1 : 0;
         }();
-        // Donkey Kong Bananza's channels wait on each other every frame, so it always ran a frame
-        // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
-        // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
-        constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
-        // Ocarina waited ~12 ms a frame on its previous frame's fence here (#161).
-        constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
-        int frames_ahead = frames_ahead_setting;
-        const u64 app_program_id = system.GetApplicationProcessProgramID();
-        if (frames_ahead == -1 && app_program_id == DonkeyKongBananzaProgramId) {
-            frames_ahead = 0;
-        } else if (frames_ahead == -1 && app_program_id == OcarinaOfTimeProgramId) {
-            frames_ahead = 1;
-        }
+        const auto wait =
+            SelectPresentWait(frames_ahead_setting, system.GetApplicationProcessProgramID());
         const auto entered = std::chrono::steady_clock::now();
         static const bool fence_trace = [] {
             const char* value = std::getenv("EDEN_NX2_PRESENT_FENCE_TRACE");
@@ -2039,8 +2028,9 @@ private:
         if (fence_trace) {
             traced = TracePresentFence(~w[22], w[24], entered);
         }
-        const bool auto_reached = frames_ahead == -1 && WaitForFrame(~w[22], w[24], true);
-        if (frames_ahead == 1 || (frames_ahead == -1 && !auto_reached)) {
+        const bool gave_up =
+            wait == Nx2PresentWait::CurrentUnlessGpuWaits && !WaitForFrame(~w[22], w[24], true);
+        if (wait == Nx2PresentWait::Previous || wait == Nx2PresentWait::PreviousOnly || gave_up) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
                       ~w[22] < 192 ? system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(~w[22]) : 0U);
@@ -2051,14 +2041,14 @@ private:
             // commands, then crashes, with a slow GPU). Wait for this frame too then. Not when a
             // suspended channel brought us here: this frame can't finish before the present
             // returns.
-            const bool gpu_behind = frames_ahead == 1 && m_previous_fence_id < 192 &&
+            const bool gpu_behind = wait == Nx2PresentWait::Previous && m_previous_fence_id < 192 &&
                                     !system.Host1x().GetSyncpointManager().IsReadyGuest(
                                         m_previous_fence_id, m_previous_fence_value);
             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
             if (gpu_behind) {
                 WaitForFrame(~w[22], w[24]);
             }
-        } else if (frames_ahead == 0) {
+        } else if (wait == Nx2PresentWait::Current) {
             WaitForFrame(~w[22], w[24]);
         }
         m_previous_fence_id = ~w[22];
@@ -2069,7 +2059,7 @@ private:
         PaceToVblank(w[12], ctx.GetThread().GetOwnerProcess());
         const auto paced = std::chrono::steady_clock::now();
         if (traced) {
-            FinishPresentFence(*traced, frames_ahead == -1 && !auto_reached, paced);
+            FinishPresentFence(*traced, gave_up, paced);
         }
         if (Common::DkbFrameTrace::Enabled()) {
             const auto ms = [](auto duration) {
