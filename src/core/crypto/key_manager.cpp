@@ -361,16 +361,9 @@ void KeyManager::DeriveMissingMasterKeys() {
     }
 
     // A master key alone opens nothing: the key area keys and titlekek of its generation are what
-    // the NCA reader asks for. Fill them for every generation that lacks them, whether the master
-    // key was just derived or came from the key file.
+    // the NCA reader asks for. Fill in the ones each generation lacks, whether the master key was
+    // just derived or came from the key file; keys the files list are kept.
     for (u64 generation = 0; generation < GENERATION_COUNT; ++generation) {
-        if (!HasKey(S128KeyType::Master, generation)) {
-            continue;
-        }
-        if (HasKey(S128KeyType::KeyArea, generation, u64(KeyAreaKeyType::Application)) &&
-            HasKey(S128KeyType::Titlekek, generation)) {
-            continue;
-        }
         DeriveGeneralPurposeKeys(generation);
     }
 }

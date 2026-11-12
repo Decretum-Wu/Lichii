@@ -207,9 +207,11 @@ bool IsMissingKeyStatus(ResultStatus status) {
 }
 
 ResultStatus GetContainerProgramStatus(FileSys::VirtualFile file, FileType type) {
-    const auto nsp = OpenContainerAsNsp(std::move(file), type);
+    const auto nsp = OpenContainerAsNsp(file, type);
     if (!nsp) {
-        return ResultStatus::Success;
+        const bool nsp_shaped = type == FileType::NSP || type == FileType::NSZ ||
+                                type == FileType::XCI || type == FileType::XCZ;
+        return nsp_shaped ? ResultStatus::ErrorBadPFSHeader : ResultStatus::Success;
     }
     // Without the header key the title id is unreadable. With it, an update or add-on is no game.
     const auto status = nsp->GetProgramStatus();

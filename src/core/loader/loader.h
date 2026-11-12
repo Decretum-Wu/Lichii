@@ -171,8 +171,8 @@ bool IsMissingKeyStatus(ResultStatus status);
 
 /**
  * Returns the load status of an NSP or XCI's program content, the key error when it cannot be
- * decrypted, or ErrorNSPMissingProgramNCA when its content is an update or add-on. Returns
- * Success for other types and for files that do not open as a container.
+ * decrypted, ErrorNSPMissingProgramNCA when its content is an update or add-on, or
+ * ErrorBadPFSHeader when it does not open. Returns Success for other types.
  */
 ResultStatus GetContainerProgramStatus(FileSys::VirtualFile file, FileType type);
 

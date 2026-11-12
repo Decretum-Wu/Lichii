@@ -31,7 +31,8 @@ Key128 Decrypt(const Key128& key, const Key128& data) {
 
 TEST_CASE("Keys of a generation the key file lacks are derived from its sources", "[core][crypto]") {
     auto& keys = KeyManager::Instance();
-    if (keys.HasKey(S128KeyType::Source, u64(SourceKeyType::Master))) {
+    if (keys.HasKey(S128KeyType::Source, u64(SourceKeyType::Master)) ||
+        keys.HasKey(S128KeyType::Master, 0x1F)) {
         SKIP("Keys are installed");
     }
 
