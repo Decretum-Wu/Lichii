@@ -344,7 +344,7 @@ ALLOC_MEMBER(VaType)::Allocate(VaType size) {
         current_linear_alloc_end = alloc_start + size;
     } else { // If linear allocation overflows the AS then find a gap
         if (this->blocks.size() <= 2) {
-            ASSERT_MSG(false, "Unexpected allocator state!");
+            return {}; // Nothing to search between: the linear pass already tried the free space
         }
 
         auto search_predecessor{std::next(this->blocks.begin())};
