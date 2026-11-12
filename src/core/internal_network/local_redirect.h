@@ -22,8 +22,13 @@
 ///   EDEN_NX2_LOOPBACK_ONLY=1                   other names do not resolve, and the guest's
 ///                                              connections and datagrams reach loopback only
 ///                                              (and EDEN_NX2_ONLINE_SERVER, through 127.0.0.1)
-///   EDEN_NX2_ONLINE_CA=<file.der>              a CA certificate (DER) the guest's TLS trusts
-///                                              too, through the system store and OpenSSL
+///   EDEN_NX2_ONLINE_CA=<file.der>              a CA certificate (DER, at most 64 KiB) the
+///                                              guest's TLS trusts too, through the system store
+///                                              and OpenSSL
+/// The CA is trusted for every TLS connection the guest makes, not only those to the redirected
+/// names: titles that verify with the system store's lists can't be told apart by host name.
+/// EDEN_NX2_LOOPBACK_ONLY covers the guest's host sockets (BSD sockets, direct LAN play), not
+/// the traffic a multiplayer room relays.
 namespace Network::LocalRedirect {
 
 /// Whether `host` is one of EDEN_NX2_ONLINE_HOSTS or a subdomain of one (case and trailing dots
