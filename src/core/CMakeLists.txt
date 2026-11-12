@@ -405,6 +405,8 @@ add_library(core STATIC
     hle/service/acc/async_context.cpp
     hle/service/acc/async_context.h
     hle/service/acc/errors.h
+    hle/service/acc/nextendo_id_token.cpp
+    hle/service/acc/nextendo_id_token.h
     hle/service/acc/profile_manager.cpp
     hle/service/acc/profile_manager.h
     hle/service/am/am.cpp
@@ -1099,6 +1101,8 @@ add_library(core STATIC
     hle/service/sockets/bsd.h
     hle/service/sockets/nsd.cpp
     hle/service/sockets/nsd.h
+    hle/service/sockets/nextendo_redirect.cpp
+    hle/service/sockets/nextendo_redirect.h
     hle/service/sockets/sfdnsres.cpp
     hle/service/sockets/sfdnsres.h
     hle/service/sockets/sockets.cpp

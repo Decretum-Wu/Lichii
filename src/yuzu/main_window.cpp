@@ -143,6 +143,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "common/fs/fs.h"
 #include "common/logging.h"
 #include "common/memory_detect.h"
+#include "common/nextendo.h"
 #include "common/scm_rev.h"
 #include "common/scope_exit.h"
 #include "common/string_util.h"
@@ -454,6 +455,20 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         update_watcher.setFuture(update_future);
     }
 #endif
+
+    if constexpr (Common::Nextendo::OnlinePlayAvailable) {
+        connect(&nextendo_session_watcher, &QFutureWatcher<bool>::finished, this, [this] {
+            if (nextendo_session_watcher.result()) {
+                QMessageBox::warning(this, tr("Signed out of Nextendo"),
+                                     tr("Your session was ended on nextendo.network, so Lichii "
+                                        "signed you out. Sign in again in Configure > Network."));
+            }
+        });
+        connect(&nextendo_session_timer, &QTimer::timeout, this,
+                &MainWindow::KeepNextendoSessionAlive);
+        nextendo_session_timer.start(std::chrono::minutes{2});
+        KeepNextendoSessionAlive();
+    }
 
     // Setup content providers.
     QtCommon::SetupContentProviders();
@@ -4987,6 +5002,16 @@ void MainWindow::OnCaptureScreenshot() {
     }
 #endif
     render_window->CaptureScreenshot(filename);
+}
+
+void MainWindow::KeepNextendoSessionAlive() {
+    if (!Common::Nextendo::OnlinePlayActive() || nextendo_session_watcher.isRunning()) {
+        return;
+    }
+    nextendo_session_watcher.setFuture(
+        QtConcurrent::run([client_id = Settings::values.nextendo_client_id.GetValue()] {
+            return Common::Nextendo::KeepSessionAlive(client_id);
+        }));
 }
 
 #ifdef ENABLE_UPDATE_CHECKER

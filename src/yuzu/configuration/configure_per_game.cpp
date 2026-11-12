@@ -389,7 +389,7 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
         [](Settings::AspectRatio, Settings::ResolutionSetup) {}, tab_group, *builder, this);
     input_tab = std::make_unique<ConfigureInputPerGame>(system_, game_config.get(), this);
     system_tab = std::make_unique<ConfigureSystem>(system_, tab_group, *builder, this);
-    network_tab = std::make_unique<ConfigureNetwork>(system_, this);
+    network_tab = std::make_unique<ConfigureNetwork>(system_, this, true);
     applets_tab = std::make_unique<ConfigureApplets>(system_, tab_group, *builder, this);
 
     ui->setupUi(this);
