@@ -474,7 +474,7 @@ void FmtCrashMessageImpl(const char* filename, unsigned int line_num, const char
 #ifndef __OPENORBIS__
     if (!logging_instance || !logging_instance->file_backend)
         return;
-    char buffer[BUFSIZ];
+    char buffer[2048];
     const auto result = fmt::vformat_to_n(buffer, sizeof(buffer) - 1, format, args);
     const std::size_t length = (std::min)(result.size, sizeof(buffer) - 1);
     buffer[length] = '\0';
