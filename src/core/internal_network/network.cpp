@@ -893,6 +893,7 @@ Socket::~Socket() {
 
 Socket::Socket(Socket&& rhs) noexcept {
     fd = std::exchange(rhs.fd, INVALID_SOCKET);
+    socket_type = rhs.socket_type;
 }
 
 template <typename T>
@@ -922,6 +923,7 @@ Errno Socket::SetSockOpt(SOCKET fd_so, int level, int option, T value) {
 Errno Socket::Initialize(Domain domain, Type type, Protocol protocol) {
     fd = socket(TranslateDomainToNative(domain), TranslateTypeToNative(type), TranslateProtocolToNative(protocol));
     if (fd != INVALID_SOCKET) {
+        socket_type = type;
         return Errno::SUCCESS;
     }
 
@@ -967,7 +969,10 @@ std::pair<SocketBase::AcceptResult, Errno> Socket::Accept() {
 }
 
 Errno Socket::Connect(SockAddrIn addr_in) {
-    addr_in = LocalRedirect::ConnectTarget(addr_in);
+    // EDEN_NX2_ONLINE_SERVER stands in for TCP servers only.
+    if (socket_type == Type::STREAM) {
+        addr_in = LocalRedirect::ConnectTarget(addr_in);
+    }
     if (!LocalRedirect::Allowed(addr_in)) {
         LOG_DEBUG(Network, "Local redirect: connection to {}.{}.{}.{}:{} refused (loopback only)",
                   addr_in.ip[0], addr_in.ip[1], addr_in.ip[2], addr_in.ip[3], addr_in.portno);
