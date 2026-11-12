@@ -963,18 +963,27 @@ enum class Admission {
     return result.read_grid ? Admission::Moves : Admission::Unaffected;
 }
 
-/// Where an admitted call (Admit: Moves) puts its markers in inline upload data: each word's
-/// address in memory, with the marker. Data that only equals a marker is not among them.
-[[nodiscard]] inline std::vector<std::pair<u64, u32>> UploadMarkerWords(const DryRunResult& result,
-                                                                       UploadState upload) {
-    std::vector<std::pair<u64, u32>> words;
-    for (const Emit& emit : result.emits) {
+/// A marker an admitted call puts in inline upload data.
+struct UploadMarker {
+    std::size_t emit; ///< Which of the call's emits writes it
+    u64 address;      ///< Where it lands in memory
+    u32 marker;
+    bool operator==(const UploadMarker&) const = default;
+};
+
+/// The markers an admitted call (Admit: Moves) puts in inline upload data. Data that only equals
+/// a marker is not among them.
+[[nodiscard]] inline std::vector<UploadMarker> UploadMarkerWords(const DryRunResult& result,
+                                                                UploadState upload) {
+    std::vector<UploadMarker> markers;
+    for (std::size_t i = 0; i < result.emits.size(); ++i) {
+        const Emit& emit = result.emits[i];
         if (emit.grid && emit.method == DataUploadMethod) {
-            words.emplace_back(upload.NextWordAddress(), emit.value);
+            markers.push_back({i, upload.NextWordAddress(), emit.value});
         }
         upload.Apply(emit.method, emit.value);
     }
-    return words;
+    return markers;
 }
 
 /// A marker an inline write carries, and the list it stands for.

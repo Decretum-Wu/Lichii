@@ -1684,13 +1684,6 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     const auto positions = GetNativeMacroPositions();
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
     VideoCommon::Nx2Profile::CountMethod(method, false);
-    namespace ListTrace = VideoCommon::ListMacroTrace;
-    ListTrace::Call* const trace =
-        ListTrace::g_enabled
-            ? ListTrace::BeginCall(ListTrace::Engine::Maxwell3D, static_cast<EngineInterface*>(this),
-                                   method, engine.native_code, engine.native_code_generation, start,
-                                   fs.parameters, native_data_ram, fs.regs)
-            : nullptr;
     // List-fed grid markers (nx2_list_grid.h) in the data RAM: a 3D macro that can read it gets
     // the real words first.
     if (grid_marker.set && grid_marker.In(native_data_ram)) {
@@ -1710,6 +1703,13 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             }
         }
     }
+    namespace ListTrace = VideoCommon::ListMacroTrace;
+    ListTrace::Call* const trace =
+        ListTrace::g_enabled
+            ? ListTrace::BeginCall(ListTrace::Engine::Maxwell3D, static_cast<EngineInterface*>(this),
+                                   method, engine.native_code, engine.native_code_generation, start,
+                                   fs.parameters, native_data_ram, fs.regs)
+            : nullptr;
     const bool on_back = FrontRunOnBack(system, split, fs, engine, start);
     if (!on_back) {
         VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};

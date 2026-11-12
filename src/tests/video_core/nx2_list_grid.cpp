@@ -540,11 +540,16 @@ TEST_CASE("List grid admits Mario Kart World's constant buffer reader", "[list_g
         const auto result = RunMkw(MkwUploadReader, parameters);
         REQUIRE(result.completed);
         CHECK(ListGrid::Admit(result, {}) == ListGrid::Admission::Moves);
-        // The markers go to constant buffer 0 at +0x4/+0x8/+0xc, after the first word.
-        const auto markers = ListGrid::UploadMarkerWords(result, {});
-        CHECK(markers == std::vector<std::pair<u64, u32>>{{cbuf + 0x4, ListGrid::Marker(KeepId, 0)},
-                                                          {cbuf + 0x8, ListGrid::Marker(KeepId, 1)},
-                                                          {cbuf + 0xc, ListGrid::Marker(KeepId, 2)}});
+        // Writes 6 to 8 put the markers in constant buffer 0 at +0x4/+0x8/+0xc.
+        const auto upload_markers = ListGrid::UploadMarkerWords(result, {});
+        CHECK(upload_markers ==
+              std::vector<ListGrid::UploadMarker>{{6, cbuf + 0x4, ListGrid::Marker(KeepId, 0)},
+                                                  {7, cbuf + 0x8, ListGrid::Marker(KeepId, 1)},
+                                                  {8, cbuf + 0xc, ListGrid::Marker(KeepId, 2)}});
+        std::vector<std::pair<u64, u32>> markers;
+        for (const auto& marker : upload_markers) {
+            markers.emplace_back(marker.address, marker.marker);
+        }
         std::vector<u32> data;
         for (const auto& emit : result.emits) {
             if (emit.method == ListGrid::DataUploadMethod) {

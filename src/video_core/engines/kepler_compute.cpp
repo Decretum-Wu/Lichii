@@ -1583,6 +1583,8 @@ struct KeplerCompute::FrontState {
     std::vector<FrontMacro> macros; ///< FrontMacroInfo's, by engine, code generation and start
     Nx2ListGrid::UploadState upload;
     std::vector<u64> upload_lists; ///< Lists whose markers the upload still on its way carries
+    /// The running call's markers into upload data (FrontGuardListGrid), by emit.
+    std::vector<Nx2ListGrid::UploadMarker> upload_markers;
 };
 
 KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
@@ -1949,10 +1951,9 @@ void KeplerCompute::FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState&
         return;
     }
     if (admission == ListGrid::Admission::Moves) {
-        // The back patches exactly the upload words the markers go to (PlanPatches).
-        for (const auto& [address, marker] : ListGrid::UploadMarkerWords(result, fs.upload)) {
-            FrontExpectKeptWord(address, marker);
-        }
+        // The back patches exactly the upload words the markers go to (PlanPatches), told as
+        // the call writes each (FrontRunMacro).
+        fs.upload_markers = ListGrid::UploadMarkerWords(result, fs.upload);
         if (ListGrid::g_verify) {
             // The same call on the real words, where every list's were read the old way.
             const auto real_word = [this](u32 marker) -> std::optional<u32> {
@@ -2056,6 +2057,7 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
     if (native_data_ram) {
         macro.native_interpreter.active_dram = native_data_ram;
     }
+    fs.upload_markers.clear();
     if (grid_marker != nullptr && grid_marker->set) {
         FrontGuardListGrid(split, fs, macro, start);
     }
@@ -2073,7 +2075,15 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
         ListTrace::NoteRead(trace, address, value);
         return value;
     };
+    std::size_t emitted = 0;
+    std::size_t next_marker = 0;
     const auto emit = [&](u32 address, u32 value) {
+        if (next_marker < fs.upload_markers.size() &&
+            fs.upload_markers[next_marker].emit == emitted) {
+            const auto& marker = fs.upload_markers[next_marker++];
+            FrontExpectKeptWord(marker.address, marker.marker);
+        }
+        ++emitted;
         if (address >= 0xe00) {
             return false;
         }

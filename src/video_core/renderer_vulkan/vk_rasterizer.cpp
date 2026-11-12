@@ -2399,7 +2399,7 @@ void RasterizerVulkan::DispatchCompute() {
                                        gpu_memory->Read<u32>(*indirect_address + 8)};
         } else if (std::array<u32, 3> words{};
                    kept_grid && buffer_cache_runtime.ReadKeptListWords(*kept_grid, words)) {
-            indirect_grid = std::array{words[0], words[1] & 0xffff, words[2] & 0xffff};
+            indirect_grid = std::array{words[0] & 0x7fffffff, words[1] & 0xffff, words[2] & 0xffff};
         }
         frame_dump.NoteLaunch(pipeline->ShaderHash(),
                               {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z},
@@ -2424,15 +2424,22 @@ void RasterizerVulkan::DispatchCompute() {
         scheduler.RequestOutsideRenderPassOperationContext();
         scheduler.NoteComputeWrites();
         scheduler.TraceComputePipeline(pipeline->ShaderHash());
-        scheduler.Record([this, pipeline, indirect_buffer,
-                          indirect_offset](vk::CommandBuffer cmdbuf) {
+        scheduler.Record([this, pipeline, indirect_buffer, indirect_offset,
+                          byte_addressed_shadow](vk::CommandBuffer cmdbuf) {
             RecordDispatchBarrier(cmdbuf);
             if (!pipeline->IsBound()) {
                 return;
             }
+            // Only a kept grid's dispatch can have the packed R16 shadow (ComputePipeline::Configure).
+            if (byte_addressed_shadow) {
+                TextureCacheRuntime::CopyByteAddressedShadow(cmdbuf, *byte_addressed_shadow, false);
+            }
             scheduler.TraceGpuWork(cmdbuf, pipeline->ShaderHash(), 0, {}, [&] {
                 cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
             });
+            if (byte_addressed_shadow) {
+                TextureCacheRuntime::CopyByteAddressedShadow(cmdbuf, *byte_addressed_shadow, true);
+            }
         });
         buffer_cache.NoteWorkRecorded(true);
         SubmitNx2ListCopies();
@@ -2612,7 +2619,7 @@ void RasterizerVulkan::VerifyKeptGrid(u64 keep_id) {
         return;
     }
     // What the dispatch takes against what DispatchNativeCompute takes from the real words.
-    const std::array<u32, 3> dispatched{kept[0], kept[1] & 0xffff, kept[2] & 0xffff};
+    const std::array<u32, 3> dispatched{kept[0] & 0x7fffffff, kept[1] & 0xffff, kept[2] & 0xffff};
     const std::array<u32, 3> real{keep->real[0] & 0x7fffffff, keep->real[1] & 0xffff,
                                   keep->real[2] & 0xffff};
     Tegra::Nx2ListGrid::NoteVerify(
