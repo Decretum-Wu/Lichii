@@ -865,7 +865,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                             }
                             samplers.push_back(sampler);
                         });
-                    if (VideoCommon::HandleTableNotes::Wanted()) [[unlikely]] {
+                    if (VideoCommon::HandleTableNotes::Wanted()) {
                         std::vector<u32> tics(desc.count);
                         for (u32 index = 0; index < desc.count; ++index) {
                             tics[index] = views[first + index].index;
