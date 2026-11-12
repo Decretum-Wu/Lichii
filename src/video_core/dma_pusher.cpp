@@ -375,7 +375,8 @@ bool DmaPusher::Step() {
             Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Safe);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
-        } else if (gpu_written && TakeListGrid(dma_state.dma_get, static_cast<u32>(header.size))) {
+        } else if (gpu_written && Nx2ListGrid::g_enabled &&
+                   TakeListGrid(dma_state.dma_get, static_cast<u32>(header.size))) {
             // Nothing to parse: the words stay on the host GPU (nx2_list_grid.h).
         } else if (bool pending = false;
                    ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size),

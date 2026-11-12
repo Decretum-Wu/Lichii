@@ -3816,7 +3816,7 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
     }
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
     // Markers of a list-fed grid (nx2_list_grid.h): its kept words go over them.
-    if (!nx2_expected_words.empty()) {
+    if (Tegra::Nx2ListGrid::g_enabled && !nx2_expected_words.empty()) {
         const auto data = memory.first((std::min)(copy_size, memory.size()));
         const auto patches = Tegra::Nx2ListGrid::PlanPatches(
             *cpu_addr, data, [this](DAddr word) -> std::optional<std::pair<u64, u32>> {

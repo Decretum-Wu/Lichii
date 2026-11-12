@@ -1159,6 +1159,15 @@ TEST_CASE("Read downloads keep CPU writes made while they were on their way", "[
 
 TEST_CASE("Indirect dispatch arguments remain GPU modified across a neighboring CPU upload",
           "[buffer_ports]") {
+    // Test branch: the port is behind EDEN_NX2_TEST_LIST_HLE.
+    struct Enable {
+        Enable() {
+            Tegra::Nx2ListGrid::g_enabled = true;
+        }
+        ~Enable() {
+            Tegra::Nx2ListGrid::ReadSwitch();
+        }
+    } enable;
     Fixture f;
     const auto id = Access::Add(*f.cache, 0x10000, 0x10000);
     auto &original = Access::Get(*f.cache, id);

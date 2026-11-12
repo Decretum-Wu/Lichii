@@ -360,7 +360,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
                 // written since) takes the real words its upload patched in on the host GPU.
                 qmd_grid_lists = {};
                 bool unknown = false;
-                for (u32 i = 0; i < 3; ++i) {
+                for (u32 i = 0; i < 3 && grid_marker != nullptr; ++i) {
                     const u32 word = descriptor[12 + i];
                     if (!Nx2ListGrid::IsMarker(word)) {
                         continue;
@@ -583,7 +583,7 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     // (qmd_grid_lists): a list's three, in order, dispatch from its kept words; any other mix
     // gets them read back.
     if (const auto source = Nx2ListGrid::QmdGridSource(grid[0], grid[1], grid[2]);
-        source.kind != Nx2ListGrid::GridKind::Direct) {
+        grid_marker != nullptr && source.kind != Nx2ListGrid::GridKind::Direct) {
         const auto& lists = qmd_grid_lists;
         if (source.kind == Nx2ListGrid::GridKind::Indirect && lists[0] != 0 &&
             lists[0] == lists[1] && lists[1] == lists[2]) {

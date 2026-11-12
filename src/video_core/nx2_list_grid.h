@@ -67,10 +67,13 @@ inline constexpr u32 QmdGridRegister = 0xc8 + 12;
 
 /// EDEN_NX2_LIST_HLE_VERIFY=1 (verify mode, off by default).
 inline bool g_verify = std::getenv("EDEN_NX2_LIST_HLE_VERIFY") != nullptr;
+/// Test builds only: EDEN_NX2_TEST_LIST_HLE=1 (or verify mode) turns the HLE on. Off is nx2's path.
+inline bool g_enabled = g_verify || std::getenv("EDEN_NX2_TEST_LIST_HLE") != nullptr;
 
 /// Called by VideoCore::CreateGPU, after the frontend loaded nx2_switches.txt.
 inline void ReadSwitch() {
     g_verify = std::getenv("EDEN_NX2_LIST_HLE_VERIFY") != nullptr;
+    g_enabled = g_verify || std::getenv("EDEN_NX2_TEST_LIST_HLE") != nullptr;
 }
 
 /// A compute macro taken without reading its list words, by TuringMacroInterpreter::CodeHash,
