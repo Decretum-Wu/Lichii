@@ -8,7 +8,56 @@
 #include <cstdint>
 #include <optional>
 
+#include "common/game_presets.h"
+
 namespace Service {
+
+/// Which GPU fences a present waits for before it returns.
+enum class Nx2PresentWait {
+    /// This frame's fence (EDEN_NX2_FRAMES_AHEAD=0).
+    Current,
+    /// The previous frame's fence, and this frame's too while the GPU is behind
+    /// (EDEN_NX2_FRAMES_AHEAD=1).
+    Previous,
+    /// This frame's fence, or the previous frame's once a GPU channel is suspended.
+    CurrentUnlessGpuWaits,
+    /// Only the previous frame's fence.
+    PreviousOnly,
+};
+
+/**
+ * Returns how a present waits for the GPU.
+ *
+ * @param frames_ahead_setting EDEN_NX2_FRAMES_AHEAD: 0, 1, or -1 when unset.
+ * @param program_id           The running application's program id.
+ */
+[[nodiscard]] inline Nx2PresentWait SelectPresentWait(int frames_ahead_setting,
+                                                      std::uint64_t program_id) {
+    // Donkey Kong Bananza's channels wait on each other every frame, so it always ran a frame
+    // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
+    // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
+    constexpr std::uint64_t DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+    // Ocarina waited ~12 ms a frame on its previous frame's fence here (#161).
+    constexpr std::uint64_t OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+    if (frames_ahead_setting == 0) {
+        return Nx2PresentWait::Current;
+    }
+    if (frames_ahead_setting == 1) {
+        return Nx2PresentWait::Previous;
+    }
+    switch (program_id) {
+    case DonkeyKongBananzaProgramId:
+        return Nx2PresentWait::Current;
+    case OcarinaOfTimeProgramId:
+        return Nx2PresentWait::Previous;
+    // Mario Kart World's channel is suspended at every present, so waiting for this frame gave
+    // up after ~4 ms each frame and the fence passed ~31 ms later (EGLA-146).
+    case Settings::MarioKartWorldProgramId:
+        return Nx2PresentWait::PreviousOnly;
+    default:
+        return Nx2PresentWait::CurrentUnlessGpuWaits;
+    }
+}
 
 /**
  * Returns the interval between paced presents: the vblank the game asked for, lengthened when an
