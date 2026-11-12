@@ -603,7 +603,32 @@ void MemoryManager::WriteBlockUnsafe(GPUVAddr gpu_dest_addr, const void* src_buf
     WriteBlockImpl(gpu_dest_addr, src_buffer, size, VideoCommon::CacheType::None, true);
 }
 
+const u8* MemoryManager::RepeatableWriteTarget(GPUVAddr gpu_addr, std::size_t size) const {
+    constexpr std::size_t SmallPage = 0x1000;
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || rasterizer == nullptr ||
+        size == 0 || (gpu_addr & (SmallPage - 1)) + size > SmallPage) {
+        return nullptr;
+    }
+    if (gpu_addr + size > Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) &&
+        gpu_addr < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed)) {
+        return nullptr;
+    }
+    const std::optional<DAddr> dev_addr = GpuToCpuAddress(gpu_addr);
+    if (!dev_addr || Tegra::Nx2MayBeGpuWritten(*dev_addr, size) ||
+        VideoCore::ReadDownloadsMayCover(*dev_addr, size) ||
+        rasterizer->MayCacheObjectsAt(*dev_addr, size)) {
+        return nullptr;
+    }
+    return memory.GetPointer<u8>(*dev_addr);
+}
+
 void MemoryManager::WriteBlockCached(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size) {
+    // Bytes guest memory already holds change nothing a cache keeps (constant buffer data
+    // repeats about two thirds of the time in Donkey Kong Bananza).
+    if (const u8* const target = RepeatableWriteTarget(gpu_dest_addr, size);
+        target != nullptr && std::memcmp(target, src_buffer, size) == 0) {
+        return;
+    }
     WriteBlockImpl(gpu_dest_addr, src_buffer, size, VideoCommon::CacheType::None, true);
     accumulator.Add(gpu_dest_addr, size);
 }
@@ -618,10 +643,26 @@ void MemoryManager::WriteWordsCached(GPUVAddr gpu_dest_addr, const u32* words, s
         }
         return;
     }
+    // Only the words that change guest memory are invalidated (WriteBlockCached).
+    u64 changed = ~u64{0};
+    if (const u8* const target = RepeatableWriteTarget(gpu_dest_addr, size);
+        target != nullptr && count <= 64) {
+        changed = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            u32 old_word;
+            std::memcpy(&old_word, target + i * sizeof(u32), sizeof(u32));
+            changed |= u64{old_word != words[i]} << i;
+        }
+        if (changed == 0) {
+            return;
+        }
+    }
     WriteBlockImpl(gpu_dest_addr, words, size, VideoCommon::CacheType::None, true);
     // The accumulator merges word by word differently from one range: keep its ranges.
     for (std::size_t i = 0; i < count; ++i) {
-        accumulator.Add(gpu_dest_addr + i * sizeof(u32), sizeof(u32));
+        if (i >= 64 || ((changed >> i) & 1) != 0) {
+            accumulator.Add(gpu_dest_addr + i * sizeof(u32), sizeof(u32));
+        }
     }
 }
 

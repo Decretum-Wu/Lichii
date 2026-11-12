@@ -229,6 +229,12 @@ private:
                        std::source_location caller) const;
     void WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size, VideoCommon::CacheType which, bool unsafe);
 
+    /// Guest memory at a cached write's destination when the write may be dropped if it repeats
+    /// those bytes, else nullptr. Only on Switch 2 titles, within one 4 KiB page, outside sparse
+    /// memory, and where guest memory holds the newest bytes: no page the GPU wrote, no image or
+    /// query report, no read download yet to land.
+    const u8* RepeatableWriteTarget(GPUVAddr gpu_addr, std::size_t size) const;
+
     [[nodiscard]] std::size_t PageEntryIndex(GPUVAddr gpu_addr, bool is_big_page) const {
         if (is_big_page) {
             return (gpu_addr >> big_page_bits) & big_page_table_mask;
