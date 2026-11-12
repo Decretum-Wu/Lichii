@@ -163,6 +163,7 @@ add_executable(tests
     common/host_memory_test_access.h
     core/host_memory_failure.cpp
     common/multi_level_page_table.cpp
+    common/nextendo.cpp
     common/page_table.cpp
     common/param_package.cpp
     common/poll_window.cpp
@@ -175,6 +176,7 @@ add_executable(tests
     common/unique_function.cpp
     common/zstd_compression.cpp
     core/core_timing.cpp
+    core/nextendo_redirect.cpp
     core/thread_startup_policy.cpp
     core/nup_writer.cpp
     core/nup_metadata.cpp
