@@ -117,6 +117,16 @@ TEST_CASE("NX: catalog-only queries", "[core][nx]") {
     CHECK(Loader::IsBootableGameContainer(file, Loader::FileType::NX));
     CHECK(Loader::AppLoader_NX::ReadPlatform(file, 0) == 2);
     CHECK(Loader::AppLoader_NX::ReadPlatform(file, ApplicationId) == 2);
+    const auto switch2 = Loader::AppLoader_NX::ReadProgramPlatform(file, 0);
+    REQUIRE(switch2.has_value());
+    CHECK(switch2->program_id == ApplicationId);
+    CHECK(switch2->platform == 2);
+    const auto switch1 =
+        Loader::AppLoader_NX::ReadProgramPlatform(OpenFixture("native_external_base.nx"), 0);
+    REQUIRE(switch1.has_value());
+    CHECK(switch1->program_id == ApplicationId);
+    CHECK(switch1->platform == 1);
+    CHECK_FALSE(Loader::AppLoader_NX::ReadProgramPlatform(OpenFixture("damaged_both_slots.nx"), 0));
     // Header and Catalog only: Manifest damage is found when the loader mounts the archive.
     for (const auto name : {"damaged_both_slots.nx", "truncated_header_area.nx", "invalid_offsets.nx"}) {
         INFO(name);
