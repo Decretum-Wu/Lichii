@@ -7,8 +7,10 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 
 #include "common/logging.h"
+#include "common/settings.h"
 #include "core/internal_network/local_redirect.h"
 
 namespace Network::LocalRedirect {
@@ -66,6 +68,13 @@ struct Config {
     bool loopback_only{};
     std::vector<u8> test_ca;
 
+    struct Empty {};
+    explicit Config(Empty) {}
+
+    [[nodiscard]] bool Any() const {
+        return !hosts.empty() || server || loopback_only || !test_ca.empty();
+    }
+
     Config() {
         if (const char* list = std::getenv("EDEN_NX2_ONLINE_HOSTS")) {
             std::string_view rest{list};
@@ -96,7 +105,7 @@ struct Config {
                 test_ca.clear();
             }
         }
-        if (!hosts.empty() || server || loopback_only || !test_ca.empty()) {
+        if (Any()) {
             LOG_INFO(Network,
                      "Local redirect: {} host names, server {}, loopback only {}, test CA {} bytes",
                      hosts.size(), server ? "set" : "unset", loopback_only, test_ca.size());
@@ -104,9 +113,28 @@ struct Config {
     }
 };
 
-const Config& Get() {
+const Config& Configured() {
     static const Config config;
     return config;
+}
+
+/// The environment's settings while "Redirect online services to custom servers" is ticked,
+/// else none.
+const Config& Get() {
+    static const Config none{Config::Empty{}};
+    const Config& config = Configured();
+    if (Settings::values.online_service_redirect.GetValue()) {
+        return config;
+    }
+    static std::once_flag hinted;
+    if (config.Any()) {
+        std::call_once(hinted, [] {
+            LOG_WARNING(Network, "Local redirect: EDEN_NX2_ONLINE_* or EDEN_NX2_LOOPBACK_ONLY is "
+                                 "set, but \"Redirect online services to custom servers\" is "
+                                 "off in Configure > Network; ignored");
+        });
+    }
+    return none;
 }
 
 bool IsLoopback(const SockAddrIn& address) {

@@ -12,8 +12,10 @@
 #include "common/common_types.h"
 #include "common/socket_types.h"
 
-/// Local stand-in servers for a title's online services, set up by a launcher through the
-/// environment (all off when unset):
+/// Custom servers for a title's online services, set up through the environment (by a
+/// launcher, a script or the user). They apply only while "Redirect online services to custom
+/// servers" (Settings::values.online_service_redirect, Configure > Network) is ticked; all are
+/// off when unset:
 ///   EDEN_NX2_ONLINE_HOSTS=a.example,b.example  these names and their subdomains resolve to
 ///                                              127.0.0.1 (and are no longer blocked)
 ///   EDEN_NX2_ONLINE_SERVER=<ip>:<port>         TCP connections to 127.0.0.1:443 go there

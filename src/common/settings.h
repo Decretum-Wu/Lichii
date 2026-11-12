@@ -1087,6 +1087,11 @@ struct Values {
                                         Category::Network};
     Setting<std::string> nextendo_client_id{linkage, "nxc_eHeSgpYwMkFV", "nextendo_client_id",
                                            Category::Network};
+    // "Redirect online services to custom servers": lets the EDEN_NX2_ONLINE_* variables send
+    // a game's online services to other servers (core/internal_network/local_redirect.h).
+    // Off: they are ignored.
+    Setting<bool> online_service_redirect{linkage, false, "online_service_redirect",
+                                          Category::Network};
 
     // WebService
     Setting<std::string> web_api_url{linkage, "api.ynet-fun.xyz", "web_api_url",

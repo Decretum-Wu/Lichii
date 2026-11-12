@@ -52,6 +52,16 @@
           </property>
          </widget>
         </item>
+        <item row="4" column="0" colspan="2">
+         <widget class="QCheckBox" name="online_service_redirect">
+          <property name="toolTip">
+           <string>Lets the EDEN_NX2_ONLINE_* settings (set by a launcher, a script or yourself) send a game's online services to other servers and trust their certificate. Off: those settings are ignored. Takes effect when a game starts.</string>
+          </property>
+          <property name="text">
+           <string>Redirect online services to custom servers</string>
+          </property>
+         </widget>
+        </item>
        </layout>
       </widget>
      </item>

@@ -60,6 +60,8 @@ ConfigureNetwork::ConfigureNetwork(const Core::System& system_, QWidget* parent,
     this->SetConfiguration();
 
     ui->nextendo_group->setVisible(!per_game);
+    // A global setting: per-game configuration doesn't offer it.
+    ui->online_service_redirect->setVisible(!per_game);
     if (!per_game) {
         RenewNextendoToken();
     }
@@ -88,6 +90,7 @@ void ConfigureNetwork::ApplyConfiguration() {
     if (!per_game) {
         Settings::values.nextendo_enabled = ui->nextendo_enabled->isChecked();
         Settings::values.nextendo_client_id = NextendoClientId(ui->nextendo_client_id->text());
+        Settings::values.online_service_redirect = ui->online_service_redirect->isChecked();
     }
 }
 
@@ -120,6 +123,8 @@ void ConfigureNetwork::SetConfiguration() {
     ui->network_interface->setEnabled(runtime_lock);
     ui->airplane_mode->setChecked(airplane_mode);
     ui->lan_play->setChecked(Settings::values.lan_play.GetValue());
+    ui->online_service_redirect->setChecked(Settings::values.online_service_redirect.GetValue());
+    ui->online_service_redirect->setEnabled(runtime_lock);
     ui->nextendo_enabled->setChecked(Settings::values.nextendo_enabled.GetValue());
     ui->nextendo_client_id->setText(
         QString::fromStdString(Settings::values.nextendo_client_id.GetValue()));
