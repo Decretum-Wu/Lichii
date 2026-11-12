@@ -33,8 +33,11 @@ constexpr size_t MaxDumps = 64;
 constexpr size_t MaxLandings = 64;
 
 // Inline upload (both engines) and Maxwell3D's constant buffer load registers.
+constexpr u32 UploadLineLength = 0x60;
+constexpr u32 UploadLineCount = 0x61;
 constexpr u32 UploadAddressHigh = 0x62;
 constexpr u32 UploadAddressLow = 0x63;
+constexpr u32 UploadPitch = 0x64;
 constexpr u32 UploadExec = 0x6c;
 constexpr u32 UploadData = 0x6d;
 constexpr u32 ConstBufferAddressHigh = 0x8e1;
@@ -157,7 +160,7 @@ struct State {
     u64 call_generation{};
     u32 call_method{};
     std::span<const u32> call_live_data_ram;
-    std::array<u32, 5> call_registers{}; ///< 0x62, 0x63 and 0x8e1-0x8e3 as the call began
+    std::array<u32, 8> call_registers{}; ///< 0x60-0x64 and 0x8e1-0x8e3 as the call began
     std::span<const u32> call_code;
     std::vector<u32> call_parameters;
     std::vector<u32> call_data_ram;
@@ -411,27 +414,37 @@ void NoteReader(State& state, Macro& macro, const Call& call, DataRamAccesses da
     const char* const failure = !real.success || real.writes != call.writes ? "not reproduced"
                                 : steered                                  ? "steers the call"
                                                                            : nullptr;
-    // Where each write puts its value: a data word of a linear inline upload the call began, or
-    // a 3D constant buffer load word.
+    // Where each write puts its value: a data word of a linear inline upload the call began
+    // (Upload::State: line by line, each line at the next pitch), or a 3D constant buffer load word.
     std::vector<std::optional<u64>> lands(real.writes.size());
     const auto& r = state.call_registers;
-    u64 upload_high = r[0];
-    u64 upload_low = r[1];
-    std::optional<u64> upload;
-    u64 const_buffer = (u64{r[2]} << 32) | r[3];
-    u32 const_buffer_offset = r[4];
+    struct Upload {
+        u64 address;
+        u32 line_length;
+        u32 line_count;
+        u32 pitch;
+        u32 offset;
+    };
+    std::array<u32, 5> upload_state{r[0], r[1], r[2], r[3], r[4]};
+    std::optional<Upload> upload;
+    u64 const_buffer = (u64{r[5]} << 32) | r[6];
+    u32 const_buffer_offset = r[7];
     for (size_t i = 0; i < real.writes.size(); ++i) {
         const auto [method, value] = real.writes[i];
-        if (method == UploadAddressHigh) {
-            upload_high = value;
-        } else if (method == UploadAddressLow) {
-            upload_low = value;
+        if (method >= UploadLineLength && method <= UploadPitch) {
+            upload_state[method - UploadLineLength] = value;
         } else if (method == UploadExec) {
-            upload = (value & 1) != 0 ? std::optional{(upload_high << 32) | upload_low}
-                                      : std::nullopt;
+            const auto& [length, count, high, low, pitch] = upload_state;
+            upload = (value & 1) != 0 && length != 0
+                         ? std::optional{Upload{(u64{high} << 32) | low, length, count, pitch, 0}}
+                         : std::nullopt;
         } else if (method == UploadData && upload) {
-            lands[i] = *upload;
-            *upload += 4;
+            const u32 line = upload->offset / upload->line_length;
+            if (line < upload->line_count) {
+                lands[i] = upload->address + u64{line} * upload->pitch +
+                           upload->offset % upload->line_length;
+            }
+            upload->offset += 4;
         } else if (macro.engine != Engine::Maxwell3D) {
             continue;
         } else if (method == ConstBufferAddressHigh) {
@@ -452,7 +465,8 @@ void NoteReader(State& state, Macro& macro, const Call& call, DataRamAccesses da
         std::string carried;
         std::optional<u64> landing;
         for (size_t i = 0; i < real.writes.size() && failure == nullptr; ++i) {
-            if (a.writes[i].second != tag_a(address) || b.writes[i].second != tag_b(address)) {
+            if (real.writes[i].second != value || a.writes[i].second != tag_a(address) ||
+                b.writes[i].second != tag_b(address)) {
                 continue;
             }
             carried += fmt::format("{}write {} to {:#x}", carried.empty() ? "" : ", ", i,
@@ -762,9 +776,10 @@ Call* BeginCall(Engine engine, const void* engine_object, u32 method, std::span<
     const auto reg = [&registers](u32 index) {
         return index < registers.size() ? registers[index] : 0U;
     };
-    state.call_registers = {reg(UploadAddressHigh), reg(UploadAddressLow),
-                            reg(ConstBufferAddressHigh), reg(ConstBufferAddressLow),
-                            reg(ConstBufferOffset)};
+    state.call_registers = {reg(UploadLineLength),       reg(UploadLineCount),
+                            reg(UploadAddressHigh),      reg(UploadAddressLow),
+                            reg(UploadPitch),            reg(ConstBufferAddressHigh),
+                            reg(ConstBufferAddressLow), reg(ConstBufferOffset)};
     Call& call = state.call;
     call.data_ram = info.effects.data_ram;
     call.reads.clear();

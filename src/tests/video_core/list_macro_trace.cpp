@@ -138,9 +138,15 @@ TEST_CASE("ListMacroTrace: what reads the data RAM words a GPU-written entry's c
     };
     CHECK_FALSE(run(reader, 0xe7a, {0x12, 0x34560000}));
 
-    Trace::BeginEntry(Trace::Path::Waited, 1000, Trace::Engine::Compute, &engine, 0xe74, 3, 3);
-    CHECK(run(store, 0xe74, {8, 1, 1}));
-    Trace::EndEntry(nullptr, 0);
+    const auto stored_run = [&](std::vector<u32> parameters) {
+        Trace::BeginEntry(Trace::Path::Waited, 1000, Trace::Engine::Compute, &engine, 0xe74, 3, 3);
+        CHECK(run(store, 0xe74, std::move(parameters)));
+        Trace::EndEntry(nullptr, 0);
+    };
+    // One 12-byte line.
+    registers[0x60] = 12;
+    registers[0x61] = 1;
+    stored_run({8, 1, 1});
     CHECK(run(reader, 0xe7a, {0x12, 0x34560000}));
     // The back loads a QMD whose grid is the three words.
     Trace::NoteQmd(0x12'3456'0000 - 12 * 4, std::array<u32, 64>{});
@@ -166,6 +172,22 @@ TEST_CASE("ListMacroTrace: what reads the data RAM words a GPU-written entry's c
     CHECK(dumps.find("landing: data RAM 0x20 -> QMD word 12 (grid x)\n") != std::string::npos);
     CHECK(dumps.find("landing: data RAM 0x21 -> QMD word 13 (grid y)\n") != std::string::npos);
     CHECK(dumps.find("landing: data RAM 0x22 -> QMD word 14 (grid z)\n") != std::string::npos);
+
+    // Three 4-byte lines 0x100 apart.
+    registers[0x60] = 4;
+    registers[0x61] = 3;
+    registers[0x64] = 0x100;
+    stored_run({8, 2, 3});
+    CHECK(run(reader, 0xe7a, {0x12, 0x34560000}));
+    std::string pitched;
+    for (const auto& file : std::filesystem::directory_iterator{directory}) {
+        std::ifstream stream{file.path()};
+        std::stringstream text;
+        text << stream.rdbuf();
+        pitched += text.str();
+    }
+    CHECK(pitched.find("0x22 (stored by compute 055743923e135e09, method 0xe74) -> write 5 to "
+                       "0x6d, at 0x1234560200") != std::string::npos);
 
     // A call no entry fed stores over the words: nothing to follow any more.
     CHECK(run(store, 0xe74, {0, 0, 0}));
