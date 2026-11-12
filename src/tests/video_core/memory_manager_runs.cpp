@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <exception>
 #include <limits>
+#include <optional>
 #include <random>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
@@ -17,7 +18,7 @@
 
 namespace {
 
-class NullRasterizer final : public VideoCore::RasterizerInterface {
+class NullRasterizer : public VideoCore::RasterizerInterface {
 public:
     void Draw(bool, u32) override {}
     void DrawTexture() override {}
@@ -61,7 +62,66 @@ public:
     void AccelerateInlineToMemory(GPUVAddr, size_t, std::span<const u8>) override {}
 };
 
+/// Translates an address while a page table operation tells the caches about its change.
+class TranslatingRasterizer final : public NullRasterizer {
+public:
+    void ModifyGPUMemory(size_t, GPUVAddr, u64) override {
+        if (memory != nullptr) {
+            during_change = memory->GpuToCpuAddress(watched);
+        }
+    }
+
+    const Tegra::MemoryManager* memory{};
+    GPUVAddr watched{};
+    std::optional<DAddr> during_change;
+};
+
 } // namespace
+
+TEST_CASE("Cached translations follow remaps, unmaps and address spaces", "[memory_manager]") {
+    ScopedSystemTestContext context;
+    Core::System system;
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device_memory{physical};
+    TranslatingRasterizer rasterizer;
+    Tegra::MemoryManager memory{system, device_memory, 32, 1ULL << 31, 16};
+    Tegra::MemoryManager other{system, device_memory, 32, 1ULL << 31, 16};
+    memory.BindRasterizer(&rasterizer);
+    other.BindRasterizer(&rasterizer);
+
+    constexpr GPUVAddr small = 0x4000'0000;
+    constexpr GPUVAddr big = 0x5000'0000;
+    memory.Map(small, 0x10'0000, 0x2000, Tegra::PTEKind::PITCH, false);
+    memory.Map(big, 0x20'0000, 0x20000, Tegra::PTEKind::PITCH, true);
+    other.Map(small, 0x30'0000, 0x2000, Tegra::PTEKind::PITCH, false);
+    for (int pass = 0; pass < 2; ++pass) {
+        REQUIRE(memory.GpuToCpuAddress(small + 0x1234) == 0x10'1234);
+        REQUIRE(memory.GpuToCpuAddress(big + 0x1'2345) == 0x21'2345);
+        REQUIRE(other.GpuToCpuAddress(small + 0x1234) == 0x30'1234);
+    }
+
+    memory.Map(small, 0x40'0000, 0x2000, Tegra::PTEKind::PITCH, false);
+    REQUIRE(memory.GpuToCpuAddress(small + 0x1234) == 0x40'1234);
+    memory.Map(big, 0x60'0000, 0x20000, Tegra::PTEKind::PITCH, true);
+    REQUIRE(memory.GpuToCpuAddress(big + 0x1'2345) == 0x61'2345);
+    REQUIRE(other.GpuToCpuAddress(small + 0x1234) == 0x30'1234);
+
+    // The caches hear about a change before it completes, and must see it already.
+    rasterizer.memory = &memory;
+    rasterizer.watched = small + 0x1234;
+    REQUIRE(memory.GpuToCpuAddress(small + 0x1234) == 0x40'1234);
+    memory.MapSparse(small, 0x2000, false);
+    REQUIRE_FALSE(rasterizer.during_change.has_value());
+    REQUIRE_FALSE(memory.GpuToCpuAddress(small + 0x1234).has_value());
+    rasterizer.memory = nullptr;
+    memory.Map(small, 0x40'0000, 0x2000, Tegra::PTEKind::PITCH, false);
+    REQUIRE(memory.GpuToCpuAddress(small + 0x1234) == 0x40'1234);
+    memory.Unmap(small, 0x2000);
+    REQUIRE_FALSE(memory.GpuToCpuAddress(small + 0x1234).has_value());
+    memory.Unmap(big, 0x20000);
+    REQUIRE_FALSE(memory.GpuToCpuAddress(big + 0x1'2345).has_value());
+    REQUIRE(other.GpuToCpuAddress(small + 0x1234) == 0x30'1234);
+}
 
 TEST_CASE("A 40-bit address space maps Switch 2 VA past 128 GiB", "[memory_manager]") {
     ScopedSystemTestContext context;

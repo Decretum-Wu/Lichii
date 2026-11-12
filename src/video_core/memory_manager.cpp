@@ -127,6 +127,9 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
         return gpu_addr;
     }
     [[maybe_unused]] u64 remaining_size{size};
+    // Also before the change: translations cached while it runs (the rasterizer callbacks
+    // below) must not outlive it.
+    map_serial.fetch_add(1, std::memory_order_release);
     if (entry_type == EntryType::Mapped) {
         page_table.ReserveRange(gpu_addr, size);
     }
@@ -179,6 +182,7 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
         return gpu_addr;
     }
     [[maybe_unused]] u64 remaining_size{size};
+    map_serial.fetch_add(1, std::memory_order_release);
     GPUVAddr modified_start{};
     u64 modified_size{};
     const auto flush_modified = [&] {
@@ -269,6 +273,27 @@ std::optional<DAddr> MemoryManager::GpuToCpuAddress(GPUVAddr gpu_addr) const {
     if (!IsWithinGPUAddressRange(gpu_addr)) [[unlikely]] {
         return std::nullopt;
     }
+    // Recently translated pages, per thread and address space, while map_serial holds: the
+    // page table reads miss the cache (about 3% of the back thread in Mario Kart World).
+    struct Translations {
+        size_t owner;
+        u64 serial;
+        std::array<GPUVAddr, 32> pages; ///< Page index + 1; 0 is empty
+        std::array<DAddr, 32> bases;
+    };
+    thread_local std::array<Translations, 4> caches{};
+    Translations& cache = caches[unique_identifier % caches.size()];
+    const u64 serial = map_serial.load(std::memory_order_acquire);
+    if (cache.owner != unique_identifier + 1 || cache.serial != serial) {
+        cache.owner = unique_identifier + 1;
+        cache.serial = serial;
+        cache.pages.fill(0);
+    }
+    const GPUVAddr page = gpu_addr >> page_bits;
+    const size_t slot = page % cache.pages.size();
+    if (cache.pages[slot] == page + 1) {
+        return cache.bases[slot] + (gpu_addr & page_mask);
+    }
     DAddr dev_addr;
     if (GetEntry(gpu_addr, true) != EntryType::Mapped) [[unlikely]] {
         if (GetEntry(gpu_addr, false) != EntryType::Mapped)
@@ -284,6 +309,8 @@ std::optional<DAddr> MemoryManager::GpuToCpuAddress(GPUVAddr gpu_addr) const {
                   dev_addr);
         return std::nullopt;
     }
+    cache.pages[slot] = page + 1;
+    cache.bases[slot] = dev_addr - (gpu_addr & page_mask);
     return dev_addr;
 }
 
