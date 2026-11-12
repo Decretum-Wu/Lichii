@@ -8,6 +8,7 @@
 #include <deque>
 #include <utility>
 
+#include "common/assert.h"
 #include "common/common_types.h"
 
 namespace VideoCommon {
@@ -57,10 +58,13 @@ public:
         dropped.fetch_add(how_many, std::memory_order_relaxed);
     }
 
-    /// The references taken and not dropped yet.
+    /// The references taken and not dropped yet. Called where references are taken, so every
+    /// reference dropped was taken before: more dropped than taken is a double free.
     size_t References() const {
         const size_t dropped_now = dropped.load(std::memory_order_acquire);
-        return added.load(std::memory_order_acquire) - dropped_now;
+        const size_t added_now = added.load(std::memory_order_acquire);
+        ASSERT(dropped_now <= added_now);
+        return added_now - dropped_now;
     }
 
     void Close() {
