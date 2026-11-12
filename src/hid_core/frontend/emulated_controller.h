@@ -501,6 +501,10 @@ private:
     /// Set the params for virtual pad devices
     void LoadVirtualGamepadParams();
 
+    /// Sends a vibration to the output device for the given side of the controller
+    bool SetVibration(DeviceIndex device_index, const VibrationValue& vibration,
+                      Common::Input::VibrationSide side);
+
     /**
      * @param use_temporary_value If true tmp_npad_type will be used
      * @return true if the controller style is fullkey

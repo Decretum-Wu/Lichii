@@ -510,6 +510,26 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QCheckBox" name="checkBoxDualSenseHaptics">
+        <property name="toolTip">
+         <string>Play HD Rumble through the DualSense haptic actuators, left and right apart. Requires a USB connection and a single wired DualSense; otherwise standard rumble is used.</string>
+        </property>
+        <property name="text">
+         <string>Enable DualSense HD Haptics</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="checkBoxFrequencyRumble">
+        <property name="toolTip">
+         <string>On controllers with two rumble motors, send each part of the HD Rumble to the motor that matches its frequency: low tones to the heavy motor, high tones to the light one. When off, each band drives its own motor as before.</string>
+        </property>
+        <property name="text">
+         <string>Frequency-aware rumble</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>

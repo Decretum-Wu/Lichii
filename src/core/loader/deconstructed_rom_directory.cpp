@@ -357,10 +357,11 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 }
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
-    FileSys::VirtualDir directory, bool override_update_)
+    FileSys::VirtualDir directory, bool override_update_, bool apply_installed_update_)
     : AppLoader(directory->GetFile("main"))
     , dir(std::move(directory))
     , override_update(override_update_)
+    , apply_installed_update(apply_installed_update_)
 {
     romfs_exefs_dir = dir;
 }
@@ -414,7 +415,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     if (override_update) {
         const FileSys::PatchManager patch_manager(
             metadata.GetTitleID(), system.GetFileSystemController(), system.GetContentProvider());
-        dir = patch_manager.PatchExeFS(dir);
+        dir = patch_manager.PatchExeFS(dir, apply_installed_update);
     }
 
     // Reread in case PatchExeFS affected the main.npdm

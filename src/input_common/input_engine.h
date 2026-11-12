@@ -131,6 +131,11 @@ public:
         return false;
     }
 
+    // Returns true if the device smooths vibrations itself and takes every update
+    virtual bool IsVibrationStreamed([[maybe_unused]] const PadIdentifier& identifier) {
+        return false;
+    }
+
     // Sets polling mode to a controller
     virtual Common::Input::DriverResult SetPollingMode(
         [[maybe_unused]] const PadIdentifier& identifier,
