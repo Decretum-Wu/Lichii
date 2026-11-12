@@ -225,6 +225,9 @@ public:
     /// Whether a channel is suspended on a semaphore acquire (callable from any thread).
     [[nodiscard]] bool HasSuspendedChannels() const;
 
+    /// Whether the GPU can move again only once the CPU releases a semaphore (any thread).
+    [[nodiscard]] bool IsWaitingForGuest() const;
+
     [[nodiscard]] bool UseNvdec() const;
 
     void RendererFrameEndNotify();

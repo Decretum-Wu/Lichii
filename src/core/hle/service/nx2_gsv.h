@@ -2137,8 +2137,8 @@ private:
     }
 
     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
-    /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
-    /// Returns whether the fence was reached.
+    /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later),
+    /// and at once while only the CPU can release the GPU. Returns whether the fence was reached.
     bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
             return true;
@@ -2172,6 +2172,11 @@ private:
             while (!wake->done && system.IsPoweredOn() &&
                    std::chrono::steady_clock::now() < deadline) {
                 if (unless_gpu_waits) {
+                    // Title 1 releases them only after this present returns: the 3 ms cost
+                    // about 4 ms of every frame there.
+                    if (system.GPU().IsWaitingForGuest()) {
+                        break;
+                    }
                     gpu_waited |= system.GPU().HasSuspendedChannels();
                     if (gpu_waited &&
                         std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {

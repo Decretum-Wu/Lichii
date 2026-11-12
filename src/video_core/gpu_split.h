@@ -272,6 +272,10 @@ public:
         Count(g_acquire_stats.settles);
         RequestIdleHook();
     }
+    /// The back executed everything sent so far and ran its idle hook (front).
+    [[nodiscard]] bool BackIdle() const {
+        return consumed.load(std::memory_order_acquire) == write_position && BackQuiet();
+    }
     /// Logs g_acquire_stats every 10 s (front, while they count).
     void ReportAcquire();
     /// Waits until the back executed everything sent so far.
