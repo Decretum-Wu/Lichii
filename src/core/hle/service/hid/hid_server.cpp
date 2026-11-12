@@ -1142,9 +1142,10 @@ Result IHidServer::SendNx2VibrationValues(
 Result IHidServer::SendVibrationValueInMode(std::array<u8, 0x18> raw,
                                             ClientAppletResourceUserId aruid) {
     // Two layouts are proposed for the 0x18 bytes before the aruid, both with the value at 0x08:
-    // the handle at 0x00 and a u32 mode at 0x04, or a u16 mode at 0x00 and the handle at 0x04.
-    // A handle's first byte is its npad style, which the modes seen in 214 (0 and 2) can't pass
-    // for, so the first offset holding a valid handle wins. Requests that fit neither are dropped, as 213 was before.
+    // a mode at 0x00 and the handle at 0x04 (most decoders), or the handle at 0x00 and a u32 mode
+    // at 0x04. A handle's first byte is its npad style, which the modes seen in 214 (0 and 2)
+    // can't pass for, so the first offset holding a valid handle wins. Requests that fit neither
+    // are dropped, as 213 was before.
     Core::HID::VibrationDeviceHandle handle{};
     Core::HID::VibrationValue value{};
     std::memcpy(&value, raw.data() + 0x08, sizeof(value));
@@ -1152,7 +1153,7 @@ Result IHidServer::SendVibrationValueInMode(std::array<u8, 0x18> raw,
                                 std::isfinite(value.high_amplitude) &&
                                 std::isfinite(value.low_frequency) &&
                                 std::isfinite(value.high_frequency);
-    constexpr std::array<std::size_t, 2> handle_offsets{0x00, 0x04};
+    constexpr std::array<std::size_t, 2> handle_offsets{0x04, 0x00};
     const bool has_handle = std::ranges::any_of(handle_offsets, [&](std::size_t offset) {
         std::memcpy(&handle, raw.data() + offset, sizeof(handle));
         return IsVibrationHandleValid(handle).IsSuccess();
