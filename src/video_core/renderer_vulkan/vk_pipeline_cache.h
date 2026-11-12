@@ -337,7 +337,7 @@ private:
     std::atomic_bool flush_in_flight{};
 
     /// Requested first when the cache is destroyed, to stop a rewrite of the disk cache: Android
-    /// and yuzu_cmd load with a stop token that never stops
+    /// and lichii_cmd load with a stop token that never stops
     std::stop_source serialization_stop;
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;

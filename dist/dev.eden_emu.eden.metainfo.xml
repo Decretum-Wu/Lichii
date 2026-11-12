@@ -36,8 +36,8 @@ SPDX-License-Identifier: CC0-1.0
   <url type="contribute">https://git.eden-emu.dev/eden-emu/eden</url>
   <launchable type="desktop-id">dev.eden_emu.eden.desktop</launchable>
   <provides>
-    <binary>yuzu</binary>
-    <binary>yuzu-cmd</binary>
+    <binary>lichii</binary>
+    <binary>lichii-cmd</binary>
   </provides>
   <supports>
     <control>pointing</control>

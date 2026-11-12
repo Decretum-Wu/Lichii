@@ -72,7 +72,7 @@ android {
         externalNativeBuild {
             cmake {
                 val extraCMakeArgs =
-                    (project.findProperty("YUZU_ANDROID_ARGS") as String?)?.split("\\s+".toRegex())
+                    (project.findProperty("LICHII_ANDROID_ARGS") as String?)?.split("\\s+".toRegex())
                         ?: emptyList()
 
                 arguments.addAll(
@@ -80,12 +80,12 @@ android {
                         "-DENABLE_QT=0", // Don't use QT
                         "-DENABLE_WEB_SERVICE=1", // Enable web service
                         "-DANDROID_ARM_NEON=true", // cryptopp requires Neon to work
-                        "-DYUZU_USE_CPM=ON",
+                        "-DLICHII_USE_CPM=ON",
                         "-DCPMUTIL_FORCE_BUNDLED=ON",
-                        "-DYUZU_USE_BUNDLED_FFMPEG=ON",
+                        "-DLICHII_USE_BUNDLED_FFMPEG=ON",
                         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
                         "-DBUILD_TESTING=OFF",
-                        "-DYUZU_TESTS=OFF",
+                        "-DLICHII_TESTS=OFF",
                         "-DDYNARMIC_TESTS=OFF",
                         *extraCMakeArgs.toTypedArray()
                     )
@@ -224,7 +224,7 @@ android {
 
             externalNativeBuild {
                 cmake {
-                    arguments.add("-DYUZU_LEGACY=ON")
+                    arguments.add("-DLICHII_LEGACY=ON")
                 }
             }
 

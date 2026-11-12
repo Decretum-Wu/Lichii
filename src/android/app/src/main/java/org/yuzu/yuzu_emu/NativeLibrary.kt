@@ -51,7 +51,7 @@ object NativeLibrary {
 
     init {
         try {
-            System.loadLibrary("yuzu-android")
+            System.loadLibrary("lichii-android")
             SDL.setupJNI()
             initJvm()
         } catch (ex: UnsatisfiedLinkError) {

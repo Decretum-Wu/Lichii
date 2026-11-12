@@ -23,7 +23,7 @@ else()
 endif()
 
 if (lz4_FOUND AND NOT TARGET lz4::lz4)
-    if (TARGET LZ4::lz4_shared AND NOT YUZU_STATIC_BUILD)
+    if (TARGET LZ4::lz4_shared AND NOT LICHII_STATIC_BUILD)
         add_library(lz4::lz4 ALIAS LZ4::lz4_shared)
     elseif (TARGET LZ4::lz4_static)
         add_library(lz4::lz4 ALIAS LZ4::lz4_static)

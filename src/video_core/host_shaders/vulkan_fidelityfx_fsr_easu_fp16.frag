@@ -3,7 +3,7 @@
 #version 460 core
 #extension GL_GOOGLE_include_directive : enable
 
-#define YUZU_USE_FP16
+#define LICHII_USE_FP16
 #define USE_EASU 1
 #define VERSION 1
 

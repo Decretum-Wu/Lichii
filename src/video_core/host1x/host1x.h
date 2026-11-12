@@ -189,7 +189,7 @@ public:
         Tegra::Host1x::Nvdec,
         Tegra::Host1x::Vic
     >, 1024> devices;
-#ifdef YUZU_LEGACY
+#ifdef LICHII_LEGACY
     std::once_flag nvdec_first_init;
     std::once_flag vic_first_init;
 #endif

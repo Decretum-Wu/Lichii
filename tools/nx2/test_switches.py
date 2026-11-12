@@ -20,7 +20,7 @@ class SwitchDiscovery(unittest.TestCase):
         self.config = self.root / "config/lichii"
         self.config.mkdir(parents=True)
         source = self.root / "probe.cpp"
-        source.write_text('''#include "yuzu/nx2_switches.h"
+        source.write_text('''#include "lichii/nx2_switches.h"
 #include <iostream>
 namespace Common::FS {
 std::filesystem::path GetDataDirectory(const std::string&) {
