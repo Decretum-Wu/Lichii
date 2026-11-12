@@ -174,8 +174,8 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 native_critical_memory{};
     u64 native_expected_memory{};
     u64 budget_check_frames{};
-    /// Usage under which the collector keeps recently used images (EvictionAge): the driver's
-    /// budget less the out-of-memory and block slack margins, within the host's commit bound.
+    /// Usage under which the collector keeps recently used images (EvictionAge): the critical
+    /// threshold the budget, its margins and the host's commit allow, before the 5 GiB cap.
     u64 retention_limit{};
     u64 logged_critical_memory{}; ///< The critical threshold of the last thresholds line logged
     u32 seen_pressure_events{};   ///< Allocator pressure events already answered
