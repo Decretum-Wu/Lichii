@@ -2492,6 +2492,10 @@ void MainWindow::OnEmulationStopTimeout() {
 void MainWindow::TerminateEmulationThread() {
     if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
         LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
+        // On Windows terminate() emits finished with the thread's mutex held, and
+        // OnEmulationStopped calls isRunning(), which takes it. Both callers run it afterwards.
+        disconnect(QtCommon::emu_thread.get(), &QThread::finished, this,
+                   &MainWindow::OnEmulationStopped);
         QtCommon::emu_thread->terminate();
         QtCommon::emu_thread->wait();
     }
