@@ -121,7 +121,8 @@ inline void LoadCaCertStore(SSL_CTX* ctx, const char* ca_cert, std::size_t size)
 /// The roots a connection verifies against while the custom servers' CA (EDEN_NX2_ONLINE_CA) is
 /// trusted: the usual ones plus that CA. Built once, the first time it is wanted. Connections
 /// get it through SSL_set1_verify_cert_store, so the CA follows the setting each time a game
-/// starts and is never added to the context's own store. Null when it can't be built.
+/// starts and is never added to the context's own store. Null when the CA can't be loaded
+/// (logged once): connections then verify against the context's store alone.
 X509_STORE* TestCaStore() {
     static std::once_flag once;
     static X509_STORE* store = nullptr;
@@ -144,7 +145,8 @@ X509_STORE* TestCaStore() {
             LOG_INFO(Service_SSL, "Trusting the custom servers' CA (EDEN_NX2_ONLINE_CA)");
         } else {
             X509_STORE_free(roots);
-            LOG_ERROR(Service_SSL, "The custom servers' CA (EDEN_NX2_ONLINE_CA) could not be loaded");
+            LOG_ERROR(Service_SSL,
+                      "The custom servers' CA (EDEN_NX2_ONLINE_CA) could not be loaded; ignored");
             CheckOpenSSLErrors();
         }
         X509_free(ca);
@@ -171,12 +173,13 @@ public:
             return CheckOpenSSLErrors();
         }
 
-        // Empty unless "Redirect online services to custom servers" is ticked.
+        // Empty unless "Redirect online services to custom servers" is ticked. A CA that can't
+        // be loaded is ignored: the context's store then verifies the connection.
         if (!Network::LocalRedirect::TestCa().empty()) {
             X509_STORE* const store = TestCaStore();
-            if (store == nullptr || SSL_set1_verify_cert_store(ssl, store) != 1) {
-                LOG_ERROR(Service_SSL, "Can't verify with the custom servers' CA");
-                return ResultInternalError;
+            if (store != nullptr && SSL_set1_verify_cert_store(ssl, store) != 1) {
+                LOG_ERROR(Service_SSL, "SSL_set1_verify_cert_store failed");
+                return CheckOpenSSLErrors();
             }
         }
 
