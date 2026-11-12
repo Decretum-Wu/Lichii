@@ -950,9 +950,11 @@ void KeplerCompute::CheckDlssNetwork() {
                                  : VideoCore::GameDlssReason::OutputMismatch;
     LOG_WARNING(HW_GPU,
                 "Game DLSS network: {} in {} checks in a row (last: {}/{} blocks mismatched, worst "
-                "{:.3f}, {} invalid samples); the replacement upscale draws the output from now on",
+                "{:.3f}, gain {:.3f}, {} invalid samples); the replacement upscale draws the output "
+                "from now on",
                 VideoCore::GameDlssReasonText(dlss_chain.failure), dlss_chain.bad_checks,
-                probe->mismatched, probe->blocks, probe->worst, probe->invalid_samples);
+                probe->mismatched, probe->blocks, probe->worst, probe->gain,
+                probe->invalid_samples);
 }
 
 // Logs what draws the game's DLSS evaluation, when that changes.

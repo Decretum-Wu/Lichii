@@ -87,11 +87,16 @@ constexpr DescriptorBankInfo BANK_INFO{
     .score = 3,
 };
 
-/// A block's output brightness may differ from its input's by this share of the input (plus a
-/// floor for dark blocks) before it counts as mismatched. Working networks stay below 0.5 in every
-/// block of Fortune's Weave's title and Kunlun Base; frozen ones exceed it in 6-10% of the blocks.
+/// A block's output brightness (scaled by the frame's gain, below) may differ from its input's by
+/// this share of the input (plus a floor for dark blocks) before it counts as mismatched. Working
+/// networks stay below 0.5 in every block of Fortune's Weave's title and Kunlun Base; frozen ones
+/// exceed it in 6-10% of the blocks.
 constexpr f32 MISMATCH = 0.5f;
 constexpr f32 DARK_FLOOR = 0.01f;
+/// The gain is taken as 1 outside this range: an output that much darker or brighter than its
+/// input (black, or blown out) is not an exposure change.
+constexpr f32 MIN_GAIN = 1.0f / 16.0f;
+constexpr f32 MAX_GAIN = 16.0f;
 
 } // Anonymous namespace
 
@@ -193,9 +198,31 @@ VideoCore::GameDlssProbe DlssNetworkProbe::Read(u32 slot) const {
     std::array<f32, GRID_WIDTH * GRID_HEIGHT * 4> blocks;
     std::memcpy(blocks.data(), results.Mapped().data() + SLOT_SIZE * slot, sizeof(blocks));
     VideoCore::GameDlssProbe probe{.blocks = GRID_WIDTH * GRID_HEIGHT};
+    // A network may write its output on another exposure than its input: The Duskbloods' is about
+    // 0.21 times its input in every lit block, so its brighter blocks always mismatched and the
+    // network was dropped as soon as a scene had enough of them. Blocks are compared after scaling
+    // the output by the frame's overall output/input brightness: a network that keeps the image
+    // passes whatever its exposure, and a frozen or corrupted one still mismatches block by block.
+    f64 input_total = 0.0;
+    f64 output_total = 0.0;
     for (u32 block = 0; block < GRID_WIDTH * GRID_HEIGHT; ++block) {
         const f32 input = blocks[block * 4];
         const f32 output = blocks[block * 4 + 1];
+        if (std::isfinite(input) && std::isfinite(output)) {
+            input_total += std::max(input, 0.0f);
+            output_total += std::max(output, 0.0f);
+        }
+    }
+    // A black frame says nothing about the exposure.
+    if (input_total > f64{DARK_FLOOR} && output_total > 0.0) {
+        const f32 gain = static_cast<f32>(output_total / input_total);
+        if (gain >= MIN_GAIN && gain <= MAX_GAIN) {
+            probe.gain = gain;
+        }
+    }
+    for (u32 block = 0; block < GRID_WIDTH * GRID_HEIGHT; ++block) {
+        const f32 input = blocks[block * 4];
+        const f32 output = blocks[block * 4 + 1] / probe.gain;
         probe.invalid_samples += static_cast<u32>(blocks[block * 4 + 2]);
         const f32 difference = std::abs(output - input) / (std::max(input, 0.0f) + DARK_FLOOR);
         if (!std::isfinite(difference) || difference > MISMATCH) {
