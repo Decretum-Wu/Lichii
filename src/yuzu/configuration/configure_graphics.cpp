@@ -222,7 +222,11 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     std::map<u32, QWidget*> hold_graphics;
     std::vector<QWidget*> hold_api;
     QCheckBox* frame_gen_checkbox = nullptr;
+    QComboBox* frame_gen_type_combobox = nullptr;
     QCheckBox* nvidia_dlss_checkbox = nullptr;
+#ifdef EGLANTINE_STREAMLINE
+    NvidiaDlssPanel* nvidia_dlss_panel = nullptr;
+#endif
 
     for (const auto setting : Settings::values.linkage.by_category[Settings::Category::Renderer]) {
 #ifndef HAS_RESHADE
@@ -372,10 +376,8 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             group_layout->setContentsMargins(0, 0, 0, 0);
             group_layout->setSpacing(2);
             group_layout->addWidget(widget);
-            NvidiaDlssPanel* panel = new NvidiaDlssPanel(group);
-            group_layout->addWidget(panel);
-            panel->setVisible(widget->checkbox->isChecked());
-            connect(widget->checkbox, &QCheckBox::toggled, panel, &QWidget::setVisible);
+            nvidia_dlss_panel = new NvidiaDlssPanel(group);
+            group_layout->addWidget(nvidia_dlss_panel);
             hold_graphics.emplace(setting->Id(), group);
 #endif
         } else if (setting->Id() == Settings::values.amd_fsr4.Id()) {
@@ -392,6 +394,9 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             hold_graphics.emplace(setting->Id(), amd_fsr4_group);
         } else if (setting->Id() == Settings::values.frame_gen.Id()) {
             frame_gen_checkbox = widget->checkbox;
+            hold_graphics.emplace(setting->Id(), widget);
+        } else if (setting->Id() == Settings::values.frame_gen_type.Id()) {
+            frame_gen_type_combobox = widget->combobox;
             hold_graphics.emplace(setting->Id(), widget);
         } else {
             hold_graphics.emplace(setting->Id(), widget);
@@ -416,6 +421,37 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             }
         }
     }
+
+#ifdef EGLANTINE_STREAMLINE
+    // The panel lists DLSS Frame Generation's files too while that frame generation type is
+    // chosen, and shows for it even before "Use NVIDIA DLSS" is ticked.
+    if (nvidia_dlss_panel != nullptr) {
+        const auto update_panel = [=] {
+            const bool frame_gen =
+                frame_gen_checkbox != nullptr && frame_gen_checkbox->isChecked() &&
+                frame_gen_type_combobox != nullptr &&
+                frame_gen_type_combobox->currentData().toUInt() ==
+                    static_cast<u32>(Settings::FrameGenType::NvidiaDlssG);
+            nvidia_dlss_panel->SetFrameGenWanted(frame_gen);
+            nvidia_dlss_panel->setVisible(nvidia_dlss_checkbox->isChecked() || frame_gen);
+        };
+        update_panel();
+        connect(nvidia_dlss_checkbox, &QCheckBox::toggled, nvidia_dlss_panel, update_panel);
+        if (frame_gen_checkbox != nullptr) {
+            connect(frame_gen_checkbox, &QCheckBox::toggled, nvidia_dlss_panel, update_panel);
+        }
+        if (frame_gen_type_combobox != nullptr) {
+            connect(frame_gen_type_combobox, &QComboBox::currentIndexChanged, nvidia_dlss_panel,
+                    update_panel);
+        }
+    }
+#else
+    // Only builds with NVIDIA Streamline (Windows) have DLSS Frame Generation.
+    if (frame_gen_type_combobox != nullptr) {
+        frame_gen_type_combobox->removeItem(frame_gen_type_combobox->findData(
+            static_cast<u32>(Settings::FrameGenType::NvidiaDlssG)));
+    }
+#endif
 
     for (auto widget : hold_api) {
         api_grid_layout->addWidget(widget);

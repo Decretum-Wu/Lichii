@@ -242,6 +242,8 @@ private:
 
     /// The mode SetNonBlock gave the socket.
     std::atomic_bool is_non_blocking{false};
+    /// The type Initialize gave the socket (Unspecified for an accepted one).
+    Type socket_type = Type::Unspecified;
 };
 
 std::pair<s32, Errno> Poll(std::vector<PollFD>& poll_fds, s32 timeout);
