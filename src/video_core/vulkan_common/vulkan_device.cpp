@@ -804,7 +804,9 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         descriptor_indexing.descriptorBindingStorageTexelBufferUpdateAfterBind = false;
         descriptor_indexing.descriptorBindingUpdateUnusedWhilePending = false;
         descriptor_indexing.descriptorBindingVariableDescriptorCount = false;
-        descriptor_indexing.runtimeDescriptorArray = false;
+        // The fsr4-vk port's shaders declare runtime descriptor arrays.
+        descriptor_indexing.runtimeDescriptorArray =
+            descriptor_indexing.runtimeDescriptorArray && WantsFsr4Port(driver_id);
     }
 
     // VK_EXT_descriptor_buffer requires VK_KHR_buffer_device_address
