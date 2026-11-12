@@ -408,3 +408,26 @@ TEST_CASE("Fast draw keeps vertex stream addresses and sizes light", "[fast_draw
     CHECK_FALSE(light(stream(0, 3)));     // frequency
     CHECK_FALSE(light(0x600 / 4 + 64));   // past the sizes
 }
+
+TEST_CASE("Fast draw keeps vertex attribute formats light only with dynamic vertex input",
+          "[fast_draw]") {
+    DeltaFixture f;
+    constexpr u32 formats = MAXWELL3D_REG_INDEX(vertex_attrib_format);
+    const auto light = [&](u32 method) {
+        FastDraw::g_delta = {};
+        const u64 serial = FastDraw::Serial();
+        f.Write(method, f.Reg(method) + 0x40); // the attribute's offset
+        return FastDraw::Serial() == serial;
+    };
+    const bool previous = FastDraw::g_dynamic_vertex_input.exchange(false);
+    CHECK_FALSE(light(formats)); // the formats are in the pipeline key
+    FastDraw::g_dynamic_vertex_input.store(true);
+    CHECK(light(formats));
+    CHECK(light(formats + Maxwell3D::Regs::NumVertexAttributes - 1));
+    CHECK_FALSE(light(formats + Maxwell3D::Regs::NumVertexAttributes));
+    f.DrawArrays(0, 3);
+    f.Write(formats + 2, f.Reg(formats + 2) + 0x40);
+    f.DrawArrays(3, 3);
+    CHECK(f.Reusable());
+    FastDraw::g_dynamic_vertex_input.store(previous);
+}
