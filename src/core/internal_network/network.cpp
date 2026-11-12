@@ -33,6 +33,7 @@
 #include "common/common_types.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "common/string_util.h"
 #include "core/internal_network/local_redirect.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/network_interface.h"
@@ -797,8 +798,22 @@ std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(
     }
     addrinfo hints{};
     hints.ai_family = AF_INET; // Switch only supports IPv4.
+    // Loopback only: no query reaches the host's resolver; only numeric addresses and localhost
+    // resolve, and the filter below keeps the loopback ones.
+    const bool loopback_only = LocalRedirect::LoopbackOnly();
+    std::string lookup = host;
+    if (loopback_only) {
+        hints.ai_flags = AI_NUMERICHOST;
+        if (Common::ToLower(lookup) == "localhost") {
+            lookup = "127.0.0.1";
+        }
+    }
     addrinfo* addrinfo;
-    s32 gai_err = getaddrinfo(host.c_str(), service.has_value() ? service->c_str() : nullptr, &hints, &addrinfo);
+    s32 gai_err = getaddrinfo(lookup.c_str(), service.has_value() ? service->c_str() : nullptr, &hints, &addrinfo);
+    if (gai_err != 0 && loopback_only) {
+        LOG_DEBUG(Network, "Host redirect: lookup of {} blocked (loopback only)", host);
+        return GetAddrInfoError::NONAME;
+    }
     if (gai_err != 0) {
         return TranslateGetAddrInfoErrorFromNative(gai_err);
     }
@@ -820,7 +835,7 @@ std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(
         }
     }
     freeaddrinfo(addrinfo);
-    if (LocalRedirect::LoopbackOnly()) {
+    if (loopback_only) {
         std::erase_if(ret, [](const AddrInfo& info) { return !LocalRedirect::Allowed(info.addr); });
         if (ret.empty()) {
             LOG_DEBUG(Network, "Host redirect: lookup of {} blocked (loopback only)", host);
@@ -964,6 +979,12 @@ std::pair<SocketBase::AcceptResult, Errno> Socket::Accept() {
         .socket = std::make_unique<Socket>(new_socket),
         .sockaddr_in = TranslateToSockAddrIn(addr, addrlen),
     };
+    if (!LocalRedirect::Allowed(result.sockaddr_in)) {
+        const auto& peer = result.sockaddr_in;
+        LOG_DEBUG(Network, "Host redirect: connection from {}.{}.{}.{}:{} refused (loopback only)",
+                  peer.ip[0], peer.ip[1], peer.ip[2], peer.ip[3], peer.portno);
+        return {AcceptResult{}, Errno::CONNABORTED};
+    }
 
     return {std::move(result), Errno::SUCCESS};
 }

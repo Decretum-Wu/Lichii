@@ -11,6 +11,7 @@
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
+#include <openssl/x509.h>
 
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -73,8 +74,15 @@ std::vector<u8> ReadCa(const std::string& path) {
     std::ifstream file{std::filesystem::path{Common::FS::ToU8String(path)}, std::ios::binary};
     file.read(reinterpret_cast<char*>(der.data()), MaxCaBytes + 1);
     der.resize(static_cast<size_t>(file.gcount()));
-    // A DER certificate is an ASN.1 SEQUENCE; a PEM file or a missing one is not.
-    if (der.empty() || der.size() > MaxCaBytes || der.front() != 0x30) {
+    // The whole file must be one X.509 certificate in DER: not PEM, a key or trailing bytes.
+    const unsigned char* cursor = der.data();
+    X509* const certificate =
+        der.size() <= MaxCaBytes
+            ? d2i_X509(nullptr, &cursor, static_cast<long>(der.size()))
+            : nullptr;
+    const bool whole = certificate != nullptr && cursor == der.data() + der.size();
+    X509_free(certificate);
+    if (!whole) {
         LOG_WARNING(Network,
                     "Host redirect: the CA certificate is not a DER certificate of at most 64 KiB; "
                     "ignored");
