@@ -229,6 +229,7 @@ add_executable(tests
     video_core/indirect_reset.cpp
     video_core/stale_pages.cpp
     input_common/calibration_configuration_job.cpp
+    input_common/rumble_mapping.cpp
 )
 
 create_target_directory_groups(tests)
