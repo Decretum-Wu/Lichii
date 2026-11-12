@@ -7,7 +7,6 @@
 #include <cstdlib>
 #include <fstream>
 #include <initializer_list>
-#include <iterator>
 #include <mutex>
 
 #include "common/logging.h"
@@ -98,11 +97,18 @@ struct Config {
         const char* loopback = std::getenv("EDEN_NX2_LOOPBACK_ONLY");
         loopback_only = loopback != nullptr && loopback[0] != '\0' && loopback[0] != '0';
         if (const char* path = std::getenv("EDEN_NX2_ONLINE_CA"); path && *path) {
+            // Certificates are a few KiB: anything past the limit isn't one, and isn't read.
+            constexpr std::streamsize MaxCaBytes = 64 * 1024;
             std::ifstream file{path, std::ios::binary};
-            test_ca.assign(std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{});
+            test_ca.resize(MaxCaBytes + 1);
+            file.read(reinterpret_cast<char*>(test_ca.data()), MaxCaBytes + 1);
+            test_ca.resize(static_cast<size_t>(file.gcount()));
             // A DER certificate is an ASN.1 SEQUENCE; a PEM file or a missing one is not.
-            if (test_ca.empty() || test_ca.front() != 0x30) {
-                LOG_WARNING(Network, "EDEN_NX2_ONLINE_CA={}: not a DER certificate; ignored", path);
+            if (test_ca.empty() || test_ca.size() > MaxCaBytes || test_ca.front() != 0x30) {
+                LOG_WARNING(Network,
+                            "EDEN_NX2_ONLINE_CA={}: not a DER certificate of at most 64 KiB; "
+                            "ignored",
+                            path);
                 test_ca.clear();
             }
         }
