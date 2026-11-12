@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Shown under the AMD FSR 4 setting: whether AMD's FidelityFX runtime is downloaded, and a button
-// that fetches it from AMD's FidelityFX SDK release on GitHub.
+// Shown under the FSR 4 setting. On Windows: whether AMD's FidelityFX runtime is downloaded, and a
+// button that fetches it from AMD's FidelityFX SDK release on GitHub. On Linux: whether the fsr4-vk
+// port is in the package.
 
 #pragma once
 

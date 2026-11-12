@@ -122,7 +122,7 @@ jobs:
             libswscale-dev pkg-config zlib1g-dev libva-dev libvdpau-dev \
             spirv-tools spirv-headers libusb-1.0-0-dev \
             libboost-dev libboost-fiber-dev libboost-context-dev \
-            libopus-dev libasound2-dev ccache \
+            libopus-dev libasound2-dev ccache llvm python3-zstandard \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
 
@@ -397,6 +397,30 @@ jobs:
             .sccache
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
+      # fsr4-vk, the community Vulkan port of FSR 4 that the x86-64 Linux packages ship
+      # (tools/fsr4-vk/build.sh pins its commit and AMD's DLL it is built from). The build's inputs
+      # are all in the script, so its output is cached by the script's hash. Its shader conversion
+      # fails its own asset check on arm64 hosts, so the aarch64 packages go without it.
+      - name: Restore fsr4-vk
+        if: startsWith(matrix.platform, 'linux-x86_64')
+        id: fsr4-vk
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/fsr4-vk
+          key: fsr4-vk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/fsr4-vk/build.sh') }}
+
+      - name: Build fsr4-vk
+        if: startsWith(matrix.platform, 'linux-x86_64') && steps.fsr4-vk.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash tools/fsr4-vk/build.sh "$RUNNER_TEMP/fsr4-vk-work" "$RUNNER_TEMP/fsr4-vk"
+
+      - name: Save fsr4-vk
+        if: startsWith(matrix.platform, 'linux-x86_64') && steps.fsr4-vk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/fsr4-vk
+          key: ${{ steps.fsr4-vk.outputs.cache-primary-key }}
+
       # Both Linux packages are self-contained: linuxdeploy bundles every library the two programs
       # need except the base system ones (glibc, X11/Wayland client libraries, the GPU driver and
       # Vulkan loader), and its Qt plugin adds the Qt libraries and platform plugins. The AppImage
@@ -432,11 +456,19 @@ jobs:
           export LDAI_OUTPUT="lichii-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
           export ARCH="$arch"
-          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/bin AppDir/usr/share/licenses
           cp build/release/bin/nx2_switches.txt AppDir/usr/bin/
+          # The emulator loads fsr4-vk from <exe dir>/../lib (FfxRuntime::PortLibrary).
+          fsr4=amd_fidelityfx_upscaler_vk.so
+          fsr4_library=()
+          if [ "$arch" = x86_64 ]; then
+            cp -r "$RUNNER_TEMP/fsr4-vk/licenses/fsr4-vk" AppDir/usr/share/licenses/
+            fsr4_library=(--library "$RUNNER_TEMP/fsr4-vk/$fsr4")
+          fi
           "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
             --executable build/release/bin/lichii \
             --executable build/release/bin/eden-cli \
+            "${fsr4_library[@]}" \
             --desktop-file dist/io.github.zortos293.lichii.desktop \
             --icon-file "$icon" \
             --plugin qt \
@@ -449,6 +481,18 @@ jobs:
           ln -s usr/bin/eden-cli lichii/eden-cli
           tar -czf "lichii-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" lichii
           ls -la "lichii-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz"
+          # Both x86-64 packages must carry fsr4-vk and its licences.
+          if [ "$arch" = x86_64 ]; then
+            test "$(tar -tzf "lichii-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" |
+              grep -cFx -e "lichii/usr/lib/$fsr4" -e lichii/usr/share/licenses/fsr4-vk/LICENSE \
+                -e lichii/usr/share/licenses/fsr4-vk/AMD-FidelityFX-SDK-license.md)" = 3
+            extract="$RUNNER_TEMP/appimage-check"
+            mkdir -p "$extract"
+            (cd "$extract" &&
+              "$GITHUB_WORKSPACE/$LDAI_OUTPUT" --appimage-extract "usr/lib/$fsr4" > /dev/null)
+            cmp "$extract/squashfs-root/usr/lib/$fsr4" "lichii/usr/lib/$fsr4"
+            nm -D --defined-only "lichii/usr/lib/$fsr4" | grep -w ffxCreateContext
+          fi
 
       - name: Package Windows binary
         if: startsWith(matrix.platform, 'windows')

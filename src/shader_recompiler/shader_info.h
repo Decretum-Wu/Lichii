@@ -242,6 +242,9 @@ struct TextureDescriptor {
     /// Whether the shader indexes the descriptor: an array, whose count the descriptor limits set
     /// (LimitSampledTextureArrays). It stays one when they cut it to a single element.
     bool is_descriptor_array{};
+    /// Whether the constant buffer word above reaches the handle only as the address of a load:
+    /// a pointer, never a texture handle, which binds no texture (see HandleIsStoragePointer)
+    bool handle_is_pointer_word{};
 
     auto operator<=>(const TextureDescriptor&) const = default;
 };
@@ -366,6 +369,10 @@ struct Info {
     bool uses_global_memory{};
     bool requires_coherent_global_memory{};
     bool requires_coherent_image_memory{};
+    /// A texture descriptor's handle word is a pointer the program doesn't bind as a storage
+    /// buffer: the capture saw that pointer null or unmapped, and a capture with it mapped
+    /// translates differently (a handle table instead of the word)
+    bool binds_unmapped_pointer_word{};
     /// Set by the SPIR-V backend when HMMA runs on cooperative matrices, which need full subgroups
     bool uses_cooperative_matrix{};
     /// Native global accesses whose pointer is chosen at run time: every storage buffer descriptor

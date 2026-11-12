@@ -56,6 +56,10 @@ QStringList Describe(QWidget* parent,
         if (title.endsWith(QLatin1Char{':'})) {
             title.chop(1);
         }
+        if (!change.game.empty()) {
+            title = RecommendedSettingsDialog::tr("%1 (game %2)")
+                        .arg(title, QString::fromStdString(change.game));
+        }
         lines.append(QStringLiteral("%1: %2 \u2192 %3")
                          .arg(title, text_of(*change.setting, change.previous),
                               text_of(*change.setting, change.current)));
@@ -89,9 +93,10 @@ bool RecommendedSettingsDialog::Ask(QWidget* parent) {
     box.setWindowTitle(tr("Recommended settings"));
     box.setText(tr("Do you want to use the recommended settings from the Lichii developer?"));
     box.setInformativeText(
-        tr("They improve performance for most games. Lichii keeps your own settings, so you can "
-           "go back at any time with Help > Restore My Previous Settings. Per-game settings do "
-           "not change."));
+        tr("They improve performance for most games. Games with their own value for one of these "
+           "settings in their per-game settings use the recommended value too; other per-game "
+           "settings do not change. Lichii keeps your own settings, global and per-game, so you "
+           "can go back at any time with Help > Restore My Previous Settings."));
     auto* const use = box.addButton(tr("Use recommended settings"), QMessageBox::AcceptRole);
     box.addButton(tr("Not now"), QMessageBox::RejectRole);
     box.setDefaultButton(use);
@@ -107,7 +112,8 @@ void RecommendedSettingsDialog::ShowApplied(
             tr("Your settings already match the recommended settings. Nothing changed."));
         return;
     }
-    ShowChanges(parent, tr("Recommended settings"), tr("Lichii now uses the recommended settings."),
+    ShowChanges(parent, tr("Recommended settings"),
+                tr("Lichii now uses the recommended settings, in every game."),
                 Describe(parent, changes, tr("On"), tr("Off")),
                 tr("To go back, use Help > Restore My Previous Settings."));
 }
