@@ -55,7 +55,7 @@ public:
         // This runs for every texture and sampler of every draw. An entry within one page is
         // contiguous in host memory, so a single page lookup replaces the generic block read.
         const bool one_page =
-            (gpu_addr & Core::Memory::YUZU_PAGEMASK) + sizeof(T) <= Core::Memory::YUZU_PAGESIZE;
+            (gpu_addr & Core::Memory::LICHII_PAGEMASK) + sizeof(T) <= Core::Memory::LICHII_PAGESIZE;
         if (const u8* const host = one_page ? gpu_memory.GetPointer(gpu_addr) : nullptr) {
             std::memcpy(std::addressof(result.first), host, sizeof(T));
         } else {

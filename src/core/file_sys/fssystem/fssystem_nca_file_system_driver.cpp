@@ -45,8 +45,8 @@ s64 GetBodySize(const std::shared_ptr<NcaReader>& reader) {
 }
 
 class SharedNcaBodyStorage : public IReadOnlyStorage {
-    YUZU_NON_COPYABLE(SharedNcaBodyStorage);
-    YUZU_NON_MOVEABLE(SharedNcaBodyStorage);
+    LICHII_NON_COPYABLE(SharedNcaBodyStorage);
+    LICHII_NON_MOVEABLE(SharedNcaBodyStorage);
 
 private:
     VirtualFile m_storage;

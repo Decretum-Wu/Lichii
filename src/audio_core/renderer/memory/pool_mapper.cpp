@@ -184,8 +184,8 @@ MemoryPoolInfo::ResultState PoolMapper::Update(MemoryPoolInfo& pool,
     }
 
     if (in_params.address == 0 || in_params.size == 0
-    || !Common::IsAligned(in_params.address, Core::Memory::YUZU_PAGESIZE)
-    || !Common::IsAligned(in_params.size, Core::Memory::YUZU_PAGESIZE)) {
+    || !Common::IsAligned(in_params.address, Core::Memory::LICHII_PAGESIZE)
+    || !Common::IsAligned(in_params.size, Core::Memory::LICHII_PAGESIZE)) {
         return MemoryPoolInfo::ResultState::BadParam;
     }
 

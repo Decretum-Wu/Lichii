@@ -13,8 +13,8 @@
 namespace FileSys {
 
 class AesCtrStorage : public IStorage {
-    YUZU_NON_COPYABLE(AesCtrStorage);
-    YUZU_NON_MOVEABLE(AesCtrStorage);
+    LICHII_NON_COPYABLE(AesCtrStorage);
+    LICHII_NON_MOVEABLE(AesCtrStorage);
 
 public:
     static constexpr size_t BlockSize = 0x10;

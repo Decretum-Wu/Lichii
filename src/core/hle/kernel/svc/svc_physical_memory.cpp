@@ -39,12 +39,12 @@ Result SetHeapSize(Core::System& system, u64* out_address, u64 size) {
 Result MapPhysicalMemory(Core::System& system, u64 addr, u64 size) {
     LOG_DEBUG(Kernel_SVC, "called, addr={:#016x}, size={:#x}", addr, size);
 
-    if (!Common::IsAligned(addr, Core::Memory::YUZU_PAGESIZE)) {
+    if (!Common::IsAligned(addr, Core::Memory::LICHII_PAGESIZE)) {
         LOG_ERROR(Kernel_SVC, "Address is not aligned to 4KB, {:#016X}", addr);
         R_THROW(ResultInvalidAddress);
     }
 
-    if (!Common::IsAligned(size, Core::Memory::YUZU_PAGESIZE)) {
+    if (!Common::IsAligned(size, Core::Memory::LICHII_PAGESIZE)) {
         LOG_ERROR(Kernel_SVC, "Size is not aligned to 4KB, {:#X}", size);
         R_THROW(ResultInvalidSize);
     }
@@ -88,12 +88,12 @@ Result MapPhysicalMemory(Core::System& system, u64 addr, u64 size) {
 Result UnmapPhysicalMemory(Core::System& system, u64 addr, u64 size) {
     LOG_DEBUG(Kernel_SVC, "called, addr={:#016x}, size={:#x}", addr, size);
 
-    if (!Common::IsAligned(addr, Core::Memory::YUZU_PAGESIZE)) {
+    if (!Common::IsAligned(addr, Core::Memory::LICHII_PAGESIZE)) {
         LOG_ERROR(Kernel_SVC, "Address is not aligned to 4KB, {:#016X}", addr);
         R_THROW(ResultInvalidAddress);
     }
 
-    if (!Common::IsAligned(size, Core::Memory::YUZU_PAGESIZE)) {
+    if (!Common::IsAligned(size, Core::Memory::LICHII_PAGESIZE)) {
         LOG_ERROR(Kernel_SVC, "Size is not aligned to 4KB, {:#X}", size);
         R_THROW(ResultInvalidSize);
     }

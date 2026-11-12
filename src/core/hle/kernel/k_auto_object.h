@@ -29,8 +29,8 @@ private:                                                                        
     static constexpr inline ClassTokenType ClassToken() { return ::Kernel::ClassToken<CLASS>; }    \
                                                                                                    \
 public:                                                                                            \
-    YUZU_NON_COPYABLE(CLASS);                                                                      \
-    YUZU_NON_MOVEABLE(CLASS);                                                                      \
+    LICHII_NON_COPYABLE(CLASS);                                                                    \
+    LICHII_NON_MOVEABLE(CLASS);                                                                    \
                                                                                                    \
     using BaseClass = BASE_CLASS;                                                                  \
     static constexpr TypeObj GetStaticTypeObj() {                                                  \
@@ -205,7 +205,7 @@ private:
 template <typename T>
 class KScopedAutoObject {
 public:
-    YUZU_NON_COPYABLE(KScopedAutoObject);
+    LICHII_NON_COPYABLE(KScopedAutoObject);
 
     constexpr KScopedAutoObject(KernelCore& kernel_)
         : kernel{kernel_}

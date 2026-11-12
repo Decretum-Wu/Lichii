@@ -8,7 +8,7 @@
 #include <array>
 #include "common/common_types.h"
 
-// This is to consolidate system-wide constants that are used by multiple components of yuzu.
+// This is to consolidate system-wide constants that are used by multiple components of Lichii.
 // This is especially to prevent the case of something in frontend duplicating a constexpr array or
 // directly including some service header for the sole purpose of data.
 namespace Core::Constants {

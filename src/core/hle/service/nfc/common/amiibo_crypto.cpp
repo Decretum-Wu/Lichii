@@ -278,9 +278,9 @@ void Cipher(const DerivedKeys& keys, const NTAG215File& in_data, NTAG215File& ou
 }
 
 bool LoadKeys(InternalKey& locked_secret, InternalKey& unfixed_info) {
-    const auto yuzu_keys_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir);
+    const auto lichii_keys_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir);
 
-    const Common::FS::IOFile keys_file{yuzu_keys_dir / "key_retail.bin",
+    const Common::FS::IOFile keys_file{lichii_keys_dir / "key_retail.bin",
                                        Common::FS::FileAccessMode::Read,
                                        Common::FS::FileType::BinaryFile};
 
@@ -302,8 +302,8 @@ bool LoadKeys(InternalKey& locked_secret, InternalKey& unfixed_info) {
 }
 
 bool IsKeyAvailable() {
-    const auto yuzu_keys_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir);
-    return Common::FS::Exists(yuzu_keys_dir / "key_retail.bin");
+    const auto lichii_keys_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir);
+    return Common::FS::Exists(lichii_keys_dir / "key_retail.bin");
 }
 
 bool DecodeAmiibo(const EncryptedNTAG215File& encrypted_tag_data, NTAG215File& tag_data) {

@@ -85,11 +85,11 @@ constexpr std::underlying_type_t<T> to_underlying(T e) noexcept {
         return std::to_underlying(key) == 0;                                                       \
     }
 
-#define YUZU_NON_COPYABLE(cls)                                                                     \
+#define LICHII_NON_COPYABLE(cls)                                                                   \
     cls(const cls&) = delete;                                                                      \
     cls& operator=(const cls&) = delete
 
-#define YUZU_NON_MOVEABLE(cls)                                                                     \
+#define LICHII_NON_MOVEABLE(cls)                                                                   \
     cls(cls&&) = delete;                                                                           \
     cls& operator=(cls&&) = delete
 

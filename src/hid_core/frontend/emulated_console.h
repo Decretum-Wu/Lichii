@@ -81,8 +81,8 @@ public:
     explicit EmulatedConsole();
     ~EmulatedConsole();
 
-    YUZU_NON_COPYABLE(EmulatedConsole);
-    YUZU_NON_MOVEABLE(EmulatedConsole);
+    LICHII_NON_COPYABLE(EmulatedConsole);
+    LICHII_NON_MOVEABLE(EmulatedConsole);
 
     /// Removes all callbacks created from input devices
     void UnloadInput();

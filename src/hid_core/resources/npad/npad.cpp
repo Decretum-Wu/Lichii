@@ -440,7 +440,7 @@ void NPad::RequestPadStateUpdate(Kernel::KernelCore& kernel, u64 aruid, Core::HI
         InitNewlyAddedController(kernel, aruid, npad_id);
     }
 
-    // This function is unique to yuzu for the turbo buttons and motion to work properly
+    // This function is unique to Lichii for the turbo buttons and motion to work properly
     controller.device->StatusUpdate();
 
     auto& pad_entry = controller.npad_pad_state;

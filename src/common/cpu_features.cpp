@@ -116,7 +116,7 @@ const CPUCaps g_cpu_caps = [] {
     CPUCaps caps = {};
 
     // Assumes the CPU supports the CPUID instruction. Those that don't would likely not support
-    // yuzu at all anyway
+    // Lichii at all anyway
     int cpu_id[4];
 
     // Detect CPU's CPUID capabilities and grab manufacturer string

@@ -18,8 +18,8 @@
 namespace FileSys {
 
 class IndirectStorage : public IReadOnlyStorage {
-    YUZU_NON_COPYABLE(IndirectStorage);
-    YUZU_NON_MOVEABLE(IndirectStorage);
+    LICHII_NON_COPYABLE(IndirectStorage);
+    LICHII_NON_MOVEABLE(IndirectStorage);
 
 public:
     static constexpr s32 StorageCount = 2;

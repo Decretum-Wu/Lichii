@@ -7,8 +7,8 @@
 namespace FileSys {
 
 class MemoryResourceBufferHoldStorage : public IStorage {
-    YUZU_NON_COPYABLE(MemoryResourceBufferHoldStorage);
-    YUZU_NON_MOVEABLE(MemoryResourceBufferHoldStorage);
+    LICHII_NON_COPYABLE(MemoryResourceBufferHoldStorage);
+    LICHII_NON_MOVEABLE(MemoryResourceBufferHoldStorage);
 
 public:
     MemoryResourceBufferHoldStorage(VirtualFile storage, size_t buffer_size)

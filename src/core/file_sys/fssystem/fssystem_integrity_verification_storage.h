@@ -16,8 +16,8 @@
 namespace FileSys {
 
 class IntegrityVerificationStorage : public IReadOnlyStorage {
-    YUZU_NON_COPYABLE(IntegrityVerificationStorage);
-    YUZU_NON_MOVEABLE(IntegrityVerificationStorage);
+    LICHII_NON_COPYABLE(IntegrityVerificationStorage);
+    LICHII_NON_MOVEABLE(IntegrityVerificationStorage);
 
 public:
     static constexpr s64 HashSize = 256 / 8;

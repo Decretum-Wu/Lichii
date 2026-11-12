@@ -77,10 +77,10 @@ void Nx2NoteDeviceSpace(u64 allocated, u64 freed) {
 // blocks, white areas after area changes). Points the range at the current pages again.
 void Nx2RefreshBacking(Tegra::MaxwellDeviceMemoryManager& smmu, Core::Memory::Memory& memory,
                        Core::Asid asid, DAddr device_address, u64 cpu_address, u64 size) {
-    constexpr u64 PageSize = Core::Memory::YUZU_PAGESIZE;
-    constexpr uintptr_t PageMask = static_cast<uintptr_t>(Core::Memory::YUZU_PAGEMASK);
-    if ((cpu_address & Core::Memory::YUZU_PAGEMASK) != 0 ||
-        (device_address & Core::Memory::YUZU_PAGEMASK) != 0) {
+    constexpr u64 PageSize = Core::Memory::LICHII_PAGESIZE;
+    constexpr uintptr_t PageMask = static_cast<uintptr_t>(Core::Memory::LICHII_PAGEMASK);
+    if ((cpu_address & Core::Memory::LICHII_PAGEMASK) != 0 ||
+        (device_address & Core::Memory::LICHII_PAGEMASK) != 0) {
         return;
     }
     u64 stale_pages = 0;
@@ -417,7 +417,7 @@ NvResult nvhost_as_gpu::Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& param
     if (!vm.initialised || !gmmu) {
         return NvResult::NotSupported;
     }
-    const u64 address = vm.va_range_end - VM::YUZU_PAGESIZE;
+    const u64 address = vm.va_range_end - VM::LICHII_PAGESIZE;
     if (!nx2_syncpoint_shim) {
         nx2_syncpoint_shim = true;
         gmmu->SetNativeSyncpointShim(address);
@@ -513,7 +513,7 @@ NvResult nvhost_as_gpu::AllocateSpace(IoctlAllocSpace& params) {
         return NvResult::BadValue;
     }
 
-    if (params.page_size != VM::YUZU_PAGESIZE && params.page_size != vm.big_page_size) {
+    if (params.page_size != VM::LICHII_PAGESIZE && params.page_size != vm.big_page_size) {
         return NvResult::BadValue;
     }
 
@@ -523,10 +523,10 @@ NvResult nvhost_as_gpu::AllocateSpace(IoctlAllocSpace& params) {
         return NvResult::NotImplemented;
     }
 
-    const u32 page_size_bits{params.page_size == VM::YUZU_PAGESIZE ? VM::PAGE_SIZE_BITS
+    const u32 page_size_bits{params.page_size == VM::LICHII_PAGESIZE ? VM::PAGE_SIZE_BITS
                                                                    : vm.big_page_size_bits};
 
-    auto& allocator{params.page_size == VM::YUZU_PAGESIZE ? *vm.small_page_allocator
+    auto& allocator{params.page_size == VM::LICHII_PAGESIZE ? *vm.small_page_allocator
                                                           : *vm.big_page_allocator};
 
     if ((params.flags & MappingFlags::Fixed) != MappingFlags::None) {
@@ -550,7 +550,7 @@ NvResult nvhost_as_gpu::AllocateSpace(IoctlAllocSpace& params) {
         .size = size,
         .page_size = params.page_size,
         .sparse = (params.flags & MappingFlags::Sparse) != MappingFlags::None,
-        .big_pages = params.page_size != VM::YUZU_PAGESIZE,
+        .big_pages = params.page_size != VM::LICHII_PAGESIZE,
     };
 
     return NvResult::Success;
@@ -562,7 +562,7 @@ bool nvhost_as_gpu::FreeMappingLocked(u64 offset) noexcept {
         if (!mapping.fixed) {
             auto& allocator{mapping.big_page ? *vm.big_page_allocator : *vm.small_page_allocator};
             u32 page_size_bits{mapping.big_page ? vm.big_page_size_bits : VM::PAGE_SIZE_BITS};
-            u32 page_size{mapping.big_page ? vm.big_page_size : VM::YUZU_PAGESIZE};
+            u32 page_size{mapping.big_page ? vm.big_page_size : VM::LICHII_PAGESIZE};
             u64 aligned_size{Common::AlignUp(mapping.size, page_size)};
             allocator.Free(u32(mapping.offset >> page_size_bits), u32(aligned_size >> page_size_bits));
         }
@@ -599,8 +599,8 @@ NvResult nvhost_as_gpu::FreeSpace(IoctlFreeSpace& params) {
         if (allocation.sparse)
             gmmu->Unmap(params.offset, allocation.size);
 
-        auto& allocator{params.page_size == VM::YUZU_PAGESIZE ? *vm.small_page_allocator : *vm.big_page_allocator};
-        u32 page_size_bits{params.page_size == VM::YUZU_PAGESIZE ? VM::PAGE_SIZE_BITS : vm.big_page_size_bits};
+        auto& allocator{params.page_size == VM::LICHII_PAGESIZE ? *vm.small_page_allocator : *vm.big_page_allocator};
+        u32 page_size_bits{params.page_size == VM::LICHII_PAGESIZE ? VM::PAGE_SIZE_BITS : vm.big_page_size_bits};
 
         allocator.Free(u32(params.offset >> page_size_bits), u32(allocation.size >> page_size_bits));
         allocation_map.erase(params.offset);
@@ -697,7 +697,7 @@ NvResult nvhost_as_gpu::MapBufferEx(IoctlMapBufferEx& params) {
     bool big_page{[&]() {
         if (Common::IsAligned(handle->align, vm.big_page_size)) {
             return true;
-        } else if (Common::IsAligned(handle->align, VM::YUZU_PAGESIZE)) {
+        } else if (Common::IsAligned(handle->align, VM::LICHII_PAGESIZE)) {
             return false;
         } else {
             ASSERT(false);
@@ -721,7 +721,7 @@ NvResult nvhost_as_gpu::MapBufferEx(IoctlMapBufferEx& params) {
         mapping_map.insert_or_assign(params.offset, Mapping(params.handle, device_address, params.offset, size, true, use_big_pages, alloc->second.sparse));
     } else {
         auto& allocator{big_page ? *vm.big_page_allocator : *vm.small_page_allocator};
-        u32 page_size{big_page ? vm.big_page_size : VM::YUZU_PAGESIZE};
+        u32 page_size{big_page ? vm.big_page_size : VM::LICHII_PAGESIZE};
         u32 page_size_bits{big_page ? vm.big_page_size_bits : VM::PAGE_SIZE_BITS};
 
         params.offset = u64(allocator.Allocate(u32(Common::AlignUp(size, page_size) >> page_size_bits))) << page_size_bits;
@@ -785,7 +785,7 @@ void nvhost_as_gpu::GetVARegionsImpl(IoctlGetVaRegions& params) {
     params.regions = std::array<VaRegion, 2>{
         VaRegion{
             .offset = vm.small_page_allocator->GetVAStart() << VM::PAGE_SIZE_BITS,
-            .page_size = VM::YUZU_PAGESIZE,
+            .page_size = VM::LICHII_PAGESIZE,
             ._pad0_{},
             .pages = vm.small_page_allocator->GetVALimit() - vm.small_page_allocator->GetVAStart(),
         },

@@ -1263,11 +1263,11 @@ Result NfcDevice::BreakTag(NFP::BreakType break_type) {
 Result NfcDevice::HasBackup(const UniqueSerialNumber& uid, std::size_t uuid_size) const {
     ASSERT_MSG(uuid_size < sizeof(UniqueSerialNumber), "Invalid UUID size");
     constexpr auto backup_dir = "backup";
-    const auto yuzu_amiibo_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::AmiiboDir);
+    const auto lichii_amiibo_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::AmiiboDir);
     const auto file_name =
         fmt::format("{0:02x}.bin", fmt::join(uid.begin(), uid.begin() + uuid_size, ""));
 
-    if (!Common::FS::Exists(yuzu_amiibo_dir / backup_dir / file_name)) {
+    if (!Common::FS::Exists(lichii_amiibo_dir / backup_dir / file_name)) {
         return ResultUnableToAccessBackupFile;
     }
 
@@ -1284,11 +1284,11 @@ Result NfcDevice::ReadBackupData(const UniqueSerialNumber& uid, std::size_t uuid
                                  std::span<u8> data) const {
     ASSERT_MSG(uuid_size < sizeof(UniqueSerialNumber), "Invalid UUID size");
     constexpr auto backup_dir = "backup";
-    const auto yuzu_amiibo_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::AmiiboDir);
+    const auto lichii_amiibo_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::AmiiboDir);
     const auto file_name =
         fmt::format("{0:02x}.bin", fmt::join(uid.begin(), uid.begin() + uuid_size, ""));
 
-    const Common::FS::IOFile keys_file{yuzu_amiibo_dir / backup_dir / file_name,
+    const Common::FS::IOFile keys_file{lichii_amiibo_dir / backup_dir / file_name,
                                        Common::FS::FileAccessMode::Read,
                                        Common::FS::FileType::BinaryFile};
 
@@ -1315,21 +1315,21 @@ Result NfcDevice::WriteBackupData(const UniqueSerialNumber& uid, std::size_t uui
                                   std::span<const u8> data) {
     ASSERT_MSG(uuid_size < sizeof(UniqueSerialNumber), "Invalid UUID size");
     constexpr auto backup_dir = "backup";
-    const auto yuzu_amiibo_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::AmiiboDir);
+    const auto lichii_amiibo_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::AmiiboDir);
     const auto file_name =
         fmt::format("{0:02x}.bin", fmt::join(uid.begin(), uid.begin() + uuid_size, ""));
 
     if (HasBackup(uid, uuid_size).IsError()) {
-        if (!Common::FS::CreateDir(yuzu_amiibo_dir / backup_dir)) {
+        if (!Common::FS::CreateDir(lichii_amiibo_dir / backup_dir)) {
             return ResultBackupPathAlreadyExist;
         }
 
-        if (!Common::FS::NewFile(yuzu_amiibo_dir / backup_dir / file_name)) {
+        if (!Common::FS::NewFile(lichii_amiibo_dir / backup_dir / file_name)) {
             return ResultBackupPathAlreadyExist;
         }
     }
 
-    const Common::FS::IOFile keys_file{yuzu_amiibo_dir / backup_dir / file_name,
+    const Common::FS::IOFile keys_file{lichii_amiibo_dir / backup_dir / file_name,
                                        Common::FS::FileAccessMode::ReadWrite,
                                        Common::FS::FileType::BinaryFile};
 

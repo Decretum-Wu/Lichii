@@ -27,8 +27,8 @@ public:
     explicit PlayTimeManager();
     ~PlayTimeManager();
 
-    YUZU_NON_COPYABLE(PlayTimeManager);
-    YUZU_NON_MOVEABLE(PlayTimeManager);
+    LICHII_NON_COPYABLE(PlayTimeManager);
+    LICHII_NON_MOVEABLE(PlayTimeManager);
 
     u64 GetPlayTime(u64 program_id) const;
     void ResetProgramPlayTime(u64 program_id);
