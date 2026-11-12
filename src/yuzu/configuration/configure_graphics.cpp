@@ -242,8 +242,8 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 #endif
-#ifndef _WIN32
-        // AMD's FSR 4 runtime is Windows-only.
+#if !defined(_WIN32) && !defined(__linux__)
+        // FSR 4 runs through AMD's runtime on Windows and the fsr4-vk port on Linux.
         if (setting->Id() == Settings::values.amd_fsr4.Id()) {
             continue;
         }
