@@ -162,7 +162,8 @@ std::optional<u64> FindSwitch2Program(const FileSys::VirtualFile& file, u64 prog
     }
     const auto type = file != nullptr ? Loader::IdentifyFile(file) : Loader::FileType::Unknown;
     if (type == Loader::FileType::NX) {
-        return Loader::AppLoader_NX::ReadPlatform(file, program_id) == 2;
+        const auto found = Loader::AppLoader_NX::ReadProgramPlatform(file, program_id);
+        return found && found->platform == 2 ? std::optional{found->program_id} : std::nullopt;
     }
     if (type == Loader::FileType::XCI || type == Loader::FileType::XCZ) {
         const FileSys::XCI xci{file, program_id, program_index};

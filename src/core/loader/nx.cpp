@@ -777,22 +777,28 @@ bool AppLoader_NX::IsBootable(const FileSys::VirtualFile& nx_file) {
     });
 }
 
-u8 AppLoader_NX::ReadPlatform(const FileSys::VirtualFile& nx_file, u64 program_id) {
+std::optional<AppLoader_NX::ProgramPlatform> AppLoader_NX::ReadProgramPlatform(
+    const FileSys::VirtualFile& nx_file, u64 program_id) {
     if (IdentifyType(nx_file) != FileType::NX) {
-        return 0;
+        return std::nullopt;
     }
     const auto catalog = FileSys::OpenNxCatalog(nx_file);
     if (!catalog) {
-        return 0;
+        return std::nullopt;
     }
     const auto& a = catalog->archive;
     for (const auto& program : a.programs()) {
         const auto& owner = a.applications()[program.application_index];
         if (program_id == 0 || program.id == program_id || owner.id == program_id) {
-            return owner.platform;
+            return ProgramPlatform{program.id, owner.platform};
         }
     }
-    return 0;
+    return std::nullopt;
+}
+
+u8 AppLoader_NX::ReadPlatform(const FileSys::VirtualFile& nx_file, u64 program_id) {
+    const auto found = ReadProgramPlatform(nx_file, program_id);
+    return found ? found->platform : 0;
 }
 
 void AppLoader_NX::RegisterContent(FileSys::ManualContentProvider& provider) const {
