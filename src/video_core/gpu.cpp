@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <list>
 #include <memory>
 #include <utility>
@@ -189,8 +190,9 @@ struct GPU::Impl {
     void TickWork() {
         // Most ticks follow a draw with no requests pending. A request queued meanwhile is
         // served by a later draw or by the tick its caller queues after publishing the fence.
-        if (current_sync_fence.load(std::memory_order_acquire) ==
-            last_sync_fence.load(std::memory_order_acquire)) {
+        if (VideoCommon::g_t150_readback &&
+            current_sync_fence.load(std::memory_order_acquire) ==
+                last_sync_fence.load(std::memory_order_acquire)) {
             return;
         }
         std::unique_lock lck{sync_request_mutex};
@@ -225,8 +227,20 @@ struct GPU::Impl {
     /// core timing events.
     void Start() {
         Settings::UpdateGPUAccuracy();
-        VideoCommon::GpuSplit::Get().SetTickHook(
-            [](void* argument) { static_cast<Impl*>(argument)->TickWork(); }, this);
+        // TEST ONLY (EGLA-150 round 2 A/B, never merges).
+        static const bool t150_readback = [] {
+            const char* value = std::getenv("EDEN_NX2_T150_READBACK");
+            const bool enabled = value != nullptr && value[0] == '1';
+            LOG_INFO(HW_GPU, "EGLA-150 test switch EDEN_NX2_T150_READBACK: {}",
+                     enabled ? "on (the split's back serves read flushes at its next entry)"
+                             : "off (read flushes wait for the front's queued tick, as nx2)");
+            return enabled;
+        }();
+        VideoCommon::g_t150_readback = t150_readback;
+        if (t150_readback) {
+            VideoCommon::GpuSplit::Get().SetTickHook(
+                [](void* argument) { static_cast<Impl*>(argument)->TickWork(); }, this);
+        }
         gpu_thread.StartThread(*renderer, renderer->Context(), scheduler);
     }
 
@@ -320,7 +334,9 @@ struct GPU::Impl {
             // The guest synchronized with the GPU work it reads before reading it. Ask the
             // back to submit the downloads at its next entry boundary, even if the front is busy.
             // Keep the queued tick for a disabled, stopped or restarting split.
-            VideoCommon::GpuSplit::Get().RequestTick();
+            if (VideoCommon::g_t150_readback) {
+                VideoCommon::GpuSplit::Get().RequestTick();
+            }
             gpu_thread.TickGPU(is_async);
             WaitForSyncOperation(fence);
         }

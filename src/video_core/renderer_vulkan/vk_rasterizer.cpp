@@ -42,6 +42,7 @@
 #include "video_core/indirect_reset.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/gpu_split.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/renderer_vulkan/blit_image.h"
@@ -2309,7 +2310,9 @@ void RasterizerVulkan::Clear(u32 layer_count) {
 void RasterizerVulkan::DispatchCompute() {
     // As after a draw, serve sync requests once dispatch resources and cache locks are released.
     SCOPE_EXIT {
-        gpu.TickWork();
+        if (VideoCommon::g_t150_readback) {
+            gpu.TickWork();
+        }
     };
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Compute};
     FlushWork();

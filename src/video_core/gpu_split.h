@@ -31,6 +31,11 @@ class EngineInterface;
 
 namespace VideoCommon {
 
+// TEST ONLY (EGLA-150 round 2 A/B, never merges): EDEN_NX2_T150_READBACK=1, read once in
+// GPU::Start. Off keeps nx2's read flushes: no back ticks, no ticks after compute dispatches,
+// a locked TickWork.
+inline bool g_t150_readback{};
+
 /// Why the split's front waited for its back (EDEN_NX2_GPU_PROFILE counts each).
 enum class DrainSite : u32 {
     Other,
