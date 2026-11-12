@@ -35,6 +35,7 @@
 #include "video_core/nx2_profile.h"
 #include "video_core/render_trace.h"
 #include "video_core/texture_cache/conversion.h"
+#include "video_core/texture_cache/eviction_age.h"
 #include "video_core/texture_cache/host_memory_limit.h"
 #include "video_core/texture_cache/host_mip_limits.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -152,7 +153,8 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         high_priority_mode = out_of_memory || total_used_memory >= expected_memory;
         aggressive_mode =
             allow_aggressive && (out_of_memory || total_used_memory >= critical_memory);
-        ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
+        const u64 mode_age = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
+        ticks_to_destroy = EvictionAge(mode_age, total_used_memory, device_budget, out_of_memory);
         // EDEN_NX2_TC_MIN_AGE=<frames>: never evict images used more recently (thrash tests).
         static const u64 min_age = [] {
             const char* value = std::getenv("EDEN_NX2_TC_MIN_AGE");
@@ -212,10 +214,11 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
     // emptiest blocks go first, so blocks drain and go back to the driver; placement already
     // prefers the fullest blocks (best fit). Images with memory of their own sit in the middle.
     const auto Collect = [&] {
+        const u64 last_tick = frame_tick - (std::min)(frame_tick, ticks_to_destroy);
         if constexpr (requires(const Image& image) { image.MemoryBlock(); }) {
             std::vector<ImageId> candidates;
             const size_t limit = num_iterations * 8;
-            lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, [&](ImageId image_id) {
+            lru_cache.ForEachItemBelow(last_tick, [&](ImageId image_id) {
                 candidates.push_back(image_id);
                 return candidates.size() >= limit;
             });
@@ -253,7 +256,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
                 }
             }
         } else {
-            lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+            lru_cache.ForEachItemBelow(last_tick, Cleanup);
         }
     };
     Configure(false);
@@ -415,6 +418,7 @@ void TextureCache<P>::TickFrame() {
             }
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
+                device_budget = budget;
                 if (budget > 2_GiB) {
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
                     if constexpr (requires { runtime.GetDeviceMemorySlack(); }) {
