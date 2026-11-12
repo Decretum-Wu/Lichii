@@ -547,7 +547,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
 
     // With frame generation the frame index is the presented frame's, and only the first
     // evaluation of a frame sets its constants.
-    const bool frame_gen = Streamline::FrameGenAvailable();
+    const bool frame_gen = Streamline::FrameGenSession();
     bool frame_gen_inputs = false;
     if (frame_gen) {
         frame_gen_inputs = in.camera && SetCamera(constants, *in.camera);
@@ -658,7 +658,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
         sl::Result api_result = sl::Result::eOk;
         std::unique_lock<std::mutex> tokens;
         if (frame_gen) {
-            tokens = Streamline::LockFrameTokens();
+            tokens = Streamline::LockStreamline();
         }
         const auto result = VideoCommon::RecordDlssEvaluation(
             [&] {

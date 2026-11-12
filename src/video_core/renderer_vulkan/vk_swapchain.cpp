@@ -37,7 +37,7 @@ namespace {
 /// Streamline's DLSS Frame Generation presents and paces the frames in this format.
 bool FrameGenPresents([[maybe_unused]] VkFormat format) {
 #ifdef EGLANTINE_STREAMLINE
-    return Streamline::FrameGenAvailable() && Streamline::FrameGenSupportsSwapchain(format);
+    return Streamline::FrameGenSession() && Streamline::FrameGenSupportsSwapchain(format);
 #else
     return false;
 #endif
@@ -366,6 +366,13 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
     surface_format = ChooseSwapSurfaceFormat(formats, requested_format, requested_color_space);
     Common::DisplayHdrMonitor::Instance().SetPresentingHdr(surface_format.colorSpace !=
                                                            VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+#ifdef EGLANTINE_STREAMLINE
+    // The old swapchain is gone, so DLSS-G unloads before the new one is made.
+    if (Streamline::FrameGenSession() &&
+        !Streamline::FrameGenSupportsSwapchain(surface_format.format)) {
+        Streamline::DisableFrameGen("scRGB HDR output; set the HDR format to HDR10 to use it");
+    }
+#endif
     present_mode =
         ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed, surface_format.format);
 

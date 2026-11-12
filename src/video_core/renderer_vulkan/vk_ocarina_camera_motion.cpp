@@ -652,7 +652,7 @@ vk::ImageView CreateOcarinaView(const Device& device, VkImage image, VkFormat fo
 // DLSS Frame Generation copies the motion vectors when they are tagged.
 VkImageUsageFlags FrameGenCopyUsage() {
 #ifdef EGLANTINE_STREAMLINE
-    return Streamline::FrameGenAvailable() ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0;
+    return Streamline::FrameGenSession() ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0;
 #else
     return 0;
 #endif

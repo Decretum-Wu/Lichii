@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // NVIDIA DLSS Frame Generation's per-frame work. Everything here does nothing unless
-// FrameGenAvailable(). One frame index runs through all of it: the upscaler's constants and tags,
+// FrameGenSession(). One frame index runs through all of it: the upscaler's constants and tags,
 // the Reflex and PCL markers and the frame Composite presents.
 
 #pragma once
@@ -48,8 +48,15 @@ void FrameGenBeforePresent(const FrameGenPresent& present);
 /// Present thread, right after: the present end marker, and DLSS-G's state for the log.
 void FrameGenAfterPresent(u32 index);
 
+/// Present thread, once the frame is presented or dropped: sets the present markers
+/// FrameGenBeforePresent and FrameGenAfterPresent did not, so every frame's token is closed.
+void FrameGenClosePresent(u32 index);
+
 /// DLSS-G presents SDR and HDR10 swapchains; NVIDIA's DLSS-G guide rules out FP16 scRGB.
 [[nodiscard]] bool FrameGenSupportsSwapchain(VkFormat format);
+
+/// numFramesToGenerateMax: frames this system can generate per rendered frame, 0 while unknown.
+[[nodiscard]] u32 FrameGenMaxGenerated();
 
 /// Turns DLSS-G off before the swapchain is recreated or destroyed (present thread).
 void FrameGenSuspend();

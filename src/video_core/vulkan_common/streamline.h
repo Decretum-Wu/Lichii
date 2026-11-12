@@ -60,7 +60,8 @@ bool Start();
 [[nodiscard]] std::vector<std::string> InstanceExtensions();
 [[nodiscard]] std::vector<std::string> DeviceExtensions();
 
-/// NVIDIA DLSS Frame Generation is the frame generation type, with NVIDIA DLSS on.
+/// NVIDIA DLSS Frame Generation is the frame generation type, with NVIDIA DLSS on, for a game that
+/// hands it its inputs (VideoCore::BlockedDlssg).
 [[nodiscard]] bool FrameGenRequested();
 
 /// Whether frame generation is still possible on the device being created: Streamline loaded
@@ -93,9 +94,18 @@ bool AttachDevice(VkInstance instance, VkPhysicalDevice physical, VkDevice devic
 /// Whether DLSS can run on the attached device.
 [[nodiscard]] bool IsDlssAvailable();
 
-/// Whether DLSS Frame Generation can run on the attached device: DLSS-G, Reflex and PCL are
-/// supported and GetApi() has their functions.
-[[nodiscard]] bool FrameGenAvailable();
+/// DLSS Frame Generation is this session's frame generator: it was the frame generation type when
+/// the game started, the game hands it its inputs, DLSS-G, Reflex and PCL run on the attached
+/// device with their functions in GetApi(), and nothing (scRGB output, Streamline's swapchain
+/// failing) turned it off since. Reflex and the frame markers run for the whole session.
+[[nodiscard]] bool FrameGenSession();
+
+/// FrameGenSession() and DLSS-G should generate now: frame generation is on and still of this
+/// type.
+[[nodiscard]] bool FrameGenActive();
+
+/// Why FrameGenSession() is false, for the log.
+[[nodiscard]] std::string FrameGenUnavailableReason();
 
 /// DLSS-G finds the game's window from the surface its swapchain is made for, and Streamline only
 /// learns a surface's window when the surface is created through sl.interposer.dll, which works

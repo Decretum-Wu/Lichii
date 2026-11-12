@@ -322,7 +322,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     {
         const Streamline::FrameGenFrame ended = Streamline::FrameGenEndFrame();
         const Common::Rectangle<u32>& screen = render_window.GetFramebufferLayout().screen;
-        frame->frame_gen = Streamline::FrameGenAvailable();
+        frame->frame_gen = Streamline::FrameGenSession();
         frame->frame_gen_frame = ended;
         frame->guest_rect = VkRect2D{
             .offset = {static_cast<s32>(screen.left), static_cast<s32>(screen.top)},
@@ -418,7 +418,7 @@ VkSurfaceKHR RendererVulkan::PresentationSurface() {
     // device with one made through Streamline, for the same window. Present support stays valid,
     // as it belongs to the window and the queue family.
     const auto& window_info = render_window.GetWindowInfo();
-    if (Streamline::FrameGenAvailable()) {
+    if (Streamline::FrameGenSession()) {
         const VkSurfaceKHR registered =
             window_info.type == Core::Frontend::WindowSystemType::Windows
                 ? Streamline::CreateFrameGenSurface(*instance, window_info.render_surface)

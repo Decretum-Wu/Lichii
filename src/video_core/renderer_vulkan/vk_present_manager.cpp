@@ -8,6 +8,7 @@
 
 #include "common/display_hdr.h"
 #include "common/dkb_frame_trace.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #ifdef _WIN32
@@ -544,6 +545,13 @@ void PresentManager::DiscardFrame(Frame* frame) {
 }
 
 void PresentManager::CopyToSwapchain(Frame* frame) {
+#ifdef EGLANTINE_STREAMLINE
+    SCOPE_EXIT {
+        if (frame->frame_gen) {
+            Streamline::FrameGenClosePresent(frame->frame_gen_frame.index);
+        }
+    };
+#endif
     bool requires_recreation = false;
 
     for (u32 attempt = 0; attempt < MAX_PRESENT_ATTEMPTS; ++attempt) {

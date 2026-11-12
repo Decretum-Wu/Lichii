@@ -37,7 +37,7 @@ struct Api {
     PFun_slSetTagForFrame* set_tag_for_frame{};
     PFun_slSetFeatureLoaded* set_feature_loaded{};
 
-    // Frame generation, set only while FrameGenAvailable().
+    // Frame generation, set only while FrameGenSession().
     PFun_slDLSSGSetOptions* dlssg_set_options{};
     PFun_slDLSSGGetState* dlssg_get_state{};
     PFun_slReflexSetOptions* reflex_set_options{};
@@ -49,15 +49,23 @@ struct Api {
 /// The loaded functions; only valid while IsDlssAvailable().
 [[nodiscard]] const Api& GetApi();
 
-/// slGetNewFrameToken isn't thread safe, and the token it returns is a slot Streamline hands to
-/// another frame index a few calls later: hold this from getting a token until done with it.
-[[nodiscard]] std::unique_lock<std::mutex> LockFrameTokens();
+/// Serialises the Streamline calls of the renderer, the Vulkan worker and the present thread:
+/// slSetFeatureLoaded and slEvaluateFeature aren't thread safe, and a frame token is a slot
+/// Streamline hands to another frame index a few calls later, so hold this from getting a token
+/// until done with it.
+[[nodiscard]] std::unique_lock<std::mutex> LockStreamline();
 
-/// For the upscaler while FrameGenAvailable(): whether it sets this frame's constants, true the
+/// Forgets the frame generation state of an earlier session.
+void ResetFrameGen();
+
+/// Reads numFramesToGenerateMax once DLSS-G is attached.
+void QueryFrameGenMax();
+
+/// For the upscaler while FrameGenSession(): whether it sets this frame's constants, true the
 /// first time only (DLSS-G rejects a second set). Frames that get none reuse the last ones.
 [[nodiscard]] bool ClaimFrameConstants(u32 index, const sl::Constants& constants);
 
-/// slSetConstants with a frame's claimed constants; call with LockFrameTokens held.
+/// slSetConstants with a frame's claimed constants; call with LockStreamline held.
 [[nodiscard]] sl::Result SetFrameConstants(u32 index, const sl::FrameToken& token);
 
 /// The upscaler tagged depth and motion vectors for DLSS-G, with real camera constants.

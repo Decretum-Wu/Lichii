@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,8 +22,10 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "video_core/frame_gen_choice.h"
 #include "video_core/vulkan_common/streamline.h"
 #include "video_core/vulkan_common/streamline_api.h"
+#include "video_core/vulkan_common/streamline_frame_gen.h"
 
 #include <sl_helpers.h>
 #include <sl_security.h>
@@ -78,6 +81,8 @@ struct State {
     bool frame_gen_requested{};
     bool frame_gen_pending{};
     std::atomic<bool> frame_gen_available{};
+    std::mutex frame_gen_reason_mutex;
+    std::string frame_gen_reason;
     bool started{};
     bool attached{};
 };
@@ -277,6 +282,28 @@ std::string ResultText(sl::Result result) {
     return fmt::format("{} ({})", sl::getResultAsStr(result), static_cast<int>(result));
 }
 
+void SetFrameGenReason(State& state, std::string reason) {
+    std::scoped_lock lock{state.frame_gen_reason_mutex};
+    state.frame_gen_reason = std::move(reason);
+}
+
+/// Why slIsFeatureSupported turned a frame generation feature down, in the user's terms.
+std::string UnsupportedText(sl::Result result) {
+    switch (result) {
+    case sl::Result::eErrorOSDisabledHWS:
+        return "Hardware-accelerated GPU scheduling is off in Windows' graphics settings";
+    case sl::Result::eErrorNoSupportedAdapterFound:
+    case sl::Result::eErrorAdapterNotSupported:
+        return "this GPU has no DLSS Frame Generation (GeForce RTX 40 series or newer)";
+    case sl::Result::eErrorDriverOutOfDate:
+        return "the NVIDIA driver is too old";
+    case sl::Result::eErrorOSOutOfDate:
+        return "Windows is too old";
+    default:
+        return fmt::format("Streamline result {}", ResultText(result));
+    }
+}
+
 /// What the frame generation plugins ask of the OS, the driver and Windows, for the log.
 std::string NeedsText(const sl::FeatureRequirements& requirements) {
     std::string text;
@@ -325,6 +352,9 @@ bool LoadFrameGenRequirements(State& state) {
                                       : fmt::format(" (missing from the loader's folder: {}; the "
                                                     "Graphics settings can download them)",
                                                     files));
+            SetFrameGenReason(state, files.empty()
+                                         ? fmt::format("Streamline has no {}", entry.name)
+                                         : fmt::format("missing {}", files));
             return false;
         }
         const std::string feature_needs = NeedsText(requirements);
@@ -332,6 +362,7 @@ bool LoadFrameGenRequirements(State& state) {
             LOG_WARNING(Render_Vulkan,
                         "NVIDIA DLSS Frame Generation is off: this {} has no Vulkan support",
                         entry.name);
+            SetFrameGenReason(state, fmt::format("this {} has no Vulkan support", entry.name));
             return false;
         }
         queues.graphics += requirements.vkNumGraphicsQueuesRequired;
@@ -378,12 +409,14 @@ bool AttachFrameGen(State& state, const sl::AdapterInfo& adapter) {
                         state.frame_gen_needs.empty()
                             ? std::string{}
                             : fmt::format(" (needs {})", state.frame_gen_needs));
+            SetFrameGenReason(state, UnsupportedText(result));
             return false;
         }
     }
     if (!api.set_tag_for_frame) {
         LOG_WARNING(Render_Vulkan,
                     "NVIDIA DLSS Frame Generation is off: sl.interposer.dll has no slSetTagForFrame");
+        SetFrameGenReason(state, "sl.interposer.dll has no slSetTagForFrame");
         return false;
     }
     if (ResolveFeature(api, sl::kFeatureDLSS_G, "slDLSSGSetOptions", api.dlssg_set_options) &&
@@ -395,6 +428,7 @@ bool AttachFrameGen(State& state, const sl::AdapterInfo& adapter) {
         return true;
     }
     LOG_WARNING(Render_Vulkan, "NVIDIA DLSS Frame Generation is off: its functions are missing");
+    SetFrameGenReason(state, "Streamline lacks DLSS-G, Reflex or PCL functions");
     return false;
 }
 
@@ -492,8 +526,13 @@ std::span<const char* const> FrameGenFiles() {
 }
 
 bool FrameGenRequested() {
-    return Settings::values.nvidia_dlss.GetValue() &&
-           Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::NvidiaDlssG;
+    return Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::NvidiaDlssG &&
+           VideoCore::BlockedDlssg({
+               .streamline = true,
+               .dlss = Settings::values.nvidia_dlss.GetValue(),
+               .program_id = Settings::GetCurrentProgramID(),
+               .loaded = true,
+           }) == VideoCore::DlssgBlock::None;
 }
 
 bool Start() {
@@ -504,6 +543,7 @@ bool Start() {
     if (!Settings::values.nvidia_dlss.GetValue()) {
         return false;
     }
+    SetFrameGenReason(state, "NVIDIA Streamline did not start; the log above says why");
     if (!state.module) {
         const DlssFiles files = FindDlssFiles();
         if (!files.model.empty() && !IsSignedByNvidia(files.model)) {
@@ -589,8 +629,12 @@ bool Start() {
         Names(requirements.vkNumInstanceExtensions, requirements.vkInstanceExtensions);
     state.device_extensions =
         Names(requirements.vkNumDeviceExtensions, requirements.vkDeviceExtensions);
+    if (!state.frame_gen_requested) {
+        SetFrameGenReason(state, "it was not the frame generation type when the game started");
+    }
     state.frame_gen_pending = state.frame_gen_requested && LoadFrameGenRequirements(state);
     state.frame_gen_available = false;
+    ResetFrameGen();
     sl::FeatureVersion version{};
     api.get_feature_version(sl::kFeatureDLSS, version);
     LOG_INFO(Render_Vulkan, "NVIDIA Streamline {} started from {} (DLSS {})",
@@ -655,6 +699,7 @@ void DropFrameGen(std::string_view reason) {
     }
     state.frame_gen_pending = false;
     LOG_WARNING(Render_Vulkan, "NVIDIA DLSS Frame Generation is off: {}", reason);
+    SetFrameGenReason(state, std::string{reason});
 }
 
 QueueCounts ExtraQueues() {
@@ -720,13 +765,14 @@ bool AttachDevice(VkInstance instance, VkPhysicalDevice physical, VkDevice devic
 
     if (state.frame_gen_pending && AttachFrameGen(state, adapter)) {
         state.frame_gen_available = true;
+        QueryFrameGenMax();
         sl::FeatureVersion version{};
         state.api.get_feature_version(sl::kFeatureDLSS_G, version);
         LOG_INFO(Render_Vulkan,
                  "Streamline: DLSS Frame Generation ready (DLSS-G {}, Reflex, PCL; {} graphics + "
-                 "{} compute queues)",
+                 "{} compute queues; numFramesToGenerateMax {})",
                  version.versionNGX ? version.versionNGX.toStr() : version.versionSL.toStr(),
-                 queues.graphics, queues.compute);
+                 queues.graphics, queues.compute, FrameGenMaxGenerated());
         // DLSS-G refuses to run without Reflex on.
         sl::ReflexOptions reflex{};
         reflex.mode = sl::ReflexMode::eLowLatency;
@@ -751,7 +797,7 @@ bool AttachDevice(VkInstance instance, VkPhysicalDevice physical, VkDevice devic
 
 VkSurfaceKHR CreateFrameGenSurface(VkInstance instance, void* window) {
     const State& state = GetState();
-    if (!FrameGenAvailable() || !window) {
+    if (!FrameGenSession() || !window) {
         return VK_NULL_HANDLE;
     }
     const auto create = reinterpret_cast<PFN_vkCreateWin32SurfaceKHR>(
@@ -782,11 +828,13 @@ void DisableFrameGen(std::string_view reason) {
     if (!state.frame_gen_available.exchange(false)) {
         return;
     }
-    // The function pointers stay: another thread may be past its FrameGenAvailable() check.
+    // The function pointers stay: another thread may be past its FrameGenSession() check.
     if (state.api.set_feature_loaded) {
+        const auto lock = LockStreamline();
         state.api.set_feature_loaded(sl::kFeatureDLSS_G, false);
     }
     LOG_WARNING(Render_Vulkan, "NVIDIA DLSS Frame Generation is off: {}", reason);
+    SetFrameGenReason(state, std::string{reason});
 }
 
 bool IsDlssAvailable() {
@@ -794,9 +842,20 @@ bool IsDlssAvailable() {
     return state.started && state.attached;
 }
 
-bool FrameGenAvailable() {
+bool FrameGenSession() {
     const State& state = GetState();
     return IsDlssAvailable() && state.frame_gen_available;
+}
+
+bool FrameGenActive() {
+    return FrameGenSession() && Settings::values.frame_gen.GetValue() &&
+           Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::NvidiaDlssG;
+}
+
+std::string FrameGenUnavailableReason() {
+    State& state = GetState();
+    std::scoped_lock lock{state.frame_gen_reason_mutex};
+    return state.frame_gen_reason;
 }
 
 void Stop() {
@@ -810,6 +869,7 @@ void Stop() {
     state.frame_gen_pending = false;
     state.frame_gen_available = false;
     ClearFrameGenApi(state.api);
+    ResetFrameGen();
     LOG_INFO(Render_Vulkan, "NVIDIA Streamline stopped (result {})", static_cast<int>(result));
 }
 

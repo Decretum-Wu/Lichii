@@ -68,13 +68,13 @@ struct PresentState {
     std::optional<sl::DLSSGStatus> status;
     bool state_failed{};
     sl::DLSSGOptions options{};
-    u32 max_generated{};
+    u32 open_present{NO_FRAME};   ///< PresentStart set, PresentEnd not yet
+    u32 closed_present{NO_FRAME}; ///< Last frame whose PresentEnd was set
     u64 vram{};
     u64 real{};
     u64 shown{};
     u32 last_shown{};
     std::chrono::steady_clock::time_point report_from;
-    VkFormat unsupported_format{VK_FORMAT_UNDEFINED}; ///< Last one logged
     u32 rates_real{};
     u32 rates_shown{};
     std::optional<std::chrono::steady_clock::time_point> rates_from;
@@ -85,6 +85,7 @@ struct Rates {
     std::atomic<f64> real_fps{};
     std::atomic<f64> shown_fps{};
     std::atomic<bool> generating{};
+    std::atomic<u32> max_generated{}; ///< numFramesToGenerateMax, 0 while unknown
 };
 
 std::atomic<int> g_api_error{};
@@ -222,17 +223,17 @@ bool SetMode(PresentState& state, bool on, const FrameGenPresent& present) {
     sl::DLSSGState dlssg{};
     if (api.dlssg_get_state(VIEWPORT, dlssg, &estimate) == sl::Result::eOk) {
         state.vram = dlssg.estimatedVRAMUsageInBytes;
-        state.max_generated = dlssg.numFramesToGenerateMax;
+        PresentRates().max_generated.store(dlssg.numFramesToGenerateMax);
     }
     state.real = 0;
     state.shown = 0;
     state.report_from = std::chrono::steady_clock::now();
     const VkRect2D& guest = present.guest_rect;
     LOG_INFO(Render_Vulkan,
-             "DLSS-G: on, 1 generated frame per frame (up to {} on this system); swapchain {}x{} "
-             "{} x{}, guest image {}x{} at {},{} of a {}x{} frame; depth/motion {}x{}; estimated "
-             "VRAM {} MiB",
-             state.max_generated, options.colorWidth, options.colorHeight,
+             "DLSS-G: on, {} generated frames per frame (up to {} on this system); swapchain "
+             "{}x{} {} x{}, guest image {}x{} at {},{} of a {}x{} frame; depth/motion {}x{}; "
+             "estimated VRAM {} MiB",
+             options.numFramesToGenerate, FrameGenMaxGenerated(), options.colorWidth, options.colorHeight,
              string_VkFormat(present.swapchain_format), options.numBackBuffers,
              guest.extent.width, guest.extent.height, guest.offset.x, guest.offset.y,
              present.frame_extent.width, present.frame_extent.height, options.mvecDepthWidth,
@@ -254,20 +255,13 @@ void UpdateMode(PresentState& state, const FrameGenPresent& present) {
     if (state.retry_in != 0) {
         --state.retry_in;
     }
-    if (!FrameGenSupportsSwapchain(present.swapchain_format)) {
-        if (state.unsupported_format != present.swapchain_format) {
-            state.unsupported_format = present.swapchain_format;
-            LOG_WARNING(Render_Vulkan,
-                        "DLSS-G: off, it cannot present a {} swapchain (scRGB HDR); HDR output "
-                        "stays on. Set HDR format to HDR10 to use DLSS Frame Generation",
-                        string_VkFormat(present.swapchain_format));
-        }
-        if (state.on) {
-            void(SetMode(state, false, present));
+    if (!FrameGenActive()) {
+        state.with_inputs = 0;
+        if (state.on && SetMode(state, false, present)) {
+            LOG_INFO(Render_Vulkan, "DLSS-G: off, frame generation was turned off");
         }
         return;
     }
-    state.unsupported_format = VK_FORMAT_UNDEFINED;
     if (present.frame.inputs) {
         ++state.with_inputs;
         state.without_inputs = 0;
@@ -303,7 +297,7 @@ void Report(PresentState& state, const sl::DLSSGState& dlssg) {
              "DLSS-G: on, status {}, presented {} frames for 1 (last {:.0f} s: {} real, {} "
              "shown, {:.1f} fps shown), up to {} generated, estimated VRAM {} MiB",
              StatusName(dlssg.status), state.last_shown, seconds, state.real, state.shown,
-             static_cast<f64>(state.shown) / seconds, state.max_generated, state.vram >> 20);
+             static_cast<f64>(state.shown) / seconds, FrameGenMaxGenerated(), state.vram >> 20);
     state.real = 0;
     state.shown = 0;
     state.report_from = now;
@@ -333,8 +327,39 @@ void CountPresent(PresentState& state, u32 shown, bool generating) {
 
 } // Anonymous namespace
 
-std::unique_lock<std::mutex> LockFrameTokens() {
+std::unique_lock<std::mutex> LockStreamline() {
     return std::unique_lock{Frames().token_mutex};
+}
+
+void ResetFrameGen() {
+    FrameState& frames = Frames();
+    frames.index.store(0);
+    frames.begun.store(NO_FRAME);
+    frames.constants_index.store(NO_FRAME);
+    frames.inputs_index.store(NO_FRAME);
+    frames.input_width.store(0);
+    frames.input_height.store(0);
+    frames.depth_format.store(VK_FORMAT_UNDEFINED);
+    frames.motion_format.store(VK_FORMAT_UNDEFINED);
+    {
+        std::scoped_lock lock{frames.constants_mutex};
+        frames.last_constants.reset();
+        frames.frame_constants = {};
+    }
+    Presents() = {};
+    Rates& rates = PresentRates();
+    rates.real_fps.store(0.0);
+    rates.shown_fps.store(0.0);
+    rates.generating.store(false);
+    rates.max_generated.store(0);
+    g_api_error.store(0);
+}
+
+void QueryFrameGenMax() {
+    sl::DLSSGState dlssg{};
+    if (GetApi().dlssg_get_state(VIEWPORT, dlssg, nullptr) == sl::Result::eOk) {
+        PresentRates().max_generated.store(dlssg.numFramesToGenerateMax);
+    }
 }
 
 bool ClaimFrameConstants(u32 index, const sl::Constants& constants) {
@@ -376,7 +401,7 @@ u32 FrameGenIndex() {
 }
 
 void FrameGenBeginFrame() {
-    if (!FrameGenAvailable()) {
+    if (!FrameGenSession()) {
         return;
     }
     FrameState& frames = Frames();
@@ -387,7 +412,7 @@ void FrameGenBeginFrame() {
     const Api& api = GetApi();
     sl::FrameToken* token{};
     {
-        const auto lock = LockFrameTokens();
+        const auto lock = LockStreamline();
         token = TokenFor(index);
     }
     if (!token) {
@@ -400,7 +425,7 @@ void FrameGenBeginFrame() {
         LOG_WARNING(Render_Vulkan, "DLSS-G: slReflexSleep failed for frame {}, result {}", index,
                     ResultName(result));
     }
-    const auto lock = LockFrameTokens();
+    const auto lock = LockStreamline();
     token = TokenFor(index);
     if (!token) {
         return;
@@ -413,7 +438,7 @@ void FrameGenBeginFrame() {
 }
 
 FrameGenFrame FrameGenEndFrame() {
-    if (!FrameGenAvailable()) {
+    if (!FrameGenSession()) {
         return {};
     }
     FrameState& frames = Frames();
@@ -421,7 +446,7 @@ FrameGenFrame FrameGenEndFrame() {
     const bool inputs = frames.inputs_index.load() == index;
     const bool needs_constants = frames.constants_index.exchange(index) != index;
     const Api& api = GetApi();
-    const auto lock = LockFrameTokens();
+    const auto lock = LockStreamline();
     sl::FrameToken* const token = TokenFor(index);
     if (!token) {
         LOG_WARNING(Render_Vulkan, "DLSS-G: no frame token for frame {}", index);
@@ -457,7 +482,7 @@ FrameGenFrame FrameGenEndFrame() {
 }
 
 void FrameGenNextFrame() {
-    if (!FrameGenAvailable()) {
+    if (!FrameGenSession()) {
         return;
     }
     Frames().index.fetch_add(1);
@@ -465,9 +490,10 @@ void FrameGenNextFrame() {
 }
 
 void FrameGenBeforePresent(const FrameGenPresent& present) {
-    if (!FrameGenAvailable()) {
+    if (!FrameGenSession()) {
         return;
     }
+    const auto lock = LockStreamline();
     PresentState& state = Presents();
     UpdateMode(state, present);
 
@@ -490,18 +516,9 @@ void FrameGenBeforePresent(const FrameGenPresent& present) {
                  present.swapchain_extent.height - subrect.top);
 
     const Api& api = GetApi();
-    const auto lock = LockFrameTokens();
     sl::FrameToken* const token = TokenFor(present.frame.index);
     if (!token) {
         return;
-    }
-    // Streamline keeps the common constants of the last three frames set, and this thread
-    // presents frames the renderer finished a few frames ago: set this one's again (the same
-    // values, which Streamline allows) so DLSS-G finds them at present.
-    if (const sl::Result result = SetFrameConstants(present.frame.index, *token);
-        result != sl::Result::eOk) {
-        LOG_WARNING(Render_Vulkan, "DLSS-G: slSetConstants failed for frame {}, result {}",
-                    present.frame.index, ResultName(result));
     }
     // Streamline knows the back buffer being presented: this only says where in it DLSS-G runs.
     const sl::ResourceTag backbuffer{nullptr, sl::kBufferTypeBackbuffer,
@@ -511,21 +528,25 @@ void FrameGenBeforePresent(const FrameGenPresent& present) {
         LOG_WARNING(Render_Vulkan, "DLSS-G: back buffer tag failed for frame {}, result {}",
                     present.frame.index, ResultName(result));
     }
-    SetMarker(sl::PCLMarker::ePresentStart, *token);
+    // A retried present of the same frame keeps its first PresentStart.
+    if (state.open_present != present.frame.index) {
+        SetMarker(sl::PCLMarker::ePresentStart, *token);
+        state.open_present = present.frame.index;
+    }
 }
 
 void FrameGenAfterPresent(u32 index) {
-    if (!FrameGenAvailable()) {
+    if (!FrameGenSession()) {
         return;
     }
     const Api& api = GetApi();
-    {
-        const auto lock = LockFrameTokens();
-        if (sl::FrameToken* const token = TokenFor(index)) {
-            SetMarker(sl::PCLMarker::ePresentEnd, *token);
-        }
-    }
+    const auto lock = LockStreamline();
     PresentState& state = Presents();
+    if (sl::FrameToken* const token = TokenFor(index)) {
+        SetMarker(sl::PCLMarker::ePresentEnd, *token);
+    }
+    state.open_present = NO_FRAME;
+    state.closed_present = index;
     if (const int error = g_api_error.exchange(0, std::memory_order_relaxed); error != 0) {
         LOG_WARNING(Render_Vulkan, "DLSS-G: vkQueuePresentKHR or vkAcquireNextImageKHR returned {}",
                     error);
@@ -579,14 +600,38 @@ void FrameGenAfterPresent(u32 index) {
     Report(state, dlssg);
 }
 
+void FrameGenClosePresent(u32 index) {
+    if (!FrameGenSession()) {
+        return;
+    }
+    const auto lock = LockStreamline();
+    PresentState& state = Presents();
+    if (state.closed_present == index) {
+        return;
+    }
+    if (sl::FrameToken* const token = TokenFor(index)) {
+        if (state.open_present != index) {
+            SetMarker(sl::PCLMarker::ePresentStart, *token);
+        }
+        SetMarker(sl::PCLMarker::ePresentEnd, *token);
+    }
+    state.open_present = NO_FRAME;
+    state.closed_present = index;
+}
+
 bool FrameGenSupportsSwapchain(VkFormat format) {
     return format != VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
+u32 FrameGenMaxGenerated() {
+    return PresentRates().max_generated.load(std::memory_order_relaxed);
+}
+
 void FrameGenSuspend() {
-    if (!FrameGenAvailable()) {
+    if (!FrameGenSession()) {
         return;
     }
+    const auto lock = LockStreamline();
     PresentState& state = Presents();
     state.with_inputs = 0;
     if (!state.on) {

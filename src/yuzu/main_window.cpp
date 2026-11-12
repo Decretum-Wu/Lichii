@@ -5265,14 +5265,15 @@ void MainWindow::UpdateStatusBar() {
     frame_gen_fps = frame_gen_ms > 0 ? static_cast<double>(new_generated_frames) * 1000.0 /
                                            static_cast<double>(frame_gen_ms)
                                      : 0.0;
+    frame_gen_generating = frame_gen.generated_frames > frame_gen_frames;
 #ifdef EGLANTINE_STREAMLINE
     // NVIDIA DLSS Frame Generation adds its frames after the renderer, at present.
-    if (Vulkan::Streamline::FrameGenAvailable()) {
+    if (Vulkan::Streamline::FrameGenActive()) {
         const auto rates = Vulkan::Streamline::FrameGenRecentRates();
         frame_gen_fps = std::max(rates.shown_fps - rates.real_fps, 0.0);
+        frame_gen_generating = rates.generating;
     }
 #endif
-    frame_gen_generating = frame_gen.generated_frames > frame_gen_frames;
     frame_gen_frames = frame_gen.generated_frames;
     frame_gen_state = frame_gen.state;
 
@@ -5326,7 +5327,7 @@ void MainWindow::UpdateStatusBar() {
     QString fpsText = tr("Game: %1 FPS").arg(std::round(results.average_game_fps), 0, 'f', 0);
     QString fpsSuffix = m_fpsSuffix;
 #ifdef EGLANTINE_STREAMLINE
-    if (Vulkan::Streamline::FrameGenAvailable()) {
+    if (Vulkan::Streamline::FrameGenActive()) {
         QString frameGen = Vulkan::Streamline::FrameGenRecentRates().generating
                                ? tr("DLSS FG")
                                : tr("DLSS FG paused");
@@ -5422,9 +5423,16 @@ void MainWindow::UpdateFrameGenButton() {
     }
 
     const Settings::FrameGenType selected_type = Settings::values.frame_gen_type.GetValue();
+    // Once a game runs, NVIDIA DLSS Frame Generation that isn't this session's generator gives
+    // way to FSR3.
+    const bool dlssg_fallback = selected_type == Settings::FrameGenType::NvidiaDlssG &&
+                                emulation_running &&
+                                frame_gen_state == VideoCore::FrameGenState::Running;
+    const Settings::FrameGenType shown_type =
+        dlssg_fallback ? Settings::FrameGenType::Fsr3 : selected_type;
     const QString& type_text =
-        ConfigurationShared::frame_gen_type_texts_map.find(selected_type)->second;
-    const QString type = selected_type == Settings::FrameGenType::NvidiaDlssG
+        ConfigurationShared::frame_gen_type_texts_map.find(shown_type)->second;
+    const QString type = shown_type == Settings::FrameGenType::NvidiaDlssG
                              ? QStringLiteral("DLSS-G")
                              : ConfigurationShared::TranslateMapText(translator, type_text).toUpper();
     const u32 target_rate = Settings::values.frame_gen_target_rate.GetValue();
@@ -5469,7 +5477,6 @@ void MainWindow::UpdateFrameGenButton() {
                          "of the user directory. It is missing or could not be loaded.");
         break;
     case VideoCore::FrameGenState::NvidiaFrameGen:
-        unavailable = tr("NVIDIA DLSS Frame Generation generates the frames instead.");
         break;
     }
 
@@ -5481,9 +5488,14 @@ void MainWindow::UpdateFrameGenButton() {
         return;
     }
 
+    const QString fallback =
+        dlssg_fallback ? tr(" NVIDIA DLSS Frame Generation can't run for this game or setup, so "
+                            "FSR3 runs instead; the log says why.")
+                       : QString();
     if (frame_gen_generating) {
         frame_gen_status_button->setText(mode);
-        frame_gen_status_button->setToolTip(tr("Frame generation is running.%1").arg(target));
+        frame_gen_status_button->setToolTip(
+            tr("Frame generation is running.%1%2").arg(target, fallback));
         return;
     }
 
@@ -5495,8 +5507,8 @@ void MainWindow::UpdateFrameGenButton() {
     frame_gen_status_button->setToolTip(
         tr("Frame generation is on but generated no frames in the last half second. It pauses "
            "while it warms up, for a second after a frame takes longer than 100 ms, and while "
-           "frames arrive in bursts.%1")
-            .arg(target_met));
+           "frames arrive in bursts.%1%2")
+            .arg(target_met, fallback));
 }
 
 void MainWindow::UpdateVolumeUI() {
