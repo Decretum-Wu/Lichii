@@ -38,18 +38,21 @@ Result IStorage::Read(
     R_UNLESS(offset >= 0, FileSys::ResultInvalidOffset);
 
     // The 40 MB/s throttle emulates a Switch 1 card (Eden cbd4cf2d8c, Mario Strikers' intro).
-    // Switch 2 storage is many times faster, and a Switch 2 title that streams a movie with
-    // hundreds of reads a second (Ocarina of Time's opening: 300-460) sleeps most of each second
-    // on the thread that also hands decoder images back, so its video falls seconds behind.
-    if (!Settings::CurrentProgramIsSwitch2()) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now < next_read_tick) {
-            std::this_thread::sleep_for(next_read_tick - now);
-        }
-        next_read_tick = std::chrono::steady_clock::now() +
-                         std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
-                                                  1'000'000'000 / ReadBytesPerSecond};
+    // Switch 2 storage is faster, and a Switch 2 title that streams a movie with hundreds of reads
+    // a second (Ocarina of Time's opening: 300-460) sleeps most of each second at 40 MB/s on the
+    // thread that also hands decoder images back, so its video falls seconds behind. Reads that
+    // complete with no delay at all break Hyrule Warriors: Age of Imprisonment at boot: it follows
+    // null and wild pointers from ~8 s on and never leaves its first loading screen (it boots at
+    // 100 and 200 MB/s, not at 300 or 400; upstream 45d1fdbdf4).
+    const s64 bytes_per_second =
+        Settings::CurrentProgramIsSwitch2() ? Switch2ReadBytesPerSecond : ReadBytesPerSecond;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_read_tick) {
+        std::this_thread::sleep_for(next_read_tick - now);
     }
+    next_read_tick = std::chrono::steady_clock::now() +
+                     std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
+                                              1'000'000'000 / bytes_per_second};
 
     // Read the data from the Storage backend
     const ReadTraceScope trace{ReadTraceSource::Storage, length};
