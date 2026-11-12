@@ -618,6 +618,10 @@ bool GPU::HasSuspendedChannels() const {
     return impl->scheduler.HasPendingChannelsAnyThread();
 }
 
+bool GPU::IsWaitingForGuest() const {
+    return impl->gpu_thread.IsWaitingForGuest();
+}
+
 bool GPU::UseNvdec() const {
     return impl->use_nvdec;
 }
