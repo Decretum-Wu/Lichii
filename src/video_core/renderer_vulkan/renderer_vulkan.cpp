@@ -167,7 +167,7 @@ try
     , library(OpenLibrary(context.get()))
     , dld()
 #ifdef EGLANTINE_STREAMLINE
-    , streamline_started(Streamline::Start())
+    , streamline_started(Streamline::Start(render_window.GetWindowInfo().render_surface))
 #endif
     // Create raw Vulkan instance first
     , instance(CreateInstance(*library,

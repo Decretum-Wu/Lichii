@@ -536,7 +536,7 @@ bool FrameGenRequested() {
            }) == VideoCore::DlssgBlock::None;
 }
 
-bool Start() {
+bool Start(void* window) {
     State& state = GetState();
     if (state.started) {
         return true;
@@ -630,6 +630,7 @@ bool Start() {
         Names(requirements.vkNumInstanceExtensions, requirements.vkInstanceExtensions);
     state.device_extensions =
         Names(requirements.vkNumDeviceExtensions, requirements.vkDeviceExtensions);
+    Common::DisplayHdrMonitor::Instance().Watch(window);
     if (!state.frame_gen_requested) {
         SetFrameGenReason(state, "it was not the frame generation type when the game started");
     } else if (Settings::values.hdr_swapchain.GetValue() == Settings::HdrSwapchain::Scrgb &&

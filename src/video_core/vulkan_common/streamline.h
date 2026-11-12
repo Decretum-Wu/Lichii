@@ -50,7 +50,8 @@ struct DlssFiles {
 
 /// When the NVIDIA DLSS setting is on, loads the user's sl.interposer.dll (checking NVIDIA's
 /// signature) and starts Streamline for DLSS. Call before creating the renderer's instance.
-bool Start();
+/// window: the native window, so the HDR state of its monitor is known when DLSS-G is chosen.
+bool Start(void* window);
 
 /// Whether Streamline is running and waiting for the renderer's device.
 [[nodiscard]] bool WantsDevice();
