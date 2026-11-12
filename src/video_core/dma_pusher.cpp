@@ -30,6 +30,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_cmdpage_diag.h"
+#include "video_core/nx2_list_macro_trace.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra {
@@ -316,6 +317,29 @@ bool DmaPusher::Step() {
                 ? LiveReadReason::SuspensionsChanged
             : gpu_written ? LiveReadReason::GpuWritten
                           : LiveReadReason::SafeDirty;
+        // EDEN_NX2_LIST_MACRO_TRACE: what a GPU-written entry held and the macro calls it fed.
+        namespace ListTrace = VideoCommon::ListMacroTrace;
+        const auto begin_list_trace = [&](ListTrace::Path path) {
+            if (!ListTrace::g_enabled || command_resume_offset != 0) {
+                return false;
+            }
+            const auto type = subchannel_type[dma_state.subchannel];
+            const auto engine = type == Engines::EngineTypes::Maxwell3D ? ListTrace::Engine::Maxwell3D
+                                : type == Engines::EngineTypes::KeplerCompute
+                                    ? ListTrace::Engine::Compute
+                                    : ListTrace::Engine::Other;
+            const u64 wait_start = std::exchange(list_trace_wait_start, 0);
+            ListTrace::BeginEntry(wait_start != 0 ? ListTrace::Path::Waited : path,
+                                  wait_start != 0 ? ListTrace::Now() - wait_start : 0, engine,
+                                  subchannels[dma_state.subchannel], dma_state.method,
+                                  dma_state.method_count, static_cast<u32>(header.size));
+            return true;
+        };
+        const auto end_list_trace = [&] {
+            const bool in_macro =
+                dma_state.method_count != 0 && dma_state.method >= MacroRegistersStart;
+            ListTrace::EndEntry(in_macro ? subchannels[dma_state.subchannel] : nullptr);
+        };
         if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
@@ -340,6 +364,9 @@ bool DmaPusher::Step() {
                    pending) {
             if (pending) {
                 // Parsed again once the GPU copied the list; other channels run meanwhile.
+                if (ListTrace::g_enabled && list_trace_wait_start == 0) {
+                    list_trace_wait_start = ListTrace::Now();
+                }
                 return false;
             }
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
@@ -348,10 +375,15 @@ bool DmaPusher::Step() {
                 CheckLiveRead(live_read_reason, header, commands, submitted_copy);
             }
             Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Copy);
+            const bool traced = begin_list_trace(ListTrace::Path::Copied);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+            if (traced) {
+                end_list_trace();
+            }
         } else {
-            FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            const bool flushed =
+                FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
@@ -359,8 +391,12 @@ bool DmaPusher::Step() {
                 CheckLiveRead(live_read_reason, header, commands, submitted_copy);
             }
             Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Slow);
+            const bool traced = flushed && begin_list_trace(ListTrace::Path::Flushed);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+            if (traced) {
+                end_list_trace();
+            }
         }
         if (puller.HasPendingAcquire()) {
             return false;

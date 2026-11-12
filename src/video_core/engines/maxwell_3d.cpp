@@ -31,6 +31,7 @@
 #include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_cmdpage_diag.h"
 #include "video_core/nx2_fast_draw.h"
+#include "video_core/nx2_list_macro_trace.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/query_cache/frame_trace.h"
@@ -1606,20 +1607,30 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     const auto positions = GetNativeMacroPositions();
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
     VideoCommon::Nx2Profile::CountMethod(method, false);
-    if (!FrontRunOnBack(system, split, fs, engine, start)) {
+    namespace ListTrace = VideoCommon::ListMacroTrace;
+    ListTrace::Call* const trace =
+        ListTrace::g_enabled
+            ? ListTrace::BeginCall(ListTrace::Engine::Maxwell3D, static_cast<EngineInterface*>(this),
+                                   method, engine.native_code, engine.native_code_generation, start,
+                                   fs.parameters, native_data_ram)
+            : nullptr;
+    const bool on_back = FrontRunOnBack(system, split, fs, engine, start);
+    if (!on_back) {
         VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
         engine.native_interpreter.active_dram = &native_data_ram;
         const auto parameter_count = fs.parameters.size();
         const auto read = [&](u32 address) {
-            if (address >= Regs::NUM_REGS) {
-                return 0U;
-            }
-            return fs.back_owned[address] ? FrontRegister(split, fs, address) : fs.regs[address];
+            const u32 value = address >= Regs::NUM_REGS ? 0U
+                              : fs.back_owned[address] ? FrontRegister(split, fs, address)
+                                                       : fs.regs[address];
+            ListTrace::NoteRead(trace, address, value);
+            return value;
         };
         const auto emit = [&](u32 address, u32 value) {
             if (address >= MacroRegistersStart) {
                 return false;
             }
+            ListTrace::NoteWrite(trace, address, value);
             FrontWrite(split, fs, address, value, true, true);
             // MME_DMA_READ (into data RAM) and MME_DMA_READ_FIFOED (into the load FIFO).
             if (address == 0x157 || address == 0x158) {
@@ -1643,6 +1654,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             LOG_ERROR(HW_GPU, "Native MME (split front) failed: start={:#x}, consumed={}/{}, error={}",
                       start, result.consumed, parameter_count, result.error);
         }
+    }
+    if (trace != nullptr) {
+        ListTrace::EndCall(*trace, on_back);
     }
     fs.parameters.clear();
     if (fs.draw_pending) {

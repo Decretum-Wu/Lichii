@@ -319,6 +319,8 @@ public:
     std::optional<u64> pending_list_tick;
     /// The entry parsed next was suspended on pending_list_tick, which is done now.
     bool resumed_list_read{};
+    /// When the channel suspended on pending_list_tick (EDEN_NX2_LIST_MACRO_TRACE), else 0.
+    u64 list_trace_wait_start{};
 
     // Not bitfields: the fence thread sets synced, and a bitfield write would rewrite the byte it
     // shares with dma_increment_once and signal_sync (#479).
