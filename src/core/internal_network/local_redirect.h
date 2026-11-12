@@ -21,6 +21,7 @@
 ///   EDEN_NX2_ONLINE_SERVER=<ip>:<port>         TCP connections to 127.0.0.1:443 go there
 ///   EDEN_NX2_LOOPBACK_ONLY=1                   other names do not resolve, and the guest's
 ///                                              connections and datagrams reach loopback only
+///                                              (and EDEN_NX2_ONLINE_SERVER, through 127.0.0.1)
 ///   EDEN_NX2_ONLINE_CA=<file.der>              a CA certificate (DER) the guest's TLS trusts
 ///                                              too, through the system store and OpenSSL
 namespace Network::LocalRedirect {
@@ -36,7 +37,8 @@ namespace Network::LocalRedirect {
 /// Where a TCP connection to `address` goes: EDEN_NX2_ONLINE_SERVER for 127.0.0.1:443.
 [[nodiscard]] SockAddrIn ConnectTarget(const SockAddrIn& address);
 
-/// Whether the guest may reach `address` (always, unless EDEN_NX2_LOOPBACK_ONLY is set).
+/// Whether the guest may reach `address` (always, unless EDEN_NX2_LOOPBACK_ONLY is set). Checked
+/// before ConnectTarget, so EDEN_NX2_ONLINE_SERVER stays reachable.
 [[nodiscard]] bool Allowed(const SockAddrIn& address);
 
 /// EDEN_NX2_LOOPBACK_ONLY.
