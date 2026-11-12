@@ -1667,9 +1667,16 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
             file.read(magic.data(), magic.size())
                 .read(reinterpret_cast<char*>(&version), sizeof(version));
             constexpr std::array<char, 8> expected_magic{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
-            if (magic != expected_magic || version != CACHE_VERSION) {
-                LOG_WARNING(Render_Vulkan, "Shader precache: {} is not a version {} file", path,
-                            CACHE_VERSION);
+            // The file holds environments only, which read the same in every compatible version:
+            // one from an older version is built again under this one (the marker carries it).
+            const auto& compatible = VideoCommon::CompatibleVulkanPipelineCacheVersions;
+            if (magic != expected_magic ||
+                (version != CACHE_VERSION &&
+                 std::ranges::find(compatible, version) == compatible.end())) {
+                LOG_WARNING(Render_Vulkan,
+                            "Shader precache: {} is a version {} file, not {} or a compatible "
+                            "one; pre-compile the game's shaders again",
+                            path, version, CACHE_VERSION);
                 throw std::runtime_error("wrong version");
             }
             while (file.tellg() != end) {
