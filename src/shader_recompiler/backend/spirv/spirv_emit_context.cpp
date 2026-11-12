@@ -974,6 +974,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }
     using DefPtr = Id StorageDefinitions::*;
     const Id zero{u32_zero_value};
+    // Inlined at each of their calls, a program with ~30 candidate buffers took NVIDIA's compiler
+    // 2.4 s (Ocarina's foliage compute programs; 0.6 s as calls, same accesses).
+    const spv::FunctionControlMask helper_control{spv::FunctionControlMask::DontInline};
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback) {
         AddLabel();
@@ -1038,10 +1041,24 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                 best_distance = OpSelect(U64, better, distance, best_distance);
                 best_index = OpSelect(U32[1], better, Const(static_cast<u32>(index)), best_index);
             }
+            std::vector<Sirit::Literal> literals;
+            std::vector<Id> labels;
             for (size_t index = 0; index < num_buffers; ++index) {
-                access(index, bases[index],
-                       OpIEqual(U1, best_index, Const(static_cast<u32>(index))));
+                literals.push_back(static_cast<u32>(index));
+                labels.push_back(OpLabel());
             }
+            const Id default_label{OpLabel()};
+            OpSelectionMerge(default_label, spv::SelectionControlMask::MaskNone);
+            OpSwitch(best_index, default_label, literals, labels);
+            for (size_t index = 0; index < num_buffers; ++index) {
+                AddLabel(labels[index]);
+                const Id ssbo_id{ssbos[index].*ssbo_member};
+                const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, bases[index]))};
+                const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
+                callback(OpAccessChain(element_pointer, ssbo_id, zero, ssbo_index), ssbo_id,
+                         ssbo_index);
+            }
+            AddLabel(default_label);
             return;
         }
         for (size_t index = 0; index < num_buffers; ++index) {
@@ -1061,7 +1078,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }};
     const auto define_load{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
         const Id function_type{TypeFunction(type, U64)};
-        const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone, function_type)};
+        const Id func_id{OpFunction(type, helper_control, function_type)};
         const Id addr{OpFunctionParameter(U64)};
         if (!profile.support_descriptor_aliasing && shift > 2) {
             AddLabel();
@@ -1105,7 +1122,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }};
     const auto define_write{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
         const Id function_type{TypeFunction(void_id, U64, type)};
-        const Id func_id{OpFunction(void_id, spv::FunctionControlMask::MaskNone, function_type)};
+        const Id func_id{OpFunction(void_id, helper_control, function_type)};
         const Id addr{OpFunctionParameter(U64)};
         const Id data{OpFunctionParameter(type)};
         if (!profile.support_descriptor_aliasing && shift > 2) {
@@ -1200,8 +1217,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         }
         const auto kind = static_cast<GlobalAtomic>(index);
         const Id type{kind == AddF32 ? F32[1] : U32[1]};
-        const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone,
-                                    TypeFunction(type, U64, type))};
+        const Id func_id{OpFunction(type, helper_control, TypeFunction(type, U64, type))};
         const Id addr{OpFunctionParameter(U64)};
         const Id value{OpFunctionParameter(type)};
         define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
