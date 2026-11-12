@@ -427,6 +427,8 @@ void NoteReader(State& state, Macro& macro, const Call& call, DataRamAccesses da
     };
     std::array<u32, 5> upload_state{r[0], r[1], r[2], r[3], r[4]};
     std::optional<Upload> upload;
+    bool upload_began = false;
+    std::vector<bool> begun_before(real.writes.size());
     u64 const_buffer = (u64{r[5]} << 32) | r[6];
     u32 const_buffer_offset = r[7];
     for (size_t i = 0; i < real.writes.size(); ++i) {
@@ -434,10 +436,13 @@ void NoteReader(State& state, Macro& macro, const Call& call, DataRamAccesses da
         if (method >= UploadLineLength && method <= UploadPitch) {
             upload_state[method - UploadLineLength] = value;
         } else if (method == UploadExec) {
+            upload_began = true;
             const auto& [length, count, high, low, pitch] = upload_state;
             upload = (value & 1) != 0 && length != 0
                          ? std::optional{Upload{(u64{high} << 32) | low, length, count, pitch, 0}}
                          : std::nullopt;
+        } else if (method == UploadData && !upload_began) {
+            begun_before[i] = true;
         } else if (method == UploadData && upload) {
             const u32 line = upload->offset / upload->line_length;
             if (line < upload->line_count) {
@@ -469,8 +474,9 @@ void NoteReader(State& state, Macro& macro, const Call& call, DataRamAccesses da
                 b.writes[i].second != tag_b(address)) {
                 continue;
             }
-            carried += fmt::format("{}write {} to {:#x}", carried.empty() ? "" : ", ", i,
-                                   real.writes[i].first);
+            carried += fmt::format("{}write {} to {:#x}{}", carried.empty() ? "" : ", ", i,
+                                   real.writes[i].first,
+                                   begun_before[i] ? " (an upload begun before the call)" : "");
             if (lands[i]) {
                 landing = lands[i];
                 AddLanding({*lands[i], macro.engine, macro.hash, address});
