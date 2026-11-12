@@ -129,6 +129,8 @@ ConfigureSystem::ConfigureSystem(Core::System& system_,
                 checkbox_rtc->setChecked(global_enabled);
             }
             UpdateRtcTime();
+            widget_rtc->restore_button->setEnabled(false);
+            widget_rtc->restore_button->setVisible(false);
         });
     }
 
@@ -257,6 +259,7 @@ void ConfigureSystem::ApplyConfiguration() {
     if (Settings::IsConfiguringGlobal()) {
         Settings::values.custom_rtc_offset.SetValue(rtc_offset);
     } else {
+        Settings::values.custom_rtc_enabled.SetGlobal(rtc_using_global);
         Settings::values.custom_rtc.SetGlobal(rtc_using_global);
         Settings::values.custom_rtc_offset.SetGlobal(rtc_using_global);
         if (!rtc_using_global) {
