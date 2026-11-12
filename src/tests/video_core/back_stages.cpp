@@ -6,6 +6,7 @@
 #include <barrier>
 #include <chrono>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -450,3 +451,37 @@ TEST_CASE("Back stages: A and B on two threads through the ring, lists, joins an
 }
 
 } // namespace
+
+TEST_CASE("Back stages: the cache lock's joins are reported by caller", "[back_stages]") {
+    BackRing ring;
+    std::atomic<bool> release{};
+    ring.Start(
+        [&](u32) {
+            while (!release.load()) {
+                std::this_thread::yield();
+            }
+        },
+        {}, {});
+    DrawStages::g_counting = true;
+    DrawStages::g_threaded = true;
+    DrawStages::g_ring = &ring;
+    DrawStages::t_draw_thread = true;
+    DrawStages::ClaimRing();
+    (void)ring.Acquire();
+    ring.Commit();
+    std::thread releaser([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        release.store(true);
+    });
+    DrawStages::JoinB(DrawStages::Join::ABufferLock);
+    releaser.join();
+    const std::string line = DrawStages::FormatRing(1'000'000'000);
+    REQUIRE(line.find("A buffer cache lock joins by caller: 1/s") != std::string::npos);
+    REQUIRE(DrawStages::FormatRing(1'000'000'000).find("by caller") == std::string::npos);
+    DrawStages::ReleaseRing();
+    DrawStages::g_ring = nullptr;
+    DrawStages::g_threaded = false;
+    DrawStages::g_counting = false;
+    DrawStages::t_draw_thread = false;
+    ring.Stop();
+}

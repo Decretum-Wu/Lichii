@@ -1,8 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstring>
+#include <mutex>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -13,9 +19,48 @@
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <immintrin.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace VideoCommon::DrawStages {
 namespace {
+
+/// The cache lock's joins by the return addresses of their callers (with join counting on): the
+/// lock is taken in many places and the join counter names only the lock.
+using CallerStack = std::array<void*, 4>;
+struct CallerHash {
+    size_t operator()(const CallerStack& stack) const noexcept {
+        size_t hash = 0;
+        for (void* frame : stack) {
+            hash = hash * 31 + reinterpret_cast<uintptr_t>(frame);
+        }
+        return hash;
+    }
+};
+struct CallerJoins {
+    u64 joins;
+    u64 wait_ns;
+};
+std::mutex caller_mutex;
+std::unordered_map<CallerStack, CallerJoins, CallerHash> caller_joins;
+
+std::string FormatAddress(void* address) {
+#ifdef _WIN32
+    HMODULE module{};
+    char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(address), &module)) {
+        GetModuleFileNameA(module, name, sizeof(name));
+    }
+    const char* base_name = std::strrchr(name, '\\');
+    return fmt::format("{}+{:#x}", base_name ? base_name + 1 : name,
+                       reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(module));
+#else
+    return fmt::format("{}", address);
+#endif
+}
 
 void Pause() {
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -224,7 +269,23 @@ void JoinNow(Join site) {
     }
     if (ring->InFlight()) {
         Count(site);
-        ring->Join();
+        if (site != Join::ABufferLock || !g_counting) {
+            ring->Join();
+        } else {
+            CallerStack stack{};
+#ifdef _WIN32
+            RtlCaptureStackBackTrace(1, static_cast<DWORD>(stack.size()), stack.data(), nullptr);
+#elif defined(__GNUC__)
+            stack[0] = __builtin_return_address(0);
+#endif
+            const u64 start = NowNs();
+            ring->Join();
+            const u64 wait = NowNs() - start;
+            std::scoped_lock lock{caller_mutex};
+            CallerJoins& joins = caller_joins[stack];
+            ++joins.joins;
+            joins.wait_ns += wait;
+        }
     }
     if (g_after_join != nullptr) {
         // B is idle: what the hook records runs between draws, as under a JoinScope.
@@ -267,10 +328,37 @@ std::string FormatRing(u64 window_ns) {
     const double a_wait = ms(stats.a_wait_ns);
     const double b_busy = ms(stats.b_busy_ns);
     const double sleeps = rate(stats.b_sleeps);
-    return fmt::format(" | stage B thread per second: {:.0f} packets in {:.0f} batches, B busy "
-                       "{:.1f} ms, B sleeps {:.0f}; A waited {:.1f} ms ({:.0f} joins, {:.0f} "
-                       "full ring)",
-                       packets, batches, b_busy, sleeps, a_wait, joins, full);
+    std::string line = fmt::format(" | stage B thread per second: {:.0f} packets in {:.0f} "
+                                   "batches, B busy {:.1f} ms, B sleeps {:.0f}; A waited {:.1f} "
+                                   "ms ({:.0f} joins, {:.0f} full ring)",
+                                   packets, batches, b_busy, sleeps, a_wait, joins, full);
+    std::vector<std::pair<CallerStack, CallerJoins>> callers;
+    {
+        std::scoped_lock lock{caller_mutex};
+        callers.assign(caller_joins.begin(), caller_joins.end());
+        caller_joins.clear();
+    }
+    if (callers.empty()) {
+        return line;
+    }
+    std::ranges::sort(callers, [](const auto& a, const auto& b) {
+        return a.second.joins > b.second.joins;
+    });
+    line += " | A buffer cache lock joins by caller:";
+    for (size_t i = 0; i < (std::min<size_t>)(callers.size(), 8); ++i) {
+        const auto& [stack, count] = callers[i];
+        line += fmt::format(" {:.0f}/s {:.1f} ms/s [",
+                            static_cast<double>(count.joins) * 1e9 / static_cast<double>(window_ns),
+                            static_cast<double>(count.wait_ns) * 1e3 /
+                                static_cast<double>(window_ns));
+        for (void* frame : stack) {
+            if (frame != nullptr) {
+                line += fmt::format("{}{}", line.back() == '[' ? "" : " ", FormatAddress(frame));
+            }
+        }
+        line += "],";
+    }
+    return line;
 }
 
 } // namespace VideoCommon::DrawStages
