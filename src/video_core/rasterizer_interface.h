@@ -205,6 +205,12 @@ public:
         }
     }
 
+    /// InnerInvalidation of constant buffer data (MemoryManager::WriteConstantBufferData).
+    virtual void InvalidateConstantBufferData(
+        std::span<const std::pair<DAddr, std::size_t>> sequences) {
+        InnerInvalidation(sequences);
+    }
+
     /// Notify rasterizer that any caches of the specified region are desync with guest
     virtual void OnCacheInvalidation(PAddr addr, u64 size) = 0;
 

@@ -3281,6 +3281,11 @@ public:
     /// A vertex stream's address, size or limit (not its stride or enable).
     static bool IsFastDrawVertexBuffer(u32 method);
     void NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end);
+    /// Writes constant buffer data at `offset` (`bytes` within the buffer) through the buffer
+    /// CB_ADDRESS and CB_SIZE select, translated once per selection and memory map. False, having
+    /// done nothing, where the general path has to: the buffer isn't one mapped device range, it
+    /// can reach the texture or sampler headers, or the write lands on Switch 2 sparse memory.
+    bool WriteBoundConstantBuffer(u32 offset, const void* data, u32 bytes);
 
     /// Handles a write to the CB_DATA[i] register.
     void ProcessCBData(u32 value);
@@ -3398,6 +3403,18 @@ private:
     /// Device memory of the texture and sampler header tables (NoteFastDrawConstantData).
     VideoCommon::Nx2FastDraw::DeviceSpans fast_draw_header_spans;
     VideoCommon::Nx2FastDraw::DeviceSpans fast_draw_sampler_spans;
+
+    /// The constant buffer WriteBoundConstantBuffer last translated, and the state it read.
+    struct BoundConstantBuffer {
+        GPUVAddr address{};
+        u32 size{};
+        u64 map_serial{};
+        GPUVAddr tic{};
+        u64 tic_size{};
+        GPUVAddr tsc{};
+        u64 tsc_size{};
+        DAddr device{}; ///< 0: the general path writes its data
+    } bound_constant_buffer;
 
     VideoCore::RasterizerInterface* rasterizer = nullptr;
 

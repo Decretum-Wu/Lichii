@@ -279,6 +279,12 @@ struct BufferCacheTestAccess {
     static Buffer& Get(Cache& cache, BufferId id) {
         return cache.slot_buffers[id];
     }
+    /// Add without the upload: guest memory not yet read into the buffer.
+    static BufferId Register(Cache& cache, DAddr address, u32 size) {
+        const auto id = cache.slot_buffers.insert(cache.runtime, address, size, false);
+        cache.Register(id);
+        return id;
+    }
     static void Dirty(Cache& cache, DAddr address, u64 size) {
         cache.memory_tracker.MarkRegionAsGpuModified(address, size);
         cache.gpu_modified_ranges.Add(address, size);
@@ -332,6 +338,10 @@ struct BufferCacheTestAccess {
     }
     static u32 CpuMarks(Cache& cache) {
         return cache.memory_tracker.cpu_marks;
+    }
+    /// A draw that binds no uniform buffer.
+    static void KeepDrawWithout(KeepCache& cache, const Nx2FastDraw::Delta* delta) {
+        cache.BeginGraphicsUniforms(delta);
     }
     static void KeepDraw(KeepCache& cache, BufferCacheChannelInfo& channel,
                          const Nx2FastDraw::Delta* delta, BufferId id, DAddr address,
@@ -990,6 +1000,89 @@ TEST_CASE("Uniform keep verify counts guest writes the delta did not report",
     REQUIRE(f.Counts().verified == 2);
     REQUIRE(f.Counts().mismatches == 1);
     REQUIRE(f.Counts().kept == 0);
+}
+
+TEST_CASE("Uniform keep binds unwritten uniform buffers streamed by earlier draws",
+          "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    using Delta = VideoCommon::Nx2FastDraw::Delta;
+    const Delta unchanged{};
+    std::memset(f.UboBytes(), 3, KeepFixture::UboSize);
+    f.Draw(nullptr);
+    // Draws without the slot, and inline data elsewhere, leave its allocation to the next bind.
+    Access::KeepDrawWithout(*f.cache, &unchanged);
+    const Delta elsewhere = Written(KeepFixture::Ubo + 0x200, KeepFixture::Ubo + 0x210);
+    Access::KeepDrawWithout(*f.cache, &elsewhere);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    REQUIRE(f.runtime.allocations.size() == 1);
+
+    // Inline data over it in a draw without the slot: the next bind reads it again.
+    f.UboBytes()[0x40] = 4;
+    const Delta over = Written(KeepFixture::Ubo + 0x40, KeepFixture::Ubo + 0x44);
+    Access::KeepDrawWithout(*f.cache, &over);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    REQUIRE(f.runtime.allocations.size() == 2);
+
+    // Writes the draws did not all hear of: a full delta, or a draw that never bound its uniforms.
+    Delta overflowed{};
+    overflowed.overflow = true;
+    f.Draw(&overflowed);
+    f.Draw(nullptr);
+    REQUIRE(f.Counts().kept == 1);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 2);
+}
+
+TEST_CASE("Uniform keep ends where the CPU may have synchronised and at memory map changes",
+          "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    f.Draw(nullptr);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+
+    // A fence: the guest may have rewritten the buffer since without the caches seeing it.
+    VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Fence);
+    f.UboBytes()[0x10] = 5;
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 2);
+    // State changes between draws are no such point.
+    VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 3);
+
+    f.memory->Map(0x200000, 0x20000, 0x10000, Tegra::PTEKind::PITCH, true);
+    f.UboBytes()[0x20] = 6;
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 3);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 4);
+}
+
+TEST_CASE("Constant buffer data skips WriteMemory only on pages no other buffer use reached",
+          "[buffer_ports]") {
+    Fixture f;
+    // A buffer that only streamed uniform buffers read: its pages are still CPU-modified.
+    const auto id = Access::Register(*f.cache, 0x20000, 0x10000);
+    REQUIRE_FALSE(f.cache->ConstantDataReachesBuffers(0x20100, 0x40));
+    REQUIRE_FALSE(f.cache->ConstantDataReachesBuffers(0x22000, 0x1000));
+
+    // A vertex, index or storage buffer (or the cached uniform path) uploads a range of it: those
+    // pages need the CPU-modified mark again.
+    Access::Upload(*f.cache, id, 0x20f00, 0x200);
+    REQUIRE(f.cache->ConstantDataReachesBuffers(0x20000, 4));
+    REQUIRE(f.cache->ConstantDataReachesBuffers(0x21ffc, 4));
+    REQUIRE_FALSE(f.cache->ConstantDataReachesBuffers(0x22000, 0x1000));
+    REQUIRE(f.cache->ConstantDataReachesBuffers(0x21f00, 0x200));
+
+    // GPU-written pages keep their downloads and GPU-modified ranges right.
+    Access::MarkWritten(*f.cache, id, 0x24010, 0x10);
+    REQUIRE(f.cache->ConstantDataReachesBuffers(0x24ff0, 4));
+    REQUIRE_FALSE(f.cache->ConstantDataReachesBuffers(0x25000, 4));
 }
 
 TEST_CASE("Read downloads stay GPU-modified until the reading thread writes them",

@@ -264,6 +264,13 @@ public:
 
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
+    /// Whether constant buffer data written to [device_addr, device_addr + size) must reach
+    /// WriteMemory. Pages no buffer was ever uploaded from and the GPU never wrote are
+    /// CPU-modified still, so WriteMemory would change nothing there that the streamed uniform
+    /// buffers reading them need: those read guest memory, and their keeps learn of the write
+    /// from the draw's fast draw delta. Drawing thread, without the lock.
+    [[nodiscard]] bool ConstantDataReachesBuffers(DAddr device_addr, u64 size) const;
+
     /// Cancels pending downloads over the range (fences' and reads'), so none writes them over
     /// newer bytes. Those bytes reach guest memory later if at all (a GPU copy, a clear, an
     /// inline or a discarded write), so read downloads already taken land first: their reads get
@@ -534,8 +541,8 @@ public:
     }
 
     /// Called before each graphics draw binds its buffers (uniform keeps). `delta`: the constant
-    /// buffer binds and data since the previous draw when it is a fast draw delta draw, else
-    /// nullptr.
+    /// buffer binds and data since the previous call, or nullptr when they aren't known (then
+    /// nothing is kept).
     void BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta);
 
     Common::SpinRecursiveMutex mutex;
@@ -787,11 +794,12 @@ private:
         u64 verify_mismatches{};
     } geometry_stats;
 
-    /// Uniform keeps: a delta draw binds a small uniform buffer from the stream
-    /// allocation the previous draw made for it, without reading guest memory, when nothing ordered
-    /// between the two draws wrote its range: no inline constant data, no rebind, no CPU write the
-    /// caches were told about, no GPU write and no buffer deletion. Anything else in between ends
-    /// the delta chain.
+    /// Uniform keeps: a draw binds a small uniform buffer from the stream allocation an earlier
+    /// draw of the command buffer made for its slot and range, without reading guest memory, when
+    /// nothing ordered between them wrote the range: no inline constant data, no rebind, no CPU
+    /// write the caches were told about, no GPU write, no buffer deletion and no memory map
+    /// change. Nor anything the guest CPU could have synchronised with (Nx2FastDraw::SyncSerial):
+    /// it may write pages the caches don't watch after one.
     [[nodiscard]] bool UniformRangeKept(size_t stage, u32 index, DAddr device_addr,
                                         u32 size) const noexcept;
     void NoteUniformWrite(DAddr device_addr, u64 size) {
@@ -809,15 +817,16 @@ private:
         return value != nullptr && value[0] == '1';
     }();
     struct UniformKeep {
-        std::array<u32, NUM_STAGES> candidates{}; ///< Streamed by the previous draw, not rebound
-        std::array<u32, NUM_STAGES> streamed{};   ///< Streamed by this draw
-        /// Device ranges written since the previous draw began: inline constant data, then the
-        /// CPU writes and GPU-modified marks.
-        boost::container::static_vector<std::pair<DAddr, DAddr>, Nx2FastDraw::Delta::MaxWrites + 8>
-            writes;
+        /// Slots whose last stream allocation still holds what guest memory has at `ranges`.
+        std::array<u32, NUM_STAGES> clean{};
+        std::array<std::array<std::pair<DAddr, u32>, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>
+            ranges{};
+        /// CPU writes and GPU-modified marks since the previous draw began.
         boost::container::static_vector<std::pair<DAddr, DAddr>, 8> memory_writes;
         bool memory_writes_lost{}; ///< More writes than memory_writes holds
         u64 draw_deletions{}; ///< buffer_deletions when the previous draw began
+        u64 sync_serial{};    ///< Nx2FastDraw::SyncSerial then
+        u64 host_serial{};    ///< MemoryManager::HostPointerSerial then
         u64 kept{};
         u64 streamed_binds{};
         u64 verified{};
