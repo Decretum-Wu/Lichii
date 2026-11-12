@@ -284,28 +284,25 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
                               present_manager.SwapchainImageCount(), output_format.format, output);
 
 #ifdef HAS_LSFG
-    if (output.IsHdr()) {
-        frame_gen.Pause();
-    } else {
-        void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames(),
-                                         present_manager.TakeBlockedTime()));
+    void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames(),
+                                     present_manager.TakeBlockedTime()));
 
-        frame_gen.Process(device, frame, frame->image_format, GuestExtent(framebuffers));
+    frame_gen.Process(device, frame, frame->image_format, GuestExtent(framebuffers));
 
-        const size_t generated_frames = frame_gen.GeneratedFrameCount();
-        // Each generated frame keeps the screen for an equal share of the real frame interval. Sent
-        // back to back, a high refresh rate display shows it for one refresh only.
-        const auto spacing = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::duration<f32>(std::min(frame_gen.FrameInterval(), 0.1f) /
-                                       static_cast<f32>(generated_frames + 1)));
-        for (size_t generation = 0; generation < generated_frames; ++generation) {
-            Frame* generated = present_manager.GetRenderFrame();
-            generated->present_spacing = spacing;
-            blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
-            frame_gen.GenerateInto(device, generated, generation);
-            scheduler.Flush(*generated->render_ready);
-            present_manager.Present(generated);
-        }
+    const size_t generated_frames = frame_gen.GeneratedFrameCount();
+    // Each generated frame keeps the screen for an equal share of the real frame interval. Sent
+    // back to back, a high refresh rate display shows it for one refresh only.
+    const auto spacing = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<f32>(std::min(frame_gen.FrameInterval(), 0.1f) /
+                                   static_cast<f32>(generated_frames + 1)));
+    for (size_t generation = 0; generation < generated_frames; ++generation) {
+        Frame* generated = present_manager.GetRenderFrame();
+        generated->color_space = output.color_space;
+        generated->present_spacing = spacing;
+        blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
+        frame_gen.GenerateInto(device, generated, generation);
+        scheduler.Flush(*generated->render_ready);
+        present_manager.Present(generated);
     }
 #endif
 
@@ -374,7 +371,7 @@ HdrPresent RendererVulkan::UpdateHdrPresent() {
         if (output_format.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
             LOG_INFO(Render_Vulkan,
                      "HDR output: {} {}, reference white {} nits, peak {} nits. Anti-aliasing, "
-                     "post-processing, upscaling filters and frame generation are off",
+                     "post-processing and upscaling filters are off",
                      string_VkFormat(output_format.format),
                      string_VkColorSpaceKHR(output_format.colorSpace), output_reference_white,
                      output_peak);

@@ -4,9 +4,11 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <optional>
 
 #include "common/common_types.h"
+#include "common/settings_enums.h"
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_vulkan/present/frame_gen_pacer.h"
 #include "video_core/renderer_vulkan/present/lsfg_chain.h"
@@ -26,9 +28,6 @@ public:
     ~FrameGen();
 
     void Process(const Device& device, Frame* frame, VkFormat format, VkExtent2D guest_extent);
-
-    /// Retains resources while invalidating pacing and history across a presentation gap.
-    void Pause();
 
     /// blocked: the time the renderer waited for the present thread since the last call.
     [[nodiscard]] size_t WantedGenerations(size_t capacity,
@@ -50,6 +49,10 @@ public:
 
 private:
     void Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale);
+    /// Updates the status bar state and logs each change with its reason.
+    void SetState(VideoCore::FrameGenState new_state, VkFormat format);
+    /// Logs every 10 s how many frames were generated, when that changes.
+    void LogActivity();
     void DumpDebugImages(u64 count);
 
     MemoryAllocator& memory_allocator;
@@ -63,6 +66,7 @@ private:
     VkExtent2D peak_guest_extent{};
     VkExtent2D built_extent{};
     VkFormat built_format{VK_FORMAT_UNDEFINED};
+    Settings::FrameGenType built_type{};
     f32 built_flow_scale{};
     u64 frame_count{};
     u64 last_count{};
@@ -73,6 +77,12 @@ private:
     bool dumped{};
     std::atomic<VideoCore::FrameGenState> state{VideoCore::FrameGenState::Pending};
     std::atomic<u64> generated_frames{};
+    struct {
+        std::chrono::steady_clock::time_point since{};
+        u64 frames{};
+        u64 generated{};
+        f32 logged_per_frame{-1.0f};
+    } activity;
 };
 
 } // namespace Vulkan
