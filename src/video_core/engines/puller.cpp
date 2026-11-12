@@ -136,6 +136,12 @@ AcquireCheck CheckWithoutDrain(DmaPusher& dma_pusher, const Puller::PendingAcqui
             return AcquireCheck::MetByQueued;
         }
         VideoCommon::Count(stats.drain_queued);
+        if (VideoCommon::g_acquire_counting && !queued->known) {
+            VideoCommon::Count(stats.queued_unknown);
+            if (acquire.Matches(dma_pusher.memory_manager.Read<u32>(acquire.address))) {
+                VideoCommon::Count(stats.queued_unknown_met);
+            }
+        }
         return AcquireCheck::Drain;
     }
     return acquire.Matches(dma_pusher.memory_manager.Read<u32>(acquire.address))
@@ -490,7 +496,9 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             VerifyWithoutDrain(dma_pusher, acquire, without_drain);
             return;
         }
-        if (without_drain == AcquireCheck::NotMet) {
+        const bool not_met = without_drain == AcquireCheck::NotMet;
+        if (not_met) {
+            VideoCommon::Count(stats.trigger_not_met);
             // Nothing the front sent to the word meets it, so only a release it can't see does:
             // one in the work queued for the back, which latches the waiter and wakes this thread
             // (Nx2SemaphoreWaiters::OnWrite, Nx2PendingWake), or a store by the guest CPU. The
@@ -518,6 +526,9 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         DrainBack();
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;
+        }
+        if (not_met) {
+            VideoCommon::Count(stats.trigger_not_met_twice);
         }
         // Registered before the fences run, so a release among them that meets the value counts.
         auto& waiters = Nx2SemaphoreWaiters::Get();
