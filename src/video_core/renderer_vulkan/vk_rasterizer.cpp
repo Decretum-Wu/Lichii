@@ -693,13 +693,15 @@ void RasterizerVulkan::ReportFastDraws() {
     if (fast_draw_verify) {
         LOG_INFO(Render_Vulkan,
                  "Fast draw verify per second: {:.0f} checked, {:.0f} pipeline mismatches, {:.0f} "
-                 "view or sampler mismatches, {:.0f} kept buffer binding mismatches (totals {} {} "
-                 "{} {})",
+                 "view or sampler mismatches, {:.0f} kept buffer binding mismatches, {:.0f} "
+                 "vertex input mismatches (totals {} {} {} {} {})",
                  static_cast<double>(stats.verified) / seconds,
                  static_cast<double>(stats.pipeline_mismatches) / seconds,
                  static_cast<double>(stats.view_mismatches) / seconds,
-                 static_cast<double>(stats.binding_mismatches) / seconds, stats.verified,
-                 stats.pipeline_mismatches, stats.view_mismatches, stats.binding_mismatches);
+                 static_cast<double>(stats.binding_mismatches) / seconds,
+                 static_cast<double>(stats.vertex_input_mismatches) / seconds, stats.verified,
+                 stats.pipeline_mismatches, stats.view_mismatches, stats.binding_mismatches,
+                 stats.vertex_input_mismatches);
     }
     std::string breaks;
     for (size_t reason = 0; reason < stats.breaks.size(); ++reason) {
@@ -1196,6 +1198,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     const bool delta_holds =
         delta_pipeline != nullptr && DeltaStillHolds(draw_serial, draw_map_serial);
     const DrawPath path = delta_holds && !verify_pipeline ? DrawPath::Delta : DrawPath::Full;
+    // EDEN_NX2_FAST_DRAW_VERIFY compares only draws that would have taken the delta path.
+    const bool verify_kept = verify_views && delta_holds;
+    verify_vertex_input = verify_kept;
     // Every draw keeps the uniform buffers no write reached since they were streamed.
     buffer_cache.BeginGraphicsUniforms(fast_draw_on && !uniform_writes_lost ? &taken_delta
                                                                             : nullptr);
@@ -1208,9 +1213,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         }
         ++fast_draw_stats.delta;
     } else {
-        // What the delta draw would have kept: the texture buffer bindings. Only draws that
-        // passed DeltaStillHolds are compared; the others would have been resolved in full.
-        const bool verify_kept = verify_views && delta_holds;
+        // What the delta draw would have kept: the texture buffer bindings.
         const u64 kept_bindings =
             verify_kept ? buffer_cache.KeptGraphicsBindingsHash(false, false, true) : 0;
         if (fast_draw_on) {
@@ -1280,6 +1283,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         Profile::Scope scope{Profile::Zone::DynamicState};
         UpdateOcarinaJitter();
         UpdateDynamicStates(pipeline);
+        verify_vertex_input = false;
     }
 
     query_cache.NotifySegment(true);
@@ -4752,12 +4756,10 @@ void RasterizerVulkan::UpdateStencilTestEnable(Tegra::Engines::Maxwell3D::Regs& 
 
 void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) {
     auto& dirty{maxwell3d->dirty.flags};
-    const bool vertex_input_dirty = dirty[Dirty::VertexInput];
-    const bool vertex_buffers_dirty = dirty[VideoCommon::Dirty::VertexBuffers];
-    if (!vertex_input_dirty && !vertex_buffers_dirty) {
+    const bool record = dirty[Dirty::VertexInput] || dirty[VideoCommon::Dirty::VertexBuffers];
+    if (!record && !verify_vertex_input) {
         return;
     }
-    dirty[Dirty::VertexInput] = false;
 
     boost::container::static_vector<VkVertexInputBindingDescription2EXT, 32> bindings;
     boost::container::static_vector<VkVertexInputAttributeDescription2EXT, 32> attributes;
@@ -4800,11 +4802,35 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) 
         });
     }
 
+    if (!record) {
+        // EDEN_NX2_FAST_DRAW_VERIFY: no dirty flag asked for it, so the vertex input recorded
+        // last must be what the registers give.
+        const bool same_bindings = std::ranges::equal(
+            bindings, recorded_bindings, [](const auto& lhs, const auto& rhs) {
+                return lhs.binding == rhs.binding && lhs.stride == rhs.stride &&
+                       lhs.inputRate == rhs.inputRate && lhs.divisor == rhs.divisor;
+            });
+        const bool same_attributes = std::ranges::equal(
+            attributes, recorded_attributes, [](const auto& lhs, const auto& rhs) {
+                return lhs.location == rhs.location && lhs.binding == rhs.binding &&
+                       lhs.format == rhs.format && lhs.offset == rhs.offset;
+            });
+        if (vertex_input_recorded && !(same_bindings && same_attributes)) {
+            ++fast_draw_stats.vertex_input_mismatches;
+        }
+        return;
+    }
+    dirty[Dirty::VertexInput] = false;
     for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
         dirty[Dirty::VertexAttribute0 + index] = false;
     }
     for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
         dirty[Dirty::VertexBinding0 + index] = false;
+    }
+    if (fast_draw_verify) {
+        recorded_bindings = bindings;
+        recorded_attributes = attributes;
+        vertex_input_recorded = true;
     }
 
     scheduler.Record([bindings, attributes](vk::CommandBuffer cmdbuf) {
