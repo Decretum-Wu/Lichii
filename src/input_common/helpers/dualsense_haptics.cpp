@@ -139,6 +139,7 @@ bool DualSenseHaptics::Open() {
         Close();
         return false;
     }
+    device = haptics_device;
     return true;
 }
 
@@ -148,6 +149,7 @@ void DualSenseHaptics::Close() {
     }
     SDL_DestroyAudioStream(stream);
     stream = nullptr;
+    device = 0;
     device_in_use = false;
 }
 

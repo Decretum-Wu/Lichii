@@ -284,6 +284,16 @@ public:
         return haptics.IsOpen();
     }
 
+    /// Closes the haptics when their audio device is removed: SDL keeps feeding the stream to a
+    /// silent zombie device, so standard rumble takes over until the device can be opened again.
+    void CloseHapticsOnDevice(SDL_AudioDeviceID device_id) {
+        std::scoped_lock lock{haptics_mutex};
+        if (haptics.UsesDevice(device_id)) {
+            LOG_INFO(Input, "DualSense haptics audio device removed, using standard rumble");
+            haptics.Close();
+        }
+    }
+
     bool HasHDRumble() const {
         constexpr Uint16 valve_vendor_id = 0x28DE;
         const auto is_known_hd_type = [](SDL_GamepadType type) {
@@ -776,6 +786,18 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
         LOG_DEBUG(Input, "Controller connected with device index {}", event.jdevice.which);
         InitJoystick(event.jdevice.which);
         break;
+    case SDL_EVENT_AUDIO_DEVICE_REMOVED: {
+        if (event.adevice.recording) {
+            break;
+        }
+        std::scoped_lock lock{joystick_map_mutex};
+        for (const auto& [guid, joysticks] : joystick_map) {
+            for (const auto& joystick : joysticks) {
+                joystick->CloseHapticsOnDevice(event.adevice.which);
+            }
+        }
+        break;
+    }
     }
 }
 
