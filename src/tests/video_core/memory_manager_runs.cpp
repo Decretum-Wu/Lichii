@@ -138,6 +138,15 @@ TEST_CASE("Kept device blocks go back to the allocator when it runs out", "[memo
     REQUIRE(device_memory.Allocate(512ULL << 20) == freed);
 }
 
+TEST_CASE("An allocation fits once every kept device block is given back", "[memory_manager]") {
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device_memory{physical};
+    const DAddr first = device_memory.Allocate(1ULL << 30);
+    REQUIRE(first != 0);
+    device_memory.Free(first, 1ULL << 30);
+    REQUIRE(device_memory.Allocate(63ULL << 30) == first);
+}
+
 TEST_CASE("MaxContinuousRange from the mapping runs matches the page walk", "[memory_manager]") {
     const u64 big_page_bits = GENERATE(16ULL, 17ULL);
     CAPTURE(big_page_bits);
