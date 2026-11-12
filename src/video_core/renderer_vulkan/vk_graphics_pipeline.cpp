@@ -475,8 +475,18 @@ GraphicsPipeline::GraphicsPipeline(
             if (desc.handle_program != ~0U) {
                 return;
             }
-            const u32 last = ((std::max)(desc.count, 1U) - 1) << desc.size_shift;
-            add_range(desc.cbuf_index, desc.cbuf_offset, desc.cbuf_offset + last + 4);
+            // Each element's word on its own: strided arrays leave words between the handles.
+            for (u32 index = 0; index < desc.count; ++index) {
+                // Read as a storage buffer address: the texture is the null one (ConfigureImpl).
+                if constexpr (std::is_same_v<std::remove_cvref_t<decltype(desc)>,
+                                             Shader::TextureDescriptor>) {
+                    if (VideoCommon::HandleIsStoragePointer(info, desc, index)) {
+                        continue;
+                    }
+                }
+                const u32 offset = desc.cbuf_offset + (index << desc.size_shift);
+                add_range(desc.cbuf_index, offset, offset + 4);
+            }
             if constexpr (requires { desc.has_secondary; }) {
                 if (desc.has_secondary) {
                     add_range(desc.secondary_cbuf_index, desc.secondary_cbuf_offset,
