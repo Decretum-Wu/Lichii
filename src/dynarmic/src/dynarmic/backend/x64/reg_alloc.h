@@ -146,7 +146,6 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
     RegAlloc() noexcept = default;
-    RegAlloc(std::bitset<32> gpr_order, std::bitset<32> xmm_order) noexcept;
     void Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order) noexcept;
 
     ArgumentInfo GetArgumentInfo(const IR::Inst* inst) noexcept;

@@ -185,10 +185,6 @@ bool Argument::IsInMemory(RegAlloc& reg_alloc) const noexcept {
     return HostLocIsSpill(*reg_alloc.ValueLocation(value.GetInst()));
 }
 
-RegAlloc::RegAlloc(std::bitset<32> gpr_order, std::bitset<32> xmm_order) noexcept
-    : gpr_order(gpr_order), xmm_order(xmm_order)
-{}
-
 void RegAlloc::Reset(std::bitset<32> new_gpr_order, std::bitset<32> new_xmm_order) noexcept {
     u32 regs = touched_regs;
     touched_regs = 0;
