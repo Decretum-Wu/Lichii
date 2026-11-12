@@ -275,14 +275,16 @@ public:
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending,
                               const GPUVAddr* segment);
-    /// List-fed grid macros (nx2_list_grid.h): whether a call of macro `method`, none begun,
-    /// is one the front takes without reading its three parameters.
-    bool FrontTakesListGrid(VideoCommon::GpuSplit& split, u32 method);
+    /// List-fed grid macros (nx2_list_grid.h): if a call of macro `method`, none begun, is one
+    /// the front takes without reading its three parameters, the keep id of its list, whose kept
+    /// slot it claimed (Nx2ListGrid::ClaimSlot).
+    std::optional<u64> FrontClaimListGrid(VideoCommon::GpuSplit& split, u32 method);
     /// Takes that call: the parameters are the GPU-written words at `address`. The data RAM gets
     /// markers for them, and the back keeps a copy of the words. Verify mode: `real` are the
     /// words read the old way, else empty.
-    void FrontTakeListGrid(VideoCommon::GpuSplit& split, u32 method, GPUVAddr address,
-                           const Nx2ListGrid::ListReader& reader, std::span<const u32> real);
+    void FrontTakeListGrid(VideoCommon::GpuSplit& split, u32 method, u64 keep_id,
+                           GPUVAddr address, const Nx2ListGrid::ListReader& reader,
+                           std::span<const u32> real);
     /// Where the channel tracks the markers of the data RAM it shares with its 3D engine.
     void SetGridMarker(Nx2ListGrid::GridMarker* marker) {
         grid_marker = marker;
@@ -305,6 +307,8 @@ private:
     /// unless it only moves the markers (Nx2ListGrid::Admit).
     void FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState& state, MacroEngine& engine,
                             u32 start);
+    /// Before the kept slot of list `keep_id` is reused (Nx2ListGrid::SlotOwner::evict).
+    bool FrontEvictList(u64 keep_id);
     std::unique_ptr<FrontState> front;
     bool front_macros{}; ///< The front owns the macro code and bindings (the back skips them)
 

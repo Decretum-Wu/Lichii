@@ -822,7 +822,11 @@ bool DmaPusher::TakeListGrid(GPUVAddr address, u32 count) {
         return false;
     }
     auto* const compute = static_cast<Engines::KeplerCompute*>(subchannels[dma_state.subchannel]);
-    if (!compute->FrontRunsMacros() || !compute->FrontTakesListGrid(split, dma_state.method)) {
+    if (!compute->FrontRunsMacros()) {
+        return false;
+    }
+    const std::optional<u64> keep_id = compute->FrontClaimListGrid(split, dma_state.method);
+    if (!keep_id) {
         return false;
     }
     // Verify mode: the words the old way too, for the checks to compare against.
@@ -840,7 +844,7 @@ bool DmaPusher::TakeListGrid(GPUVAddr address, u32 count) {
             return static_cast<DmaPusher*>(self)->ReadListWords(list, keep_id, words);
         },
         this};
-    compute->FrontTakeListGrid(split, dma_state.method, address, reader,
+    compute->FrontTakeListGrid(split, dma_state.method, *keep_id, address, reader,
                                Nx2ListGrid::g_verify ? std::span<const u32>{real}
                                                      : std::span<const u32>{});
     dma_state.method_count = 0;
@@ -853,17 +857,28 @@ bool DmaPusher::ReadListWords(GPUVAddr address, u64 keep_id, std::span<u32> word
         return false;
     }
     // The copy the back kept at the list's place in the stream: the words as the list had them,
-    // whatever later work wrote there. Without it (its slot was reused) the list can't be read:
-    // later work may have rewritten it.
+    // whatever later work wrote there. Its slot is reused only after the list's markers were
+    // resolved (Nx2ListGrid::ClaimSlot).
+    auto& split = VideoCommon::GpuSplit::Get();
     bool kept = false;
-    VideoCommon::GpuSplit::Get().Run(
-        [&] { kept = rasterizer->Nx2ReadKeptListWords(keep_id, words); },
-        VideoCommon::DrainSite::ListFlush);
-    if (!kept) {
-        LOG_WARNING(HW_GPU, "List-fed grid: the words of list {} at {:#x} are no longer kept",
-                    keep_id, address);
+    split.Run([&] { kept = rasterizer->Nx2ReadKeptListWords(keep_id, words); },
+              VideoCommon::DrainSite::ListFlush);
+    if (kept) {
+        return true;
     }
-    return kept;
+    // No copy (the back found no buffer for the list): the old way, the list as it is after
+    // everything sent so far.
+    if (!memory_manager.GpuToCpuAddress(address)) {
+        LOG_ERROR(HW_GPU, "List-fed grid: list {} at {:#x} is neither kept nor mapped", keep_id,
+                  address);
+        return false;
+    }
+    LOG_WARNING(HW_GPU, "List-fed grid: list {} at {:#x} has no kept copy, read from memory",
+                keep_id, address);
+    split.Drain(VideoCommon::DrainSite::ListFlush);
+    FlushGpuWrittenCommands(address, words.size_bytes());
+    memory_manager.ReadBlockUnsafe(address, words.data(), words.size_bytes());
+    return true;
 }
 
 bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pending) {

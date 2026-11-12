@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/nx2_list_grid.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -621,6 +622,8 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
 }
 
 void BufferCacheRuntime::EnsureListKeepBuffer() {
+    // The front reuses a slot only after resolving its list's markers (Nx2ListGrid::ClaimSlot).
+    static_assert(LIST_KEEP_SLOTS == Tegra::Nx2ListGrid::KeptSlots);
     if (list_keep_buffer) {
         return;
     }

@@ -15,7 +15,7 @@ namespace Tegra::Nx2ListGrid {
 namespace {
 
 constexpr std::array<const char*, static_cast<size_t>(Check::Count)> check_names{
-    "kept copy", "reader", "indirect grid", "patched upload"};
+    "kept copy", "reader", "indirect grid", "patched upload", "forced resolve"};
 
 struct Counts {
     std::array<u64, static_cast<size_t>(Check::Count)> checks{};

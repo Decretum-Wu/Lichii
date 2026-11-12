@@ -124,6 +124,16 @@ Lane MoveTo(u32 method) {
     return {.a = 0, .imm = method, .method = 5, .emit = 1};
 }
 
+// A linear upload of one 0x100-byte line to `address`, nothing written yet.
+ListGrid::UploadState Upload(u64 address = 0x10000, u32 exec = 1) {
+    ListGrid::UploadState upload;
+    upload.line_length = 0x100;
+    upload.line_count = 1;
+    upload.address = address;
+    upload.exec = exec;
+    return upload;
+}
+
 ListGrid::DryRunResult Run(std::span<const u32> code, u32 start, std::span<const u32> parameters,
                            std::array<u32, 3> grid_registers = {}) {
     const auto ram = MarkerRam();
@@ -175,41 +185,56 @@ TEST_CASE("List grid guard admits the game's QMD upload", "[list_grid]") {
     const auto result = Run(GameCode, UploadQmd, parameters);
     REQUIRE(result.completed);
     CHECK(result.read_grid);
-    // It sets a linear upload itself before the data.
-    CHECK(ListGrid::Admit(result, 0) == ListGrid::Admission::Moves);
+    // It sets up a linear upload itself before the data.
+    CHECK(ListGrid::Admit(result, {}) == ListGrid::Admission::Moves);
 }
 
 TEST_CASE("List grid guard admits only unchanged moves to their places", "[list_grid]") {
     using ListGrid::Admission;
-    const auto admit = [](const std::vector<u32>& code, u32 exec_upload,
+    const auto admit = [](const std::vector<u32>& code, const ListGrid::UploadState& upload,
                           std::array<u32, 3> registers = {}) {
-        return ListGrid::Admit(Run(code, 0, {}, registers), exec_upload);
+        return ListGrid::Admit(Run(code, 0, {}, registers), upload);
     };
     const u32 x = Cells[0];
+    const auto to_upload = ReadThen(DataRead, x, MoveTo(ListGrid::DataUploadMethod));
     // Into a linear upload's data, not a block-linear one.
-    CHECK(admit(ReadThen(DataRead, x, MoveTo(ListGrid::DataUploadMethod)), 1) ==
-          Admission::Moves);
-    CHECK(admit(ReadThen(DataRead, x, MoveTo(ListGrid::DataUploadMethod)), 0) ==
-          Admission::Resolve);
+    CHECK(admit(to_upload, Upload()) == Admission::Moves);
+    CHECK(admit(to_upload, Upload(0x10000, 0)) == Admission::Resolve);
+    // Only where the back can patch it: 4-byte aligned in memory, inside one line, before the
+    // upload's end.
+    CHECK(admit(to_upload, Upload(0x10002)) == Admission::Resolve);
+    auto line_end = Upload();
+    line_end.line_length = 6;
+    line_end.line_count = 2;
+    line_end.pitch = 0x100;
+    CHECK(admit(to_upload, line_end) == Admission::Moves);
+    line_end.offset = 4;
+    CHECK(admit(to_upload, line_end) == Admission::Resolve);
+    line_end.offset = 6; // The second line's first word, at 0x10100
+    CHECK(admit(to_upload, line_end) == Admission::Moves);
+    auto full = Upload();
+    full.offset = full.Size();
+    CHECK(admit(to_upload, full) == Admission::Resolve);
     // Into the QMD grid register of its own word only.
-    CHECK(admit(ReadThen(DataRead, x, MoveTo(ListGrid::QmdGridRegister)), 0) == Admission::Moves);
-    CHECK(admit(ReadThen(DataRead, x, MoveTo(ListGrid::QmdGridRegister + 1)), 0) ==
+    CHECK(admit(ReadThen(DataRead, x, MoveTo(ListGrid::QmdGridRegister)), {}) ==
+          Admission::Moves);
+    CHECK(admit(ReadThen(DataRead, x, MoveTo(ListGrid::QmdGridRegister + 1)), {}) ==
           Admission::Resolve);
     // Any other method, and any operation on it.
-    CHECK(admit(ReadThen(DataRead, x, MoveTo(0x200)), 1) == Admission::Resolve);
+    CHECK(admit(ReadThen(DataRead, x, MoveTo(0x200)), Upload()) == Admission::Resolve);
     Lane add_one = MoveTo(ListGrid::DataUploadMethod);
     add_one.b = Imm;
     add_one.imm = 1;
-    CHECK(admit(ReadThen(DataRead, x, add_one), 1) == Admission::Resolve);
+    CHECK(admit(ReadThen(DataRead, x, add_one), Upload()) == Admission::Resolve);
     // A data RAM word that holds no marker.
-    CHECK(admit(ReadThen(DataRead, 0x30, MoveTo(0x200)), 0) == Admission::Unaffected);
+    CHECK(admit(ReadThen(DataRead, 0x30, MoveTo(0x200)), {}) == Admission::Unaffected);
     // A marker a QMD grid register holds is followed like one in the data RAM.
     const std::array<u32, 3> registers{ListGrid::Marker(KeepId, 0), 7, 7};
     CHECK(admit(ReadThen(ReadRegister, ListGrid::QmdGridRegister,
                          MoveTo(ListGrid::DataUploadMethod)),
-                1, registers) == Admission::Moves);
-    CHECK(admit(ReadThen(ReadRegister, ListGrid::QmdGridRegister, MoveTo(0x200)), 1, registers) ==
-          Admission::Resolve);
+                Upload(), registers) == Admission::Moves);
+    CHECK(admit(ReadThen(ReadRegister, ListGrid::QmdGridRegister, MoveTo(0x200)), Upload(),
+                registers) == Admission::Resolve);
 }
 
 TEST_CASE("List grid never leaves a marker when a list can't be read", "[list_grid]") {
@@ -242,6 +267,63 @@ TEST_CASE("List grid never leaves a marker when a list can't be read", "[list_gr
     CHECK(reads == 4);
     // A list no longer among the recent ones.
     CHECK_FALSE(ListGrid::ResolveWord(state, ListGrid::Marker(KeepId + 1, 0)));
+}
+
+TEST_CASE("List grid resolves a list's markers before its kept slot is reused", "[list_grid]") {
+    ListGrid::g_slot_owners = {};
+    auto ram = MarkerRam();
+    auto state = MarkerState();
+    u32 reads = 0;
+    struct Context {
+        ListGrid::GridMarker* state;
+        ListGrid::DataRam* ram;
+        u32* reads;
+        bool evictable;
+        u32 forced;
+    } context{&state, &ram, &reads, false, 0};
+    state.recent[KeepId % ListGrid::KeptSlots].reader = {
+        [](void* self, GPUVAddr, u64, std::span<u32> words) {
+            ++*static_cast<Context*>(self)->reads;
+            words[0] = 60;
+            words[1] = 270;
+            words[2] = 1;
+            return true;
+        },
+        &context};
+    const auto evict = [](void* self, u64 keep_id) {
+        auto& c = *static_cast<Context*>(self);
+        if (!c.evictable) {
+            return false;
+        }
+        c.forced += ListGrid::EvictFromRam(*c.state, *c.ram, keep_id);
+        return true;
+    };
+    REQUIRE(ListGrid::ClaimSlot({KeepId, evict, &context}));
+    // Another slot: nothing to evict.
+    REQUIRE(ListGrid::ClaimSlot({KeepId + 1, evict, &context}));
+    CHECK(reads == 0);
+    // The slot's list can't be evicted yet: the slot stays its own.
+    const u64 next = KeepId + ListGrid::KeptSlots;
+    CHECK_FALSE(ListGrid::ClaimSlot({next, evict, &context}));
+    CHECK(ListGrid::g_slot_owners[KeepId % ListGrid::KeptSlots].keep_id == KeepId);
+    CHECK(ram[Cells[0]] == ListGrid::Marker(KeepId, 0));
+    // Evicted: the data RAM gets the real words, read once, never 0 or a marker.
+    context.evictable = true;
+    REQUIRE(ListGrid::ClaimSlot({next, evict, &context}));
+    CHECK(context.forced == 3);
+    CHECK(reads == 1);
+    CHECK(ram[Cells[0]] == 60);
+    CHECK(ram[Cells[1]] == 270);
+    CHECK(ram[Cells[2]] == 1);
+    CHECK(ListGrid::g_slot_owners[next % ListGrid::KeptSlots].keep_id == next);
+    // A data RAM a macro stored over has nothing left to resolve.
+    ram = MarkerRam();
+    ram[Cells[1]] = 9;
+    state.recent[KeepId % ListGrid::KeptSlots].resolved = false;
+    CHECK(ListGrid::EvictFromRam(state, ram, KeepId) == 2);
+    CHECK(ram[Cells[1]] == 9);
+    ListGrid::ReleaseSlots(&context);
+    CHECK(ListGrid::g_slot_owners[next % ListGrid::KeptSlots].keep_id == 0);
 }
 
 TEST_CASE("List grid patches the markers of kept lists", "[list_grid]") {

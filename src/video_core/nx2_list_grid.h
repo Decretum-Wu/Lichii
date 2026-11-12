@@ -35,12 +35,16 @@
 //   first runs dry with the markers followed through it (DryRun). It runs on the markers only if
 //   it moves them unchanged into inline upload data (0x6d) or into the grid register of the QMD
 //   word they stand for (0xd4 + word). Anything else, and any 3D macro that reads them, gets the
-//   real words first (ResolveWord: the kept copy, read back at the old cost once); a list that
-//   cannot be read leaves zeros, never a marker.
+//   real words first (ResolveWord: the kept copy, read back at the old cost once). Only a list
+//   that is neither kept nor mapped leaves zeros, never a marker.
+// - A list's kept slot is reused only after its live markers got their real words (ClaimSlot):
+//   data RAM words and QMD grid registers are resolved then, and a slot whose list an upload still
+//   on its way carries is not reused (the next list is read the old way).
 // - On the back, an inline write that carries markers gets the kept words copied over them on the
 //   host GPU (RasterizerVulkan::AccelerateInlineToMemory), so every reader of those bytes sees the
 //   real words, and a QMD whose grid is a list's three markers dispatches indirectly from the kept
-//   copy (QmdGridSource).
+//   copy (QmdGridSource). A QMD that outlived its list's slot takes the patched words from the
+//   host GPU (KeplerCompute's QMD read).
 //
 // EDEN_NX2_LIST_HLE_VERIFY=1 also reads each list's words the old way and compares them with the
 // kept copy, every guarded macro's run on the markers with a run on the real words, and the words
@@ -108,6 +112,42 @@ inline constexpr u32 MarkerMask = 0xFFFC0000;
 
 [[nodiscard]] constexpr u32 MarkerKeepBits(u32 marker) {
     return marker & 0xFFFF;
+}
+
+/// The back's kept-words slots: a list's words are kept in slot keep_id % KeptSlots until a later
+/// list takes the slot (ClaimSlot). It divides 2^16, so a marker's keep bits name the slot.
+inline constexpr u32 KeptSlots = 1024;
+static_assert(0x10000 % KeptSlots == 0);
+
+/// Who took the list a kept slot holds. Front only: the split has one front thread.
+struct SlotOwner {
+    u64 keep_id{};
+    /// Before the slot is reused: gives the list's live markers their real words. False when it
+    /// can't yet (an upload still on its way carries them), so the slot must not be reused.
+    bool (*evict)(void* context, u64 keep_id){};
+    void* context{};
+};
+inline std::array<SlotOwner, KeptSlots> g_slot_owners{};
+
+/// Takes the slot of `keep_id` for `owner`, after the list it holds was evicted. False, with
+/// nothing changed, if that list can't be evicted now.
+[[nodiscard]] inline bool ClaimSlot(const SlotOwner& owner) {
+    SlotOwner& slot = g_slot_owners[owner.keep_id % KeptSlots];
+    if (slot.keep_id != 0 && slot.keep_id != owner.keep_id && slot.evict != nullptr &&
+        !slot.evict(slot.context, slot.keep_id)) {
+        return false;
+    }
+    slot = owner;
+    return true;
+}
+
+/// Forgets the slots `context` took (its engine is destroyed).
+inline void ReleaseSlots(const void* context) {
+    for (SlotOwner& slot : g_slot_owners) {
+        if (slot.context == context) {
+            slot = {};
+        }
+    }
 }
 
 /// Keep ids are shared by every channel; none has 0 in its low 16 bits.
@@ -345,6 +385,7 @@ struct ListReader {
 struct KeptList {
     u64 keep_id{};
     GPUVAddr address{};
+    u64 hash{}; ///< The macro the list fed
     ListReader reader{};
     bool resolved{}; ///< `words` are the list's, read back
     std::array<u32, 3> words{};
@@ -358,7 +399,7 @@ struct GridMarker {
     GridCells cells{};
     u64 keep_id{}; ///< The list whose markers `cells` were set to
     bool set{};
-    std::array<KeptList, 64> recent{};
+    std::array<KeptList, KeptSlots> recent{}; ///< By slot: each list whose slot is not reused
 
     void Remember(const KeptList& list) {
         recent[list.keep_id % recent.size()] = list;
@@ -405,15 +446,84 @@ struct GridMarker {
     return list->words[MarkerIndex(marker)];
 }
 
-/// Gives each data RAM word that still holds its marker the real word, or 0.
+/// Gives each data RAM word that still holds its marker the real word. Returns how many it
+/// resolved. Only a list that can't be read at all (unmapped, no kept copy) leaves 0.
 template <typename Ram>
-void ResolveCells(GridMarker& state, Ram& ram) {
+u32 ResolveCells(GridMarker& state, Ram& ram) {
+    u32 resolved = 0;
     for (u32 i = 0; i < 3; ++i) {
         if (state.Holds(ram, i)) {
             ram[state.cells[i]] = ResolveWord(state, Marker(state.keep_id, i)).value_or(0);
+            ++resolved;
         }
     }
+    return resolved;
 }
+
+/// Before the slot of list `keep_id` is reused: the data RAM words that still hold its markers
+/// get their real words (read while the slot still holds them). Returns how many.
+template <typename Ram>
+u32 EvictFromRam(GridMarker& state, Ram& ram, u64 keep_id) {
+    return state.keep_id == keep_id ? ResolveCells(state, ram) : 0;
+}
+
+/// The compute engine's inline upload as the front follows it: its registers (0x60 to 0x64,
+/// 0x6c) and how many data bytes it took since its exec.
+struct UploadState {
+    u32 line_length{};
+    u32 line_count{};
+    u64 address{};
+    u32 pitch{};
+    u32 exec{};
+    u64 offset{};
+
+    void Apply(u32 method, u32 value) {
+        switch (method) {
+        case 0x60:
+            line_length = value;
+            break;
+        case 0x61:
+            line_count = value;
+            break;
+        case 0x62:
+            address = (u64{value} << 32) | (address & 0xffffffff);
+            break;
+        case 0x63:
+            address = (address & ~u64{0xffffffff}) | value;
+            break;
+        case 0x64:
+            pitch = value;
+            break;
+        case ExecUploadMethod:
+            exec = value;
+            offset = 0;
+            break;
+        case DataUploadMethod:
+            offset += 4;
+            break;
+        default:
+            break;
+        }
+    }
+    [[nodiscard]] u64 Size() const {
+        return u64{line_length} * line_count;
+    }
+    /// Data words still to come before the upload is written.
+    [[nodiscard]] bool InFlight() const {
+        return offset < Size();
+    }
+    /// Whether the next data word, a marker, lands where the back patches it: in a linear
+    /// upload, inside one line, 4-byte aligned in memory (RasterizerVulkan::
+    /// AccelerateInlineToMemory finds aligned words only).
+    [[nodiscard]] bool NextWordPatchable() const {
+        if ((exec & 1) == 0 || line_length == 0 || offset + 4 > Size()) {
+            return false;
+        }
+        const u64 line = offset / line_length;
+        const u64 in_line = offset % line_length;
+        return in_line + 4 <= line_length && ((address + line * pitch + in_line) & 3) == 0;
+    }
+};
 
 struct Emit {
     Word method;
@@ -829,22 +939,21 @@ enum class Admission {
 };
 
 /// Whether a macro call that ran dry as `result` may run on the markers: it completed, used them
-/// only as moves, and emitted each as data of a linear inline upload (0x6d, which the back
-/// patches) or as the grid register of the QMD word it stands for (0xd4 + word). `exec_upload`
-/// is the engine's exec_upload register (0x6c, bit 0 linear) before the call.
-[[nodiscard]] inline Admission Admit(const DryRunResult& result, u32 exec_upload) {
+/// only as moves, and emitted each as inline upload data the back patches
+/// (UploadState::NextWordPatchable) or as the grid register of the QMD word it stands for
+/// (0xd4 + word). `upload` is the engine's upload before the call.
+[[nodiscard]] inline Admission Admit(const DryRunResult& result, UploadState upload) {
     if (!result.completed || !result.safe) {
         return Admission::Resolve;
     }
     for (const Emit& emit : result.emits) {
         if (emit.grid) {
-            const bool upload = emit.method == DataUploadMethod && (exec_upload & 1) != 0;
-            if (!upload && emit.method != QmdGridRegister + MarkerIndex(emit.value)) {
+            const bool patched = emit.method == DataUploadMethod && upload.NextWordPatchable();
+            if (!patched && emit.method != QmdGridRegister + MarkerIndex(emit.value)) {
                 return Admission::Resolve;
             }
-        } else if (emit.method == ExecUploadMethod) {
-            exec_upload = emit.value;
         }
+        upload.Apply(emit.method, emit.value);
     }
     return result.read_grid ? Admission::Moves : Admission::Unaffected;
 }
@@ -935,6 +1044,7 @@ enum class Check : u8 {
     Reader, ///< A guarded macro's run on the markers against its run on the real words (reader)
     Grid,   ///< An indirect dispatch's grid against the QMD grid the real words give (store macro)
     Upload, ///< A patched upload word against the real word (store macro)
+    Forced, ///< A marker resolved before its kept slot was reused, against the real word
     Count,
 };
 
