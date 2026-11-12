@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <mutex>
+#include <string_view>
 #include <vector>
 
 #include <fmt/format.h>
@@ -52,6 +54,20 @@ bool FrameGenLoaded() {
     return false;
 #endif
 }
+
+#ifdef EGLANTINE_STREAMLINE
+/// Streamline asks for a flushed pipeline and no Vulkan calls while a feature unloads.
+void UnloadFrameGen(Scheduler& scheduler, const Device& device, std::string_view reason) {
+    const auto paused = scheduler.PauseWorker();
+    std::scoped_lock lock{scheduler.submit_mutex};
+    const VkResult result = device.GetLogical().WaitIdle();
+    if (result == VK_ERROR_DEVICE_LOST) {
+        device.ReportLoss();
+    }
+    vk::Check(result);
+    Streamline::DisableFrameGen(reason);
+}
+#endif
 
 VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
                                          VkFormat requested_format,
@@ -380,7 +396,8 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
     // The old swapchain is gone, so DLSS-G unloads before the new one is made.
     if (Streamline::FrameGenSession() &&
         !Streamline::FrameGenSupportsSwapchain(surface_format.format)) {
-        Streamline::DisableFrameGen("scRGB HDR output; set the HDR format to HDR10 to use it");
+        UnloadFrameGen(scheduler, device,
+                       "scRGB HDR output; set the HDR format to HDR10 to use it");
     }
 #endif
     present_mode =
@@ -469,8 +486,8 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
 #ifdef EGLANTINE_STREAMLINE
         // Keep the game running without frame generation: DLSS-G unloaded, the hooks reach the
         // driver's swapchain.
-        Streamline::DisableFrameGen(
-            fmt::format("Streamline's swapchain failed ({})", exception.what()));
+        UnloadFrameGen(scheduler, device,
+                       fmt::format("Streamline's swapchain failed ({})", exception.what()));
 #endif
         present_mode =
             ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed, surface_format.format);

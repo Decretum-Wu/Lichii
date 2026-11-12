@@ -84,6 +84,11 @@ public:
     /// safe to touch worker resources.
     void WaitWorker();
 
+    /// Keeps the worker from executing chunks while the lock is held. Take it before submit_mutex.
+    [[nodiscard]] std::unique_lock<std::mutex> PauseWorker() {
+        return std::unique_lock{execution_mutex};
+    }
+
     enum class FrameMark : u8 { None, Start, End, Both };
     /// GPU thread, once per present: the frame-end mark this present gets. EDEN_DKB_FRAME_TRACE
     /// marks every present; otherwise only the two presents after RequestGpuBusySample.

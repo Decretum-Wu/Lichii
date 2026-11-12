@@ -650,13 +650,44 @@ void NvidiaDlssPanel::Download() {
             return true;
         });
     }
+    // The old files move aside first, so a failed save puts every one of them back.
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> replaced;
+    const auto restore = [&replaced, &ec] {
+        for (const auto& [backup, target] : replaced) {
+            std::filesystem::remove(target, ec);
+            if (!backup.empty()) {
+                std::filesystem::rename(backup, target, ec);
+            }
+        }
+    };
     for (const auto& [partial, target] : verified) {
-        std::filesystem::rename(partial, target, ec);
-        if (ec) {
+        std::filesystem::path backup;
+        if (std::filesystem::exists(target, ec)) {
+            backup = target;
+            backup += L".old";
+            std::filesystem::remove(backup, ec);
+            std::filesystem::rename(target, backup, ec);
+        }
+        bool failed = static_cast<bool>(ec);
+        if (!failed) {
+            std::filesystem::rename(partial, target, ec);
+            failed = static_cast<bool>(ec);
+            if (failed && !backup.empty()) {
+                std::filesystem::rename(backup, target, ec);
+            }
+        }
+        if (failed) {
+            restore();
             discard();
             progress.close();
             fail("could not save " + Common::FS::PathToUTF8String(target));
             return;
+        }
+        replaced.emplace_back(backup, target);
+    }
+    for (const auto& [backup, target] : replaced) {
+        if (!backup.empty()) {
+            std::filesystem::remove(backup, ec);
         }
         LOG_INFO(Frontend, "Downloaded {} from NVIDIA's Streamline {} release",
                  Common::FS::PathToUTF8String(target), RELEASE_VERSION);

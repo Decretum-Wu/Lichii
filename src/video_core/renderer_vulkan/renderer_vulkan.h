@@ -26,6 +26,9 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#if defined(EGLANTINE_STREAMLINE) && !defined(HAS_LSFG)
+#include "video_core/vulkan_common/streamline.h"
+#endif
 
 namespace Core::Memory {
 class Memory;
@@ -63,6 +66,11 @@ public:
 #ifdef HAS_LSFG
         return frame_gen.CurrentStatus();
 #else
+#ifdef EGLANTINE_STREAMLINE
+        if (Streamline::FrameGenActive()) {
+            return {.state = VideoCore::FrameGenState::NvidiaFrameGen};
+        }
+#endif
         return {.state = VideoCore::FrameGenState::UnsupportedBuild};
 #endif
     }
