@@ -32,7 +32,7 @@ val edenDir = project(":Eden").projectDir
 
 @Suppress("UnstableApiUsage")
 android {
-    namespace = "org.yuzu.yuzu_emu"
+    namespace = "io.github.zortos293.lichii"
 
     compileSdkVersion = "android-36"
     ndkVersion = "28.2.13676358"
