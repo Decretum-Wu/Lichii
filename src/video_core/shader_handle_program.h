@@ -179,6 +179,13 @@ template <typename Descriptor>
     if (desc.handle_program != ~0U || desc.has_secondary) {
         return false;
     }
+    if constexpr (requires { desc.handle_is_pointer_word; }) {
+        // The translation saw the word dereferenced, also when no storage buffer binds it (a
+        // capture that saw the pointer null)
+        if (desc.handle_is_pointer_word) {
+            return true;
+        }
+    }
     const u32 offset = desc.cbuf_offset + (index << desc.size_shift);
     return std::ranges::any_of(info.storage_buffers_descriptors, [&](const auto& storage) {
         return storage.cbuf_index == desc.cbuf_index && offset >= storage.cbuf_offset &&
