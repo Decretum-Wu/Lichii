@@ -496,8 +496,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             VerifyWithoutDrain(dma_pusher, acquire, without_drain);
             return;
         }
-        const bool not_met = without_drain == AcquireCheck::NotMet;
-        if (not_met) {
+        if (without_drain == AcquireCheck::NotMet) {
             VideoCommon::Count(stats.trigger_not_met);
             // Nothing the front sent to the word meets it, so only a release it can't see does:
             // one in the work queued for the back, which latches the waiter and wakes this thread
@@ -505,7 +504,6 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             // channel waits for it suspended, not in a drain, and the front parses the others
             // meanwhile (as in jpkto's 188baa1448, #1161). Registered before the second look, so a
             // release that lands in between counts.
-            VideoCommon::Count(stats.suspended);
             auto& waiters = Nx2SemaphoreWaiters::Get();
             AddWaiter(dma_pusher, acquire, this);
             const u32 guest = dma_pusher.memory_manager.Read<u32>(acquire.address);
@@ -516,6 +514,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                 waiters.Remove(this);
                 return;
             }
+            VideoCommon::Count(stats.trigger_not_met_twice);
             acquire.sent_at = VideoCommon::GpuSplit::Get().Position();
             acquire.writers_before = VideoCommon::GpuSplit::Get().LastWriterPosition();
             pending_acquire = acquire;
@@ -526,9 +525,6 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         DrainBack();
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;
-        }
-        if (not_met) {
-            VideoCommon::Count(stats.trigger_not_met_twice);
         }
         // Registered before the fences run, so a release among them that meets the value counts.
         auto& waiters = Nx2SemaphoreWaiters::Get();

@@ -61,7 +61,6 @@ struct AcquireStats {
     std::atomic<u64> passed{};    ///< Acquires and polls met without a drain
     std::atomic<u64> by_queued{}; ///< Of passed: met by a release the back had not run yet
     std::atomic<u64> latched{};   ///< Polls resumed by a release the back ran (no drain)
-    std::atomic<u64> suspended{}; ///< Acquires not met that suspended the channel without a drain
     std::atomic<u64> drained{};   ///< Acquires and polls that drained the split
     std::atomic<u64> drain_operation{}; ///< Of drained: an equal or mask acquire
     std::atomic<u64> drain_settings{};  ///< ...the split or the accuracy settings ask for it
@@ -70,7 +69,7 @@ struct AcquireStats {
     std::atomic<u64> queued_unknown{};  ///< Of drain_queued: its value is unknown (a reduction)
     std::atomic<u64> queued_unknown_met{}; ///< ...and the word in memory already meets the acquire
     std::atomic<u64> trigger_not_met{};    ///< Acquire methods not met without a drain (NotMet)
-    std::atomic<u64> trigger_not_met_twice{}; ///< ...still not met after it: fences drain again
+    std::atomic<u64> trigger_not_met_twice{}; ///< ...still not met at a second read: suspended
     std::atomic<u64> valve_drains{}; ///< Of drained: polls of an unmet acquire, once per 1 ms
     std::atomic<u64> polls{};     ///< Polls that keep waiting without a drain
     std::atomic<u64> acquire_polls{}; ///< Polls of suspended channels waiting on an acquire
