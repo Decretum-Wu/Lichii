@@ -229,7 +229,6 @@ add_executable(tests
     video_core/indirect_reset.cpp
     video_core/stale_pages.cpp
     input_common/calibration_configuration_job.cpp
-    input_common/rumble_mapping.cpp
 )
 
 create_target_directory_groups(tests)
@@ -323,7 +322,8 @@ target_compile_definitions(shader_translation_tests PRIVATE
 add_test(NAME shader_translation_tests COMMAND shader_translation_tests)
 
 if (NOT ANDROID)
-    target_sources(tests PRIVATE input_common/joycon_subcommand_response.cpp)
+    target_sources(tests PRIVATE input_common/joycon_subcommand_response.cpp
+                                 input_common/rumble_mapping.cpp)
     target_link_libraries(tests PRIVATE SDL3::SDL3)
 
     add_executable(config_tests
