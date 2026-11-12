@@ -154,7 +154,9 @@ Counters* Get(KThread* thread) {
 void Report(u64 now) {
     const s64 now_ns = SteadyNs();
     const u64 presents_now = Core::g_nx2_present_count.load(std::memory_order_relaxed);
-    const u64 presents = presents_now - g_window_presents;
+    // A new emulation session starts the count again (Nvidia::Module).
+    const u64 presents =
+        presents_now >= g_window_presents ? presents_now - g_window_presents : presents_now;
     const double frames = static_cast<double>(std::max<u64>(presents, 1));
     const double seconds = static_cast<double>(now_ns - g_window_ns) / 1e9;
     const double ns_per_tick = static_cast<double>(now_ns - g_window_ns) /

@@ -226,9 +226,6 @@ public:
 private:
     static CodePtr GetCurrentBlockThunk(void* thisptr) {
         Jit::Impl* this_ = static_cast<Jit::Impl*>(thisptr);
-        if (this_->conf.counters) {
-            ++this_->conf.counters->block_lookups;
-        }
         return this_->GetCurrentBlock();
     }
 
@@ -237,6 +234,9 @@ private:
     }
 
     CodePtr GetCurrentBlock() {
+        if (conf.counters) {
+            ++conf.counters->block_lookups;
+        }
         return GetBlock(GetCurrentLocation());
     }
 
