@@ -3872,6 +3872,7 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
 
 void RasterizerVulkan::InlineKeptWords(DAddr device_addr, std::span<const u8> data,
                                        std::span<const Tegra::Nx2ListGrid::KeptPatch> patches) {
+    std::vector<std::pair<VkBuffer, u32>> destinations; // Verify mode: where each patch went
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.Nx2NoteListHostWrite(device_addr, data.size());
@@ -3880,6 +3881,9 @@ void RasterizerVulkan::InlineKeptWords(DAddr device_addr, std::span<const u8> da
             [&](auto& buffer, u32 offset, const Tegra::Nx2ListGrid::KeptPatch& patch) {
                 buffer_cache_runtime.CopyKeptWord(patch.keep_id, patch.index, buffer.Handle(),
                                                   offset);
+                if (Tegra::Nx2ListGrid::g_verify) {
+                    destinations.emplace_back(buffer.Handle(), offset);
+                }
             });
     }
     query_cache.InvalidateRegion(device_addr, data.size());
@@ -3888,19 +3892,50 @@ void RasterizerVulkan::InlineKeptWords(DAddr device_addr, std::span<const u8> da
         texture_cache.WriteMemory(device_addr, data.size());
     }
     pipeline_cache.InvalidateRegion(device_addr, data.size());
-    if (!Tegra::Nx2ListGrid::g_verify) {
+    if (!Tegra::Nx2ListGrid::g_verify || destinations.size() != patches.size()) {
         return;
     }
-    for (const auto& patch : patches) {
+    // Verify mode: the words the destination holds after the copies, read back.
+    const auto staging = staging_pool.Request(destinations.size() * sizeof(u32), MemoryUsage::Download);
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([destinations, staging_buffer = staging.buffer,
+                      staging_offset = staging.offset](vk::CommandBuffer cmdbuf) {
+        static constexpr VkMemoryBarrier READ_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        };
+        static constexpr VkMemoryBarrier WRITE_BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                               READ_BARRIER);
+        for (size_t i = 0; i < destinations.size(); ++i) {
+            cmdbuf.CopyBuffer(destinations[i].first, staging_buffer,
+                              VkBufferCopy{.srcOffset = destinations[i].second,
+                                           .dstOffset = staging_offset + i * sizeof(u32),
+                                           .size = sizeof(u32)});
+        }
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
+                               WRITE_BARRIER);
+    });
+    scheduler.Finish();
+    for (size_t i = 0; i < patches.size(); ++i) {
+        const auto& patch = patches[i];
         const auto* const keep = buffer_cache_runtime.KeptVerify(patch.keep_id);
-        std::array<u32, 3> kept{};
-        if (keep == nullptr || !buffer_cache_runtime.ReadKeptListWords(patch.keep_id, kept)) {
+        if (keep == nullptr) {
             continue;
         }
+        u32 patched;
+        std::memcpy(&patched, staging.mapped_span.data() + i * sizeof(u32), sizeof(patched));
         Tegra::Nx2ListGrid::NoteVerify(
-            Tegra::Nx2ListGrid::Check::Upload, keep->hash, kept[patch.index] == keep->real[patch.index],
+            Tegra::Nx2ListGrid::Check::Upload, keep->hash, patched == keep->real[patch.index],
             fmt::format("list {} word {} patched at {:#x} as {:#x}, the real word is {:#x}",
-                        patch.keep_id, patch.index, device_addr + patch.offset, kept[patch.index],
+                        patch.keep_id, patch.index, device_addr + patch.offset, patched,
                         keep->real[patch.index]));
     }
 }
