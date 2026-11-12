@@ -65,8 +65,9 @@ public:
     [[nodiscard]] u64 GetTitleID() const;
 
     // Currently tracked ExeFS patches:
-    // - Game Updates
-    [[nodiscard]] VirtualDir PatchExeFS(VirtualDir exefs) const;
+    // - Game Updates, unless apply_update is false
+    // - LayeredExeFS
+    [[nodiscard]] VirtualDir PatchExeFS(VirtualDir exefs, bool apply_update = true) const;
 
     // Currently tracked NSO patches:
     // - IPS
