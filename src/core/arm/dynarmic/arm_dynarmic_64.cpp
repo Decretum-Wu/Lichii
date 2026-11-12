@@ -478,8 +478,18 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.counters = &g_jit_counters[m_core_index];
     }
 #if defined(ARCHITECTURE_x86_64)
+    // TEST ONLY (EGLA-150 round 2 A/B, never merges): EDEN_NX2_T150_JIT=1 turns the options below
+    // on; unset or 0 keeps nx2's code generation. Read once, when the first core's JIT is made.
+    static const bool t150_jit = [] {
+        const char* value = std::getenv("EDEN_NX2_T150_JIT");
+        const bool enabled = value != nullptr && value[0] == '1';
+        LOG_INFO(Core_ARM, "EGLA-150 test switch EDEN_NX2_T150_JIT: {}",
+                 enabled ? "on (x86-64 code generation options from #831)"
+                         : "off (nx2's code generation)");
+        return enabled;
+    }();
     // x86-64 host code generation options; Paranoid keeps dynarmic's defaults.
-    if (Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Paranoid) {
+    if (t150_jit && Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Paranoid) {
         // The JIT spilled ~9% of its instructions to stack slots in Ocarina of Time's hot code
         // while callee-saved GPRs sat empty: evictions go to a free callee-saved GPR first, and an
         // operand that is overwritten but still needed is copied to a free register instead.
