@@ -1680,6 +1680,29 @@ TEST_CASE("A result the buffer cache didn't keep ends no other result's tracking
     REQUIRE(f.bytes[0x10040] == 3);
 }
 
+TEST_CASE("Reports skip the lock only outside the read-back pages' bounds", "[buffer_ports]") {
+    Fixture f;
+    const Nx2TitleScope nx2_title;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    REQUIRE_FALSE(f.cache->MayBeReadBackPage(0x20040));
+    ReportOnReadBackPage(f, id);
+    for (u8 frame = 1; frame <= 2; ++frame) {
+        WriteByDispatch(f, id, 0x24000, 0x100, frame);
+        ReadWord(f, 0x24010);
+    }
+    REQUIRE(f.cache->MayBeReadBackPage(0x20040));
+    REQUIRE(f.cache->MayBeReadBackPage(0x24040));
+    // Between the read-back pages: inside the bounds, so the locked check answers.
+    REQUIRE(f.cache->MayBeReadBackPage(0x22040));
+    REQUIRE_FALSE(f.cache->NoteReportPending(0x22040, 4));
+    // Outside them: neither would keep the report.
+    for (const DAddr addr : {DAddr{0x1f040}, DAddr{0x25040}}) {
+        REQUIRE_FALSE(f.cache->MayBeReadBackPage(addr));
+        REQUIRE_FALSE(f.cache->NoteReportPending(addr, 4));
+    }
+    f.cache->FinishReport(0x20040, 4);
+}
+
 TEST_CASE("Finished early downloads land a few draws later, or at the next dispatch",
           "[buffer_ports]") {
     Fixture f;
