@@ -496,7 +496,18 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             VerifyWithoutDrain(dma_pusher, acquire, without_drain);
             return;
         }
-        if (without_drain == AcquireCheck::NotMet) {
+        // TEST ONLY (EGLA-150 round 1 A/B, never merges): EDEN_NX2_T150_ACQUIRE=0 sends NotMet
+        // acquires down the drain path below, counted as nx2 counts them.
+        static const bool t150_acquire = [] {
+            const char* value = std::getenv("EDEN_NX2_T150_ACQUIRE");
+            const bool enabled = value == nullptr || value[0] != '0';
+            LOG_INFO(HW_GPU, "EGLA-150 test switch EDEN_NX2_T150_ACQUIRE: {}",
+                     enabled ? "on (NotMet acquires suspend without a drain)"
+                             : "off (NotMet acquires drain, as nx2)");
+            return enabled;
+        }();
+        const bool t150_drains_not_met = !t150_acquire && without_drain == AcquireCheck::NotMet;
+        if (t150_acquire && without_drain == AcquireCheck::NotMet) {
             VideoCommon::Count(stats.trigger_not_met);
             // Nothing the front sent to the word meets it, so only a release it can't see does:
             // one in the work queued for the back, which latches the waiter and wakes this thread
@@ -521,10 +532,16 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             WaitPastBack(dma_pusher, *pending_acquire);
             return;
         }
+        if (t150_drains_not_met) {
+            VideoCommon::Count(stats.trigger_not_met);
+        }
         VideoCommon::Count(stats.drained);
         DrainBack();
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;
+        }
+        if (t150_drains_not_met) {
+            VideoCommon::Count(stats.trigger_not_met_twice);
         }
         // Registered before the fences run, so a release among them that meets the value counts.
         auto& waiters = Nx2SemaphoreWaiters::Get();
