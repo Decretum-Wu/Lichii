@@ -195,17 +195,24 @@ struct DeviceMemoryManagerAllocator {
     size_t recycled_bytes = 0;
 
     DAddr Allocate(size_t size) {
-        {
-            std::scoped_lock lock(recycle_mutex);
-            const auto it = std::find_if(recycled.rbegin(), recycled.rend(),
-                                         [size](const auto& block) { return block.second == size; });
-            if (it != recycled.rend()) {
-                const DAddr address = it->first;
-                recycled.erase(std::next(it).base());
-                recycled_bytes -= size;
-                return address;
-            }
+        std::scoped_lock lock(recycle_mutex);
+        const auto it = std::find_if(recycled.rbegin(), recycled.rend(),
+                                     [size](const auto& block) { return block.second == size; });
+        if (it != recycled.rend()) {
+            const DAddr address = it->first;
+            recycled.erase(std::next(it).base());
+            recycled_bytes -= size;
+            return address;
         }
+        if (const DAddr address = main_allocator.Allocate(size); address != 0) {
+            return address;
+        }
+        // Out of space: give the kept blocks back so the allocator can merge them.
+        for (const auto& [address, block_size] : recycled) {
+            main_allocator.Free(address, block_size);
+        }
+        recycled.clear();
+        recycled_bytes = 0;
         return main_allocator.Allocate(size);
     }
 
