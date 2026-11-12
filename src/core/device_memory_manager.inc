@@ -194,8 +194,20 @@ struct DeviceMemoryManagerAllocator {
     std::vector<std::pair<DAddr, size_t>> recycled;
     size_t recycled_bytes = 0;
 
+    static bool Revert1528() {
+        static const bool revert = [] {
+            const char* value = std::getenv("EDEN_NX2_EXP_REVERT_1528");
+            const bool on = value != nullptr && value[0] == '1';
+            if (on) {
+                LOG_WARNING(HW_Memory, "EDEN_NX2_EXP_REVERT_1528: freed SMMU blocks are not reused");
+            }
+            return on;
+        }();
+        return revert;
+    }
+
     DAddr Allocate(size_t size) {
-        {
+        if (!Revert1528()) {
             std::scoped_lock lock(recycle_mutex);
             const auto it = std::find_if(recycled.rbegin(), recycled.rend(),
                                          [size](const auto& block) { return block.second == size; });
@@ -214,6 +226,10 @@ struct DeviceMemoryManagerAllocator {
     }
 
     void Free(DAddr b_address, size_t b_size) {
+        if (Revert1528()) {
+            main_allocator.Free(b_address, b_size);
+            return;
+        }
         std::scoped_lock lock(recycle_mutex);
         recycled.emplace_back(b_address, b_size);
         recycled_bytes += b_size;
