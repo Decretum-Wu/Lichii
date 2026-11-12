@@ -2173,6 +2173,8 @@ private:
     /// thread reaches it. The guest action that notes it keeps it alive.
     struct TracedPresent {
         u8 kind{};
+        u32 fence_id{};
+        Tegra::Host1x::SyncpointManager::ActionHandle action{};
         std::chrono::steady_clock::time_point entered{}, returned{};
         std::atomic<std::chrono::steady_clock::rep> reached{}; ///< 0 until reached
     };
@@ -2240,12 +2242,17 @@ private:
             trace.last_guest = syncpoints.GetGuestSyncpointValue(fence_id);
             trace.last_max = submitted;
             if (kind != Kind::Reached) {
-                syncpoints.RegisterGuestAction(fence_id, fence_value, [present] {
-                    present->reached.store(Clock::now().time_since_epoch().count(),
-                                           std::memory_order_release);
-                });
+                present->fence_id = fence_id;
+                present->action =
+                    syncpoints.RegisterGuestAction(fence_id, fence_value, [present] {
+                        present->reached.store(Clock::now().time_since_epoch().count(),
+                                               std::memory_order_release);
+                    });
                 trace.pending.push_back(present);
                 if (trace.pending.size() > 64) {
+                    // A fence that is never reached keeps its action registered otherwise.
+                    const auto& dropped = trace.pending.front();
+                    syncpoints.DeregisterGuestAction(dropped->fence_id, dropped->action);
                     trace.pending.pop_front();
                 }
             }

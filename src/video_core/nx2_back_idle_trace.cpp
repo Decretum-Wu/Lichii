@@ -68,6 +68,14 @@ void NoteBackIdle(u64 begin, u64 end) {
     static std::array<u64, 4> periods{};
     static u64 window_start{};
     static u64 window_presents{};
+    const u64 presents = Core::g_nx2_present_count.load(std::memory_order_relaxed);
+    // A new window on the first period, and when a new session restarted the present count.
+    if (window_start == 0 || presents < window_presents) {
+        window_start = begin;
+        window_presents = presents;
+        idle_ns = {};
+        periods = {};
+    }
     // Newest first, back to the change in effect at `begin`, into the end of `changes`.
     const u64 last = head.load(std::memory_order_acquire);
     size_t count = 0;
@@ -87,12 +95,6 @@ void NoteBackIdle(u64 begin, u64 end) {
     SplitIdle(std::span{changes}.last(count), begin, end, idle_ns);
     const u64 length = end - begin;
     ++periods[length < 100'000 ? 0 : length < 500'000 ? 1 : length < 2'000'000 ? 2 : 3];
-    const u64 presents = Core::g_nx2_present_count.load(std::memory_order_relaxed);
-    if (window_start == 0) {
-        window_start = end;
-        window_presents = presents;
-        return;
-    }
     if (end - window_start < 10'000'000'000ULL) {
         return;
     }
