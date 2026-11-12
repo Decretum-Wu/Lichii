@@ -160,8 +160,8 @@ void AmdFsr4Panel::Refresh() {
         ready ? Tr("<b>Ready.</b> Found fsr4-vk, the community Vulkan port of FSR 4 (not AMD's "
                    "official FSR 4). It runs if the GPU and driver support it; otherwise FSR 3.1 "
                    "does.")
-              : Tr("<b>Not in this build:</b> Lichii's Linux packages include fsr4-vk. For a "
-                   "build without it, put %1 from fsr4-vk in the folder. Until then, FSR 3.1 is "
+              : Tr("<b>Not in this build:</b> Lichii's x86-64 Linux packages include fsr4-vk. For "
+                   "a build without it, put %1 from fsr4-vk in the folder. Until then, FSR 3.1 is "
                    "used.")
                     .arg(QString::fromUtf8(
                         FfxRuntime::PORT_LIBRARY.data(),

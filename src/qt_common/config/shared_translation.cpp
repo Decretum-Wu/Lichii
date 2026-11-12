@@ -202,7 +202,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
 #if defined(__linux__) && !defined(__ANDROID__)
     INSERT(Settings, amd_fsr4, tr("Use FSR 4 (fsr4-vk community Vulkan port) in place of FSR 3.1"),
            tr("Uses fsr4-vk, a community Vulkan port of AMD's ML-based FSR 4.1.1 that Lichii's "
-              "Linux packages include, where FSR replaces a game's upscaler (Ocarina of Time with "
+              "x86-64 Linux packages include, where FSR replaces a game's upscaler (Ocarina of Time with "
               "the setting above). It is not AMD's official FSR 4 and is not affiliated with or "
               "endorsed by AMD. Radeon RX 6000 or newer, or an RDNA 3 Ryzen GPU, on Mesa's RADV "
               "driver; RDNA 4 runs the FP8 network, older GPUs the INT8 one.\nIf FSR 4 can't run, "

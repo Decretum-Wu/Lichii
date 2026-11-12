@@ -103,9 +103,10 @@ the game keeps its own pass whenever DLSS is off, unavailable or fails to start.
   community Vulkan port of FSR 4.1.1 built from AMD's weights and shaders. It is not AMD's
   official FSR 4. The release workflow builds it with `tools/fsr4-vk/build.sh`, which pins the
   fsr4-vk commit and the SHA-256 of AMD's signed `amd_fidelityfx_upscaler_dx12.dll` of FidelityFX
-  SDK 2.3.0 it extracts them from (listed under MIT in the SDK's `license.md`). Both Linux
+  SDK 2.3.0 it extracts them from (listed under MIT in the SDK's `license.md`). Both x86-64 Linux
   packages carry `usr/lib/amd_fidelityfx_upscaler_vk.so` and, in `usr/share/licenses/fsr4-vk`,
-  fsr4-vk's licences and AMD's SDK licence; a build without it loads the library from the user
+  fsr4-vk's licences and AMD's SDK licence. The aarch64 packages don't: fsr4-vk's shader
+  conversion fails its own asset check on arm64 hosts. A build without it loads the library from the user
   folder's `fidelityfx` folder. The setting is shown for RDNA 2 and newer Radeons on RADV
   (`VideoCommon::IsFsr4PortGpu`). At boot `VideoCommon::CheckFsr4Port` checks what fsr4-vk's
   shaders use on the created device (descriptor buffers, synchronization2, 32-lane compute
