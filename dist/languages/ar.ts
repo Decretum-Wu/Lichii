@@ -2658,7 +2658,7 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="449"/>
-        <source>When checked, yuzu will log statistics about the compiled pipeline cache</source>
+        <source>When checked, Lichii will log statistics about the compiled pipeline cache</source>
         <translation>عند تحديد هذا الخيار، سيقوم يوزو بتسجيل إحصائيات حول ذاكرة التخزين المؤقتة للأنابيب المجمعة.</translation>
     </message>
     <message>
@@ -2693,7 +2693,7 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="488"/>
-        <source>Enables yuzu to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing yuzu.</source>
+        <source>Enables Lichii to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing Lichii.</source>
         <translation>يُمكّن يوزو من التحقق من بيئة Vulkan فعّالة عند بدء تشغيل البرنامج. عطّل هذه الميزة إذا كانت تُسبب مشاكل في رؤية البرامج الخارجية ليوزو.</translation>
     </message>
     <message>
@@ -6899,7 +6899,7 @@ Debug Message: </source>
     <name>MainWindow</name>
     <message>
         <location filename="../../src/lichii/main.ui" line="14"/>
-        <source>yuzu</source>
+        <source>Lichii</source>
         <translation>يوزو</translation>
     </message>
     <message>
@@ -7350,7 +7350,7 @@ Debug Message: </source>
     <message>
         <location filename="../../src/lichii/main_window.cpp" line="503"/>
         <source>Running a game</source>
-        <extracomment>TRANSLATORS: This string is shown to the user to explain why yuzu needs to prevent the computer from sleeping</extracomment>
+        <extracomment>TRANSLATORS: This string is shown to the user to explain why Lichii needs to prevent the computer from sleeping</extracomment>
         <translation>تشغيل لعبة</translation>
     </message>
     <message>

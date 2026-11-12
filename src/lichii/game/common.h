@@ -8,7 +8,7 @@
 
 #include "qt_common/game_list/game_list_p.h"
 
-namespace Yuzu {
+namespace Lichii {
 
 inline bool ContainsAllWords(const QString& haystack, const QString& userinput) {
     const QStringList userinput_split = userinput.split(QLatin1Char{' '}, Qt::SkipEmptyParts);
@@ -37,4 +37,4 @@ inline bool FilterMatches(const QString& filter, const QStandardItem* item) {
         || (file_program_id.size() == 16 && file_program_id.contains(norm_filter));
 }
 
-} // namespace Yuzu
+} // namespace Lichii

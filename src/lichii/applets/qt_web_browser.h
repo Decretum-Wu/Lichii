@@ -110,11 +110,11 @@ protected:
 
 private:
     /**
-     * Handles button presses to execute functions assigned in yuzu_key_callbacks.
-     * yuzu_key_callbacks contains specialized functions for the buttons in the window footer
+     * Handles button presses to execute functions assigned in lichii_key_callbacks.
+     * lichii_key_callbacks contains specialized functions for the buttons in the window footer
      * that can be overridden by games to achieve desired functionality.
      *
-     * @tparam HIDButton The list of buttons contained in yuzu_key_callbacks
+     * @tparam HIDButton The list of buttons contained in lichii_key_callbacks
      */
     template <Core::HID::NpadButton... T>
     void HandleWindowFooterButtonPressedOnce();

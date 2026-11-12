@@ -2660,8 +2660,8 @@ Wenn diese Option aktiviert ist, werden solche Abfragen umgangen und die Emulati
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="449"/>
-        <source>When checked, yuzu will log statistics about the compiled pipeline cache</source>
-        <translation>Wenn aktiviert, protokolliert Yuzu Statistiken zum kompilierten Rohrleitungs-Cache</translation>
+        <source>When checked, Lichii will log statistics about the compiled pipeline cache</source>
+        <translation>Wenn aktiviert, protokolliert Lichii Statistiken zum kompilierten Rohrleitungs-Cache</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="452"/>
@@ -2695,8 +2695,8 @@ Wenn diese Option aktiviert ist, werden solche Abfragen umgangen und die Emulati
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="488"/>
-        <source>Enables yuzu to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing yuzu.</source>
-        <translation>Ermöglicht es yuzu, beim Programmstart nach einer funktionierenden Vulkan-Umgebung zu suchen. Deaktivieren Sie dies, wenn dies zu Problemen mit externen Programmen führt, die yuzu sehen.</translation>
+        <source>Enables Lichii to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing Lichii.</source>
+        <translation>Ermöglicht es Lichii, beim Programmstart nach einer funktionierenden Vulkan-Umgebung zu suchen. Deaktivieren Sie dies, wenn dies zu Problemen mit externen Programmen führt, die Lichii sehen.</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="491"/>
@@ -6166,7 +6166,7 @@ Bitte gehe zu „Konfigurieren“ -&gt; „System“ -&gt; „Netzwerk“ und tr
     <message>
         <location filename="../../src/lichii/bootmanager.cpp" line="906"/>
         <source>Your GPU may not support one or more required OpenGL extensions. Please ensure you have the latest graphics driver.&lt;br&gt;&lt;br&gt;GL Renderer:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;Unsupported extensions:&lt;br&gt;%2</source>
-        <translation>Deine Grafikkarte unterstützt anscheinend nicht eine oder mehrere von yuzu benötigten OpenGL-Erweiterungen. Bitte stelle sicher, dass du den neusten Grafiktreiber installiert hast.&lt;br&gt;&lt;br&gt;GL Renderer:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;Nicht unterstützte Erweiterungen:&lt;br&gt;%2</translation>
+        <translation>Deine Grafikkarte unterstützt anscheinend nicht eine oder mehrere von Lichii benötigten OpenGL-Erweiterungen. Bitte stelle sicher, dass du den neusten Grafiktreiber installiert hast.&lt;br&gt;&lt;br&gt;GL Renderer:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;Nicht unterstützte Erweiterungen:&lt;br&gt;%2</translation>
     </message>
     <message>
         <location filename="../../src/lichii/bootmanager.cpp" line="916"/>
@@ -6911,8 +6911,8 @@ Fehlerbehebungs-Meldung: </translation>
     <name>MainWindow</name>
     <message>
         <location filename="../../src/lichii/main.ui" line="14"/>
-        <source>yuzu</source>
-        <translation>yuzu</translation>
+        <source>Lichii</source>
+        <translation>Lichii</translation>
     </message>
     <message>
         <location filename="../../src/lichii/main.ui" line="53"/>
@@ -7362,7 +7362,7 @@ Fehlerbehebungs-Meldung: </translation>
     <message>
         <location filename="../../src/lichii/main_window.cpp" line="503"/>
         <source>Running a game</source>
-        <extracomment>TRANSLATORS: This string is shown to the user to explain why yuzu needs to prevent the computer from sleeping</extracomment>
+        <extracomment>TRANSLATORS: This string is shown to the user to explain why Lichii needs to prevent the computer from sleeping</extracomment>
         <translation>Spiel wird ausgeführt</translation>
     </message>
     <message>

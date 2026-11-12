@@ -8,8 +8,8 @@
 #include <sys/types.h>
 #endif
 
-constexpr char IS_CHILD_ENV_VAR[] = "YUZU_IS_CHILD";
-constexpr char STARTUP_CHECK_ENV_VAR[] = "YUZU_DO_STARTUP_CHECKS";
+constexpr char IS_CHILD_ENV_VAR[] = "LICHII_IS_CHILD";
+constexpr char STARTUP_CHECK_ENV_VAR[] = "LICHII_DO_STARTUP_CHECKS";
 constexpr char ENV_VAR_ENABLED_TEXT[] = "ON";
 
 void CheckVulkan();

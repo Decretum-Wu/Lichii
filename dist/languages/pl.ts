@@ -338,7 +338,7 @@ To zbanuje jego/jej nick na forum, oraz jego/jej adres IP.</translation>
     <message>
         <location filename="../../src/qt_common/config/shared_translation.cpp" line="60"/>
         <source>Mute audio when in background</source>
-        <translation>Wyciszaj audio gdy yuzu działa w tle</translation>
+        <translation>Wyciszaj audio gdy Lichii działa w tle</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/config/shared_translation.cpp" line="63"/>
@@ -2645,8 +2645,8 @@ Gdy ta opcja jest włączona, niedopasowanie jest uruchamiane tylko wtedy, gdy d
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="449"/>
-        <source>When checked, yuzu will log statistics about the compiled pipeline cache</source>
-        <translation>Po zaznaczeniu, yuzu będzie rejestrować statystyki dotyczące skompilowanej pamięci podręcznej.</translation>
+        <source>When checked, Lichii will log statistics about the compiled pipeline cache</source>
+        <translation>Po zaznaczeniu, Lichii będzie rejestrować statystyki dotyczące skompilowanej pamięci podręcznej.</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="452"/>
@@ -2680,8 +2680,8 @@ Gdy ta opcja jest włączona, niedopasowanie jest uruchamiane tylko wtedy, gdy d
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="488"/>
-        <source>Enables yuzu to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing yuzu.</source>
-        <translation>Umożliwia yuzu sprawdzanie działającego środowiska Vulkan podczas uruchamiania programu. Wyłącz to, jeśli powoduje to problemy z zewnętrznymi programami widzącymi yuzu.</translation>
+        <source>Enables Lichii to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing Lichii.</source>
+        <translation>Umożliwia Lichii sprawdzanie działającego środowiska Vulkan podczas uruchamiania programu. Wyłącz to, jeśli powoduje to problemy z zewnętrznymi programami widzącymi Lichii.</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="491"/>
@@ -6892,8 +6892,8 @@ Komunikat debugowania: </translation>
     <name>MainWindow</name>
     <message>
         <location filename="../../src/lichii/main.ui" line="14"/>
-        <source>yuzu</source>
-        <translation>yuzu</translation>
+        <source>Lichii</source>
+        <translation>Lichii</translation>
     </message>
     <message>
         <location filename="../../src/lichii/main.ui" line="53"/>
@@ -7343,7 +7343,7 @@ Komunikat debugowania: </translation>
     <message>
         <location filename="../../src/lichii/main_window.cpp" line="503"/>
         <source>Running a game</source>
-        <extracomment>TRANSLATORS: This string is shown to the user to explain why yuzu needs to prevent the computer from sleeping</extracomment>
+        <extracomment>TRANSLATORS: This string is shown to the user to explain why Lichii needs to prevent the computer from sleeping</extracomment>
         <translation>Gra uruchomiona</translation>
     </message>
     <message>

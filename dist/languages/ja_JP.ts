@@ -2666,7 +2666,7 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="449"/>
-        <source>When checked, yuzu will log statistics about the compiled pipeline cache</source>
+        <source>When checked, Lichii will log statistics about the compiled pipeline cache</source>
         <translation>チェックすると、コンパイル済みパイプラインキャッシュの統計情報をログに記録します。</translation>
     </message>
     <message>
@@ -2701,7 +2701,7 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="488"/>
-        <source>Enables yuzu to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing yuzu.</source>
+        <source>Enables Lichii to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing Lichii.</source>
         <translation>起動時に動作可能なVulkan環境があるか確認します。外部プログラムからEdenを認識する際に問題が発生する場合は無効にしてください。</translation>
     </message>
     <message>
@@ -6919,8 +6919,8 @@ Debug Message: </source>
     <name>MainWindow</name>
     <message>
         <location filename="../../src/lichii/main.ui" line="14"/>
-        <source>yuzu</source>
-        <translation>yuzu</translation>
+        <source>Lichii</source>
+        <translation>Lichii</translation>
     </message>
     <message>
         <location filename="../../src/lichii/main.ui" line="53"/>
@@ -7370,7 +7370,7 @@ Debug Message: </source>
     <message>
         <location filename="../../src/lichii/main_window.cpp" line="503"/>
         <source>Running a game</source>
-        <extracomment>TRANSLATORS: This string is shown to the user to explain why yuzu needs to prevent the computer from sleeping</extracomment>
+        <extracomment>TRANSLATORS: This string is shown to the user to explain why Lichii needs to prevent the computer from sleeping</extracomment>
         <translation>ゲームを実行中</translation>
     </message>
     <message>

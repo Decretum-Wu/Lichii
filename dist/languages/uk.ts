@@ -2659,8 +2659,8 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="449"/>
-        <source>When checked, yuzu will log statistics about the compiled pipeline cache</source>
-        <translation>Якщо увімкнено, yuzu записуватиме статистику щодо скомпільованого кешу конвеєра.</translation>
+        <source>When checked, Lichii will log statistics about the compiled pipeline cache</source>
+        <translation>Якщо увімкнено, Lichii записуватиме статистику щодо скомпільованого кешу конвеєра.</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="452"/>
@@ -2694,8 +2694,8 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="488"/>
-        <source>Enables yuzu to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing yuzu.</source>
-        <translation>Дозволяє yuzu перевіряти наявність робочого середовища Vulkan під час запуску програми. Вимкніть це налаштування, якщо це спричиняє проблеми з баченням yuzu зовнішніми програмами.</translation>
+        <source>Enables Lichii to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing Lichii.</source>
+        <translation>Дозволяє Lichii перевіряти наявність робочого середовища Vulkan під час запуску програми. Вимкніть це налаштування, якщо це спричиняє проблеми з баченням Lichii зовнішніми програмами.</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="491"/>
@@ -6911,8 +6911,8 @@ Debug Message: </source>
     <name>MainWindow</name>
     <message>
         <location filename="../../src/lichii/main.ui" line="14"/>
-        <source>yuzu</source>
-        <translation>yuzu</translation>
+        <source>Lichii</source>
+        <translation>Lichii</translation>
     </message>
     <message>
         <location filename="../../src/lichii/main.ui" line="53"/>
@@ -7362,7 +7362,7 @@ Debug Message: </source>
     <message>
         <location filename="../../src/lichii/main_window.cpp" line="503"/>
         <source>Running a game</source>
-        <extracomment>TRANSLATORS: This string is shown to the user to explain why yuzu needs to prevent the computer from sleeping</extracomment>
+        <extracomment>TRANSLATORS: This string is shown to the user to explain why Lichii needs to prevent the computer from sleeping</extracomment>
         <translation>Запущено гру</translation>
     </message>
     <message>

@@ -151,7 +151,7 @@ void DiscordImpl::Update() {
             return;
         }
 
-        // Used to format Icon URL for yuzu website game compatibility page
+        // Used to format Icon URL for Lichii website game compatibility page
         std::string icon_name = GetGameString(game_title);
         auto const game_url = fmt::format(
             "https://raw.githubusercontent.com/eden-emulator/boxart/refs/heads/master/img/{}.png",

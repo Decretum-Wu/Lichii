@@ -12,7 +12,7 @@
 #include <QtGlobal>
 
 #if !QT_CONFIG(movie)
-#define YUZU_QT_MOVIE_MISSING 1
+#define LICHII_QT_MOVIE_MISSING 1
 #endif
 
 namespace Loader {
@@ -67,7 +67,7 @@ signals:
     void Hidden();
 
 private:
-#ifndef YUZU_QT_MOVIE_MISSING
+#ifndef LICHII_QT_MOVIE_MISSING
     std::unique_ptr<QMovie> animation;
     std::unique_ptr<QBuffer> backing_buf;
     std::unique_ptr<QByteArray> backing_mem;

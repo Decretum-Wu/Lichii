@@ -2551,7 +2551,7 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="341"/>
         <source>When checked, it executes shaders without loop logic changes</source>
-        <translation>啟用時 yuzu 在執行著色器時，不會修改循環結構的條件判斷。</translation>
+        <translation>啟用時 Lichii 在執行著色器時，不會修改循環結構的條件判斷。</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="344"/>
@@ -2571,7 +2571,7 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="364"/>
         <source>When checked, it enables Nsight Aftermath crash dumps</source>
-        <translation>啟用時 yuzu 將會儲存 Nsight Aftermath 格式的錯誤傾印檔案。</translation>
+        <translation>啟用時 Lichii 將會儲存 Nsight Aftermath 格式的錯誤傾印檔案。</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="367"/>
@@ -2625,8 +2625,8 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="449"/>
-        <source>When checked, yuzu will log statistics about the compiled pipeline cache</source>
-        <translation>啟用時 yuzu 將記錄有關編譯著色器快取的統計資訊。</translation>
+        <source>When checked, Lichii will log statistics about the compiled pipeline cache</source>
+        <translation>啟用時 Lichii 將記錄有關編譯著色器快取的統計資訊。</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="452"/>
@@ -2660,8 +2660,8 @@ Enabling it bypasses such prompts and directly exits the emulation.</source>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="488"/>
-        <source>Enables yuzu to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing yuzu.</source>
-        <translation>讓 yuzu 在啟動時檢查 Vulkan 是否正常工作。如果其他程式導致 yuzu 出現此問題，請停用此選項。</translation>
+        <source>Enables Lichii to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing Lichii.</source>
+        <translation>讓 Lichii 在啟動時檢查 Vulkan 是否正常工作。如果其他程式導致 Lichii 出現此問題，請停用此選項。</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="491"/>
@@ -6856,8 +6856,8 @@ Debug Message: </source>
     <name>MainWindow</name>
     <message>
         <location filename="../../src/lichii/main.ui" line="14"/>
-        <source>yuzu</source>
-        <translation>yuzu</translation>
+        <source>Lichii</source>
+        <translation>Lichii</translation>
     </message>
     <message>
         <location filename="../../src/lichii/main.ui" line="53"/>
@@ -7307,7 +7307,7 @@ Debug Message: </source>
     <message>
         <location filename="../../src/lichii/main_window.cpp" line="503"/>
         <source>Running a game</source>
-        <extracomment>TRANSLATORS: This string is shown to the user to explain why yuzu needs to prevent the computer from sleeping</extracomment>
+        <extracomment>TRANSLATORS: This string is shown to the user to explain why Lichii needs to prevent the computer from sleeping</extracomment>
         <translation type="unfinished"/>
     </message>
     <message>

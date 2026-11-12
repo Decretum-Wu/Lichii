@@ -24,9 +24,9 @@
        <property name="title">
         <string>Lichii Web Service</string>
        </property>
-       <layout class="QVBoxLayout" name="verticalLayoutYuzuWebService">
+       <layout class="QVBoxLayout" name="verticalLayoutLichiiWebService">
         <item>
-         <layout class="QGridLayout" name="gridLayoutYuzuUsername">
+         <layout class="QGridLayout" name="gridLayoutLichiiUsername">
           <item row="1" column="0">
            <widget class="QLabel" name="label_token">
             <property name="text">

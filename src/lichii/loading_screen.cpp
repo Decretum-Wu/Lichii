@@ -23,7 +23,7 @@
 
 // Mingw seems to not have QMovie at all. If QMovie is missing then use a single frame instead of an
 // showing the full animation
-#if !YUZU_QT_MOVIE_MISSING
+#if !LICHII_QT_MOVIE_MISSING
 #include <QMovie>
 #endif
 
@@ -128,7 +128,7 @@ LoadingScreen::~LoadingScreen() = default;
 void LoadingScreen::Prepare(Loader::AppLoader& loader) {
     std::vector<u8> buffer;
     if (loader.ReadBanner(buffer) == Loader::ResultStatus::Success) {
-#ifdef YUZU_QT_MOVIE_MISSING
+#ifdef LICHII_QT_MOVIE_MISSING
         QPixmap map;
         map.loadFromData(buffer.data(), buffer.size());
         ui->banner->setPixmap(map);
@@ -229,7 +229,7 @@ void LoadingScreen::paintEvent(QPaintEvent* event) {
 }
 
 void LoadingScreen::Clear() {
-#ifndef YUZU_QT_MOVIE_MISSING
+#ifndef LICHII_QT_MOVIE_MISSING
     animation.reset();
     backing_buf.reset();
     backing_mem.reset();

@@ -224,7 +224,7 @@ void QtNXWebEngineView::HandleWindowFooterButtonPressedOnce() {
             const auto button_index = std::countr_zero(static_cast<u64>(button));
 
             page()->runJavaScript(
-                QStringLiteral("yuzu_key_callbacks[%1] == null;").arg(button_index),
+                QStringLiteral("lichii_key_callbacks[%1] == null;").arg(button_index),
                 [this, button](const QVariant& variant) {
                     if (variant.toBool()) {
                         switch (button) {
@@ -247,7 +247,7 @@ void QtNXWebEngineView::HandleWindowFooterButtonPressedOnce() {
                 });
 
             page()->runJavaScript(
-                QStringLiteral("if (yuzu_key_callbacks[%1] != null) { yuzu_key_callbacks[%1](); }")
+                QStringLiteral("if (lichii_key_callbacks[%1] != null) { lichii_key_callbacks[%1](); }")
                     .arg(button_index));
         }
     };

@@ -21,7 +21,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <key>CFBundleIconName</key>
     <string>lichii</string>
     <key>CFBundleIdentifier</key>
-    <string>com.yuzu-emu.yuzu</string> <!-- May be required by 3rd party ext -->
+    <string>io.github.zortos293.lichii</string> <!-- May be required by 3rd party ext -->
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleLongVersionString</key>

@@ -587,7 +587,7 @@ private:
     UserDataMigrator user_data_migrator;
     std::unique_ptr<QtConfig> config;
 
-    // Whether emulation is currently running in yuzu.
+    // Whether emulation is currently running in Lichii.
     bool emulation_running = false;
     std::optional<CompatibilityReporting::Session> report_session;
     bool boot_in_progress = false;

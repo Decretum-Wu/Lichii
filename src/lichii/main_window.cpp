@@ -27,7 +27,7 @@
 #include "qt_common/discord/discord.h"
 #include "ui_main.h"
 
-// Other Yuzu stuff //
+// Other Lichii stuff //
 #include "debugger/console.h"
 #include "debugger/controller.h"
 
@@ -537,7 +537,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 
     // Set a screensaver inhibition reason string. Currently passed to DBus by SDL and visible to
     // the user through their desktop environment.
-    //: TRANSLATORS: This string is shown to the user to explain why yuzu needs to prevent the
+    //: TRANSLATORS: This string is shown to the user to explain why Lichii needs to prevent the
     //: computer from sleeping
     QByteArray wakelock_reason = tr("Running a game").toUtf8();
     SDL_SetHint(SDL_HINT_SCREENSAVER_INHIBIT_ACTIVITY_NAME, wakelock_reason.data());
@@ -3631,7 +3631,7 @@ void MainWindow::OnMenuReportCompatibility() {
     //         !Settings::values.eden_username.GetValue().empty()) {
     //     } else {
     //         QMessageBox::critical(
-    //             this, tr("Missing yuzu Account"),
+    //             this, tr("Missing Lichii Account"),
     //             tr("In order to submit a game compatibility test case, you must set up your web
     //             token "
     //                "and "
@@ -5161,13 +5161,13 @@ void MainWindow::OnApplicationChanged(u64 program_id) {
 void MainWindow::UpdateWindowTitle(std::string_view title_name, std::string_view title_version,
                                    std::string_view gpu_vendor) {
     static const std::string build_id = std::string{Common::g_build_id};
-    static const std::string yuzu_title =
+    static const std::string lichii_title =
         fmt::format("{} | {} | {}", std::string{Common::g_build_name},
                     std::string{Common::g_build_version}, std::string{Common::g_compiler_id});
 
     const auto override_title =
         fmt::format(fmt::runtime(std::string(Common::g_title_bar_format_idle)), build_id);
-    const auto window_title = override_title.empty() ? yuzu_title : override_title;
+    const auto window_title = override_title.empty() ? lichii_title : override_title;
 
     if (title_name.empty()) {
         setWindowTitle(QString::fromStdString(window_title));

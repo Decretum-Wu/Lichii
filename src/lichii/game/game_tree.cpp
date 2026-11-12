@@ -263,7 +263,7 @@ void GameTree::ApplyFilter(const QString& edit_filter_text, GameListModel* model
 
             const QStandardItem* child = folder->child(j, 0);
 
-            if (Yuzu::FilterMatches(edit_filter_text, child)) {
+            if (Lichii::FilterMatches(edit_filter_text, child)) {
                 setRowHidden(j, folder_index, false);
                 ++result_count;
             } else {

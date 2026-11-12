@@ -90,13 +90,13 @@ window.addEventListener("gamepaddisconnected", function(e) {
 
 constexpr char WINDOW_NX_SCRIPT[] = R"(
 var end_applet = false;
-var yuzu_key_callbacks = [];
+var lichii_key_callbacks = [];
 
 (function() {
     class WindowNX {
         constructor() {
-            yuzu_key_callbacks[1] = function() { window.history.back(); };
-            yuzu_key_callbacks[2] = function() { window.nx.endApplet(); };
+            lichii_key_callbacks[1] = function() { window.history.back(); };
+            lichii_key_callbacks[2] = function() { window.nx.endApplet(); };
         }
 
         addEventListener(type, listener, options) {
@@ -130,22 +130,22 @@ var yuzu_key_callbacks = [];
 
             switch (key) {
                 case "A":
-                    yuzu_key_callbacks[0] = func;
+                    lichii_key_callbacks[0] = func;
                     break;
                 case "B":
-                    yuzu_key_callbacks[1] = func;
+                    lichii_key_callbacks[1] = func;
                     break;
                 case "X":
-                    yuzu_key_callbacks[2] = func;
+                    lichii_key_callbacks[2] = func;
                     break;
                 case "Y":
-                    yuzu_key_callbacks[3] = func;
+                    lichii_key_callbacks[3] = func;
                     break;
                 case "L":
-                    yuzu_key_callbacks[6] = func;
+                    lichii_key_callbacks[6] = func;
                     break;
                 case "R":
-                    yuzu_key_callbacks[7] = func;
+                    lichii_key_callbacks[7] = func;
                     break;
             }
         }
@@ -159,22 +159,22 @@ var yuzu_key_callbacks = [];
 
             switch (key) {
                 case "A":
-                    yuzu_key_callbacks[0] = function() {};
+                    lichii_key_callbacks[0] = function() {};
                     break;
                 case "B":
-                    yuzu_key_callbacks[1] = function() {};
+                    lichii_key_callbacks[1] = function() {};
                     break;
                 case "X":
-                    yuzu_key_callbacks[2] = function() {};
+                    lichii_key_callbacks[2] = function() {};
                     break;
                 case "Y":
-                    yuzu_key_callbacks[3] = function() {};
+                    lichii_key_callbacks[3] = function() {};
                     break;
                 case "L":
-                    yuzu_key_callbacks[6] = function() {};
+                    lichii_key_callbacks[6] = function() {};
                     break;
                 case "R":
-                    yuzu_key_callbacks[7] = function() {};
+                    lichii_key_callbacks[7] = function() {};
                     break;
             }
         }

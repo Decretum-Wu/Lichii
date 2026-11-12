@@ -2647,8 +2647,8 @@ Abilitarla bypassa queste richieste e l&apos;emulazione cesserà immediatamente.
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="449"/>
-        <source>When checked, yuzu will log statistics about the compiled pipeline cache</source>
-        <translation>Quando l&apos;opzione è selezionata, yuzu scriverà nel log le statistiche riguardanti la cache delle pipeline compilate</translation>
+        <source>When checked, Lichii will log statistics about the compiled pipeline cache</source>
+        <translation>Quando l&apos;opzione è selezionata, Lichii scriverà nel log le statistiche riguardanti la cache delle pipeline compilate</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="452"/>
@@ -2682,8 +2682,8 @@ Abilitarla bypassa queste richieste e l&apos;emulazione cesserà immediatamente.
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="488"/>
-        <source>Enables yuzu to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing yuzu.</source>
-        <translation>Se abilitato, yuzu verificherà se è presente un ambiente Vulkan funzionante quando il programma viene eseguito. Disabilita questa impostazione se hai problemi con altre applicazioni mentre usi yuzu.</translation>
+        <source>Enables Lichii to check for a working Vulkan environment when the program starts up. Disable this if this is causing issues with external programs seeing Lichii.</source>
+        <translation>Se abilitato, Lichii verificherà se è presente un ambiente Vulkan funzionante quando il programma viene eseguito. Disabilita questa impostazione se hai problemi con altre applicazioni mentre usi Lichii.</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_debug.ui" line="491"/>
@@ -3419,7 +3419,7 @@ Vuoi cancellare i dati precedenti?</translation>
     <message>
         <location filename="../../src/lichii/configuration/configure_hotkeys.cpp" line="344"/>
         <source>An error occurred. Please report this issue on github.</source>
-        <translation>Errore durante la configurazione. Segnala quest&apos;errore alla pagina Github di Yuzu.</translation>
+        <translation>Errore durante la configurazione. Segnala quest&apos;errore alla pagina Github di Lichii.</translation>
     </message>
     <message>
         <location filename="../../src/lichii/configuration/configure_hotkeys.cpp" line="384"/>
@@ -6903,8 +6903,8 @@ Messaggio debug:</translation>
     <name>MainWindow</name>
     <message>
         <location filename="../../src/lichii/main.ui" line="14"/>
-        <source>yuzu</source>
-        <translation>yuzu</translation>
+        <source>Lichii</source>
+        <translation>Lichii</translation>
     </message>
     <message>
         <location filename="../../src/lichii/main.ui" line="53"/>
@@ -7354,7 +7354,7 @@ Messaggio debug:</translation>
     <message>
         <location filename="../../src/lichii/main_window.cpp" line="503"/>
         <source>Running a game</source>
-        <extracomment>TRANSLATORS: This string is shown to the user to explain why yuzu needs to prevent the computer from sleeping</extracomment>
+        <extracomment>TRANSLATORS: This string is shown to the user to explain why Lichii needs to prevent the computer from sleeping</extracomment>
         <translation>Gioco in esecuzione</translation>
     </message>
     <message>
