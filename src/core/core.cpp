@@ -372,6 +372,20 @@ struct System::Impl {
     SystemResultStatus InitializeKernel(System& system) {
         LOG_DEBUG(Core, "initialized OK");
 
+        // ShutdownMainProcess releases it after a Switch 2 game; create it before the check below
+        // so an empty slot alone does not rerun the full Initialize.
+        if (guest_memory_released) {
+            guest_memory_released = false;
+            try {
+                device_memory.emplace();
+            } catch (const std::bad_alloc&) {
+                LOG_CRITICAL(Core, "Failed to allocate guest memory");
+            }
+            if (device_memory && !device_memory->buffer.BackingBasePointer()) {
+                device_memory.reset();
+            }
+        }
+
         // Setting changes may require a full system reinitialization (e.g., disabling multicore).
         ReinitializeIfNecessary(system);
         if (!device_memory) {
@@ -615,6 +629,14 @@ struct System::Impl {
         // Reset all glue registrations
         arp_manager.ResetAll();
 
+        // The guest RAM section keeps every page the game touched until it is destroyed (up to
+        // 12 GiB), and the next Load reuses it. Switch 2 only: Switch 1 keeps its behaviour.
+        // InitializeKernel creates it again, sized for the next game.
+        if (Settings::CurrentProgramIsSwitch2()) {
+            device_memory.reset();
+            guest_memory_released = true;
+        }
+
         LOG_DEBUG(Core, "Shutdown OK");
     }
 
@@ -667,6 +689,7 @@ struct System::Impl {
     std::optional<Core::PerfStats> perf_stats;
     std::optional<Tegra::Host1x::Host1x> host1x_core;
     std::optional<Core::DeviceMemory> device_memory;
+    bool guest_memory_released{};
     std::optional<AudioCore::AudioCore> audio_core;
     std::optional<Memory::CheatEngine> cheat_engine;
     std::optional<Tools::Freezer> memory_freezer;
