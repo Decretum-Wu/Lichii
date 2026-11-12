@@ -92,7 +92,7 @@ public:
 
     /// Unmark region as CPU modified, notifying the device_tracker about this change
     void UnmarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
-        synchronized_pages.Mark(dirty_cpu_addr, query_size);
+        ever_synchronized_pages.Mark(dirty_cpu_addr, query_size);
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::CPU, false, manager->cpu_addr + offset, size);
         });
@@ -100,7 +100,7 @@ public:
 
     /// Mark region as modified from the host GPU
     void MarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 query_size) noexcept {
-        synchronized_pages.Mark(dirty_cpu_addr, query_size);
+        ever_synchronized_pages.Mark(dirty_cpu_addr, query_size);
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::GPU, true, manager->cpu_addr + offset, size);
         });
@@ -108,7 +108,7 @@ public:
 
     /// Mark region as modified from the host GPU
     void MarkRegionAsPreflushable(VAddr dirty_cpu_addr, u64 query_size) noexcept {
-        synchronized_pages.Mark(dirty_cpu_addr, query_size);
+        ever_synchronized_pages.Mark(dirty_cpu_addr, query_size);
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::Preflushable, true, manager->cpu_addr + offset, size);
         });
@@ -174,7 +174,7 @@ public:
     template <typename Func>
     void ForEachUploadRange(VAddr query_cpu_range, u64 query_size, Func&& func) {
         const auto upload = [this, &func](VAddr address, u64 size) {
-            synchronized_pages.Mark(address, size);
+            ever_synchronized_pages.Mark(address, size);
             func(address, size);
         };
         IteratePages<true>(query_cpu_range, query_size, [&upload](Manager* manager, u64 offset, size_t size) {
@@ -210,7 +210,7 @@ public:
     template <typename Func>
     void ForEachDirtyUploadRange(VAddr query_cpu_range, u64 query_size, Func&& func) {
         const auto upload = [this, &func](VAddr address, u64 size) {
-            synchronized_pages.Mark(address, size);
+            ever_synchronized_pages.Mark(address, size);
             func(address, size);
         };
         IteratePages<true>(query_cpu_range, query_size, [&upload](Manager* manager, u64 offset, size_t size) {
@@ -230,7 +230,7 @@ public:
     /// was marked GPU-modified or preflushable. Pages without any are CPU-modified as their
     /// managers were created. Any thread, without a lock.
     [[nodiscard]] bool IsRegionEverSynchronized(VAddr query_cpu_addr, u64 query_size) const noexcept {
-        return synchronized_pages.Any(query_cpu_addr, query_size);
+        return ever_synchronized_pages.Any(query_cpu_addr, query_size);
     }
 
     /// Verify mode: true when the clean words of the managers over a range match a recount.
@@ -359,7 +359,7 @@ private:
     ::Common::unordered_set<u32> cached_pages;
     std::array<std::pair<VAddr, VAddr>, 64> synchronized_ranges{};
     u64 synchronized_mask{};
-    PageFilter synchronized_pages;
+    PageFilter ever_synchronized_pages;
     DeviceTracker* device_tracker = nullptr;
 };
 
