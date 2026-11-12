@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <mutex>
 
@@ -118,22 +119,32 @@ const Config& Configured() {
     return config;
 }
 
-/// The environment's settings while "Redirect online services to custom servers" is ticked,
-/// else none.
-const Config& Get() {
-    static const Config none{Config::Empty{}};
-    const Config& config = Configured();
-    if (Settings::values.online_service_redirect.GetValue()) {
-        return config;
+/// Whether any of the variables is set, without reading what they name.
+bool AnyVariableSet() {
+    for (const char* name : {"EDEN_NX2_ONLINE_HOSTS", "EDEN_NX2_ONLINE_SERVER",
+                             "EDEN_NX2_LOOPBACK_ONLY", "EDEN_NX2_ONLINE_CA"}) {
+        if (const char* value = std::getenv(name); value != nullptr && *value != '\0') {
+            return true;
+        }
     }
+    return false;
+}
+
+/// The environment's settings while "Redirect online services to custom servers" is ticked,
+/// else none. They are read (and the CA file loaded) only once the setting is first on.
+const Config& Get() {
+    if (Settings::values.online_service_redirect.GetValue()) {
+        return Configured();
+    }
+    static const Config none{Config::Empty{}};
     static std::once_flag hinted;
-    if (config.Any()) {
-        std::call_once(hinted, [] {
+    std::call_once(hinted, [] {
+        if (AnyVariableSet()) {
             LOG_WARNING(Network, "Local redirect: EDEN_NX2_ONLINE_* or EDEN_NX2_LOOPBACK_ONLY is "
                                  "set, but \"Redirect online services to custom servers\" is "
                                  "off in Configure > Network; ignored");
-        });
-    }
+        }
+    });
     return none;
 }
 
