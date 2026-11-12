@@ -393,6 +393,12 @@ public:
                id != VK_DRIVER_ID_MESA_RADV;
     }
 
+    /// Whether a pipeline cache can be read while pipelines build into it, as Vulkan allows. Intel's
+    /// Windows driver crashes in vkGetPipelineCacheData when a build is running.
+    bool CanReadPipelineCacheDuringBuilds() const {
+        return GetDriverID() != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS;
+    }
+
     /// Returns true for tile-based deferred renderers.
     bool IsTiler() const {
         switch (GetDriverID()) {
@@ -438,6 +444,7 @@ public:
     FN_MAX_LIMIT_ELEM(PerStageDescriptorSampledImages) \
     FN_MAX_LIMIT_ELEM(PerStageDescriptorStorageBuffers) \
     FN_MAX_LIMIT_ELEM(PerStageResources) \
+    FN_MAX_LIMIT_ELEM(PerStageDescriptorSamplers) \
     FN_MAX_LIMIT_ELEM(DescriptorSetSamplers) \
     FN_MAX_LIMIT_ELEM(DescriptorSetUniformBuffers) \
     FN_MAX_LIMIT_ELEM(DescriptorSetUniformBuffersDynamic) \

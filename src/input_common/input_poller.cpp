@@ -822,6 +822,10 @@ public:
         return input_engine->IsVibrationEnabled(identifier);
     }
 
+    bool IsVibrationStreamed() override {
+        return input_engine->IsVibrationStreamed(identifier);
+    }
+
     Common::Input::DriverResult SetPollingMode(Common::Input::PollingMode polling_mode) override {
         return input_engine->SetPollingMode(identifier, polling_mode);
     }

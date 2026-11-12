@@ -6,6 +6,9 @@
 
 #include <QCoreApplication>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFutureWatcher>
 #include <QPointer>
 #include <QUrl>
@@ -60,6 +63,8 @@ ConfigureNetwork::ConfigureNetwork(const Core::System& system_, QWidget* parent,
     this->SetConfiguration();
 
     ui->nextendo_group->setVisible(!per_game);
+    // Global settings: per-game configuration doesn't offer them.
+    ui->redirect_group->setVisible(!per_game);
     if (!per_game) {
         RenewNextendoToken();
     }
@@ -67,6 +72,14 @@ ConfigureNetwork::ConfigureNetwork(const Core::System& system_, QWidget* parent,
     connect(ui->nextendo_enabled, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled) {
             ui->airplane_mode->setChecked(false);
+        }
+    });
+    connect(ui->redirect_ca_browse, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Select the CA certificate"), QFileInfo(ui->redirect_ca->text()).dir().path(),
+            tr("DER certificates (*.der *.cer *.crt);;All files (*)"));
+        if (!path.isEmpty()) {
+            ui->redirect_ca->setText(QDir::toNativeSeparators(path));
         }
     });
     connect(ui->nextendo_sign_in, &QPushButton::clicked, this, &ConfigureNetwork::SignInToNextendo);
@@ -88,6 +101,12 @@ void ConfigureNetwork::ApplyConfiguration() {
     if (!per_game) {
         Settings::values.nextendo_enabled = ui->nextendo_enabled->isChecked();
         Settings::values.nextendo_client_id = NextendoClientId(ui->nextendo_client_id->text());
+        Settings::values.online_service_redirect = ui->online_service_redirect->isChecked();
+        Settings::values.online_redirect_hosts = ui->redirect_hosts->text().trimmed().toStdString();
+        Settings::values.online_redirect_server =
+            ui->redirect_server->text().trimmed().toStdString();
+        Settings::values.online_redirect_ca = ui->redirect_ca->text().trimmed().toStdString();
+        Settings::values.online_redirect_loopback_only = ui->redirect_loopback_only->isChecked();
     }
 }
 
@@ -120,6 +139,15 @@ void ConfigureNetwork::SetConfiguration() {
     ui->network_interface->setEnabled(runtime_lock);
     ui->airplane_mode->setChecked(airplane_mode);
     ui->lan_play->setChecked(Settings::values.lan_play.GetValue());
+    ui->online_service_redirect->setChecked(Settings::values.online_service_redirect.GetValue());
+    ui->redirect_hosts->setText(
+        QString::fromStdString(Settings::values.online_redirect_hosts.GetValue()));
+    ui->redirect_server->setText(
+        QString::fromStdString(Settings::values.online_redirect_server.GetValue()));
+    ui->redirect_ca->setText(QString::fromStdString(Settings::values.online_redirect_ca.GetValue()));
+    ui->redirect_loopback_only->setChecked(
+        Settings::values.online_redirect_loopback_only.GetValue());
+    ui->redirect_group->setEnabled(runtime_lock);
     ui->nextendo_enabled->setChecked(Settings::values.nextendo_enabled.GetValue());
     ui->nextendo_client_id->setText(
         QString::fromStdString(Settings::values.nextendo_client_id.GetValue()));

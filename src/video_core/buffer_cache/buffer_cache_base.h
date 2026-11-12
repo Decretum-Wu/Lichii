@@ -908,6 +908,29 @@ private:
         return AsyncBufferDownloads() || memory_tracker.IsRegionPreflushable(device_addr, size);
     }
 
+    /// Whether the range holds GPU-written data that no fence downloads (not Preflushable).
+    bool HasGpuWritesNotDownloadedAtFence(DAddr device_addr, u64 size) {
+        if (AsyncBufferDownloads()) {
+            return false;
+        }
+        bool found = false;
+        memory_tracker.ForEachDownloadRange(
+            device_addr, size, false, [&](u64 start, u64 range_size) {
+                if (found) {
+                    return;
+                }
+                u64 covered = 0;
+                memory_tracker.ForEachPreflushableRange(
+                    start, range_size, [&](u64 lower, u64 length) {
+                        const u64 begin = (std::max)(lower, start);
+                        const u64 end = (std::min)(lower + length, start + range_size);
+                        covered += end > begin ? end - begin : 0;
+                    });
+                found = covered < range_size;
+            });
+        return found;
+    }
+
     /// Queues a GPU write for download at the next fence where DownloadsAtFence holds. With only
     /// Preflushable marks, just the marked pages are queued: a write that covers one marked page
     /// of a large buffer would otherwise copy the whole buffer back at every fence.

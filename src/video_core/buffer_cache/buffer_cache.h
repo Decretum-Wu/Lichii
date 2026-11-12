@@ -342,13 +342,20 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     DAddr device_addr_end_aligned = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
     area->start_address = device_addr_start_aligned;
     area->end_address = device_addr_end_aligned;
-    if (memory_tracker.IsRegionPreflushable(device_addr, size)) {
+    // Preflushable data is downloaded at fences, but only where it is marked (QueueFenceDownload):
+    // the rest of the range still needs this flush.
+    if (memory_tracker.IsRegionPreflushable(device_addr, size) &&
+        !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
+                                          device_addr_end_aligned - device_addr_start_aligned)) {
         // Fence downloads keep it, once the first read's download is in guest memory.
         area->in_flight = std::ranges::any_of(read_downloads, [&](const ReadDownload& download) {
             return download.write_ranges.Intersects(
                 device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
         });
         area->preemtive = !area->in_flight;
+        // The core keeps this area: a later GPU write to its unmarked pages must arm them again.
+        read_trapped_ranges.Subtract(device_addr_start_aligned,
+                                     device_addr_end_aligned - device_addr_start_aligned);
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
@@ -1455,6 +1462,9 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         const DAddr diff = base_address - *cpu_src_address;
         const DAddr new_base_address = *cpu_dest_address + diff;
         tmp_intervals.push_back({new_base_address, size});
+        if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+            Tegra::Nx2MarkGpuWritten(new_base_address, size);
+        }
         QueueFenceDownload(new_base_address, size);
     };
     gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
@@ -1465,7 +1475,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         gpu_modified_ranges.Add(pair.first, pair.second);
         NoteReadBackWrite(pair.first, pair.second);
         if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
-            Tegra::Nx2MarkGpuWritten(pair.first, pair.second);
             Nx2NoteListWrite(buffer_b, pair.first, pair.second);
         }
     }
@@ -3256,9 +3265,15 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     NoteUniformWrite(device_addr, size);
     MarkVertexBuffersStale(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
-    QueueFenceDownload(device_addr, size);
-    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+    const bool ampere = Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    if (ampere) {
+        // Before QueueFenceDownload arms read traps: guest reads skip the buffer cache's lock on
+        // pages without the mark (RasterizerVulkan::GetFlushArea), and the arm is what ends a
+        // core's read area.
         Tegra::Nx2MarkGpuWritten(device_addr, size);
+    }
+    QueueFenceDownload(device_addr, size);
+    if (ampere) {
         Nx2NoteListWrite(buffer_id, device_addr, size);
     }
 }

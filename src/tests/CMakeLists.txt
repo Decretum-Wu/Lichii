@@ -25,8 +25,10 @@ add_executable(tests
     core/nx2_thread_stats.cpp
     core/nx2_debug_server.cpp
     core/nx2_present_pacer.cpp
+    core/nx2_frame_interval.cpp
     core/ldn_lan_protocol.cpp
     core/perf_stats.cpp
+    core/key_derivation.cpp
     common/display_hdr.cpp
     common/dkb_cpu_trace.cpp
     common/dkb_frame_trace.cpp
@@ -86,6 +88,7 @@ add_executable(tests
     video_core/fire_emblem_upscale.cpp
     video_core/dlss_contract.cpp
     video_core/dlss_mode.cpp
+    video_core/frame_gen_choice.cpp
     video_core/ampere_fast_fusion.cpp
     video_core/ampere_async_copy.cpp
     video_core/ampere_trap_guards.cpp
@@ -182,6 +185,7 @@ add_executable(tests
     common/unique_function.cpp
     common/zstd_compression.cpp
     core/core_timing.cpp
+    core/local_redirect.cpp
     core/nextendo_redirect.cpp
     core/thread_startup_policy.cpp
     core/nup_writer.cpp
@@ -207,6 +211,7 @@ add_executable(tests
     video_core/ampere_lowering.cpp
     video_core/ampere_geometry.cpp
     video_core/ampere_i2f.cpp
+    video_core/ampere_gradient.cpp
     video_core/ampere_returns.cpp
     video_core/ampere_guarded_ulea.cpp
     video_core/ampere_compute_lowering.cpp
@@ -323,7 +328,8 @@ target_compile_definitions(shader_translation_tests PRIVATE
 add_test(NAME shader_translation_tests COMMAND shader_translation_tests)
 
 if (NOT ANDROID)
-    target_sources(tests PRIVATE input_common/joycon_subcommand_response.cpp)
+    target_sources(tests PRIVATE input_common/joycon_subcommand_response.cpp
+                                 input_common/rumble_mapping.cpp)
     target_link_libraries(tests PRIVATE SDL3::SDL3)
 
     add_executable(config_tests

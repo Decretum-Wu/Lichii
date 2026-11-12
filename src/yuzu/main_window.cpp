@@ -184,6 +184,10 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "video_core/gpu.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#include "video_core/vulkan_common/streamline_frame_gen.h"
+#endif
 
 #include <SDL3/SDL.h>
 
@@ -1101,6 +1105,12 @@ void MainWindow::InitializeWidgets() {
             [this](const QPoint& menu_location) {
                 QMenu context_menu;
                 for (auto const& [type, text] : ConfigurationShared::frame_gen_type_texts_map) {
+#ifndef EGLANTINE_STREAMLINE
+                    // Only builds with NVIDIA Streamline (Windows) have DLSS Frame Generation.
+                    if (type == Settings::FrameGenType::NvidiaDlssG) {
+                        continue;
+                    }
+#endif
                     const QString label = ConfigurationShared::TranslateMapText(translator, text);
                     context_menu.addAction(label, [this, type] {
                         Settings::values.frame_gen_type.SetValue(type);
@@ -2031,16 +2041,11 @@ bool MainWindow::LoadROM(const QString& filename, Service::AM::FrontendAppletPar
                     tr("Error while loading ROM! %1", "%1 signifies a numeric error code.")
                         .arg(QString::fromStdString(error_code));
                 const auto status = static_cast<Loader::ResultStatus>(error_id);
-                const bool missing_keys =
-                    status == Loader::ResultStatus::ErrorMissingProductionKeyFile ||
-                    status == Loader::ResultStatus::ErrorMissingHeaderKey ||
-                    status == Loader::ResultStatus::ErrorMissingTitlekey ||
-                    status == Loader::ResultStatus::ErrorMissingTitlekek ||
-                    status == Loader::ResultStatus::ErrorMissingKeyAreaKey;
                 const auto description =
-                    (missing_keys
-                         ? tr("%1<br>Install your decryption keys with Tools > Install Decryption "
-                              "Keys, then start the game again.",
+                    (Loader::IsMissingKeyStatus(status)
+                         ? tr("%1<br>Dump current keys from your own console and install them "
+                              "with Tools > Install Decryption Keys, then start the game again. "
+                              "The log names the missing key.",
                               "%1 signifies an error string.")
                          : tr("%1<br>Please redump your files or ask on Discord/Stoat for help.",
                               "%1 signifies an error string."))
@@ -5256,6 +5261,14 @@ void MainWindow::UpdateStatusBar() {
                                            static_cast<double>(frame_gen_ms)
                                      : 0.0;
     frame_gen_generating = frame_gen.generated_frames > frame_gen_frames;
+#ifdef EGLANTINE_STREAMLINE
+    // NVIDIA DLSS Frame Generation adds its frames after the renderer, at present.
+    if (Vulkan::Streamline::FrameGenActive()) {
+        const auto rates = Vulkan::Streamline::FrameGenRecentRates();
+        frame_gen_fps = std::max(rates.shown_fps - rates.real_fps, 0.0);
+        frame_gen_generating = rates.generating;
+    }
+#endif
     frame_gen_frames = frame_gen.generated_frames;
     frame_gen_state = frame_gen.state;
 
@@ -5307,11 +5320,22 @@ void MainWindow::UpdateStatusBar() {
     }
 
     QString fpsText = tr("Game: %1 FPS").arg(std::round(results.average_game_fps), 0, 'f', 0);
+    QString fpsSuffix = m_fpsSuffix;
+#ifdef EGLANTINE_STREAMLINE
+    if (Vulkan::Streamline::FrameGenActive()) {
+        QString frameGen = Vulkan::Streamline::FrameGenRecentRates().generating
+                               ? tr("DLSS FG")
+                               : tr("DLSS FG paused");
+        if (!fpsSuffix.isEmpty())
+            frameGen = frameGen % QStringLiteral(", ") % fpsSuffix;
+        fpsSuffix = frameGen;
+    }
+#endif
     if (frame_gen_fps >= 0.5) {
         fpsText = fpsText % tr(" + %1 generated").arg(std::round(frame_gen_fps), 0, 'f', 0);
     }
-    if (!m_fpsSuffix.isEmpty())
-        fpsText = fpsText % QStringLiteral(" (%1)").arg(m_fpsSuffix);
+    if (!fpsSuffix.isEmpty())
+        fpsText = fpsText % QStringLiteral(" (%1)").arg(fpsSuffix);
 
     game_fps_label->setText(fpsText);
 
@@ -5393,10 +5417,19 @@ void MainWindow::UpdateFrameGenButton() {
         return;
     }
 
-    const QString& type_text = ConfigurationShared::frame_gen_type_texts_map
-                                   .find(Settings::values.frame_gen_type.GetValue())
-                                   ->second;
-    const QString type = ConfigurationShared::TranslateMapText(translator, type_text).toUpper();
+    const Settings::FrameGenType selected_type = Settings::values.frame_gen_type.GetValue();
+    // Once a game runs, NVIDIA DLSS Frame Generation that isn't this session's generator gives
+    // way to FSR3.
+    const bool dlssg_fallback = selected_type == Settings::FrameGenType::NvidiaDlssG &&
+                                emulation_running &&
+                                frame_gen_state == VideoCore::FrameGenState::Running;
+    const Settings::FrameGenType shown_type =
+        dlssg_fallback ? Settings::FrameGenType::Fsr3 : selected_type;
+    const QString& type_text =
+        ConfigurationShared::frame_gen_type_texts_map.find(shown_type)->second;
+    const QString type = shown_type == Settings::FrameGenType::NvidiaDlssG
+                             ? QStringLiteral("DLSS-G")
+                             : ConfigurationShared::TranslateMapText(translator, type_text).toUpper();
     const u32 target_rate = Settings::values.frame_gen_target_rate.GetValue();
     const QString mode = target_rate == 0
                              ? tr("FG %1 %2X").arg(type).arg(Settings::FrameGenMultiplier())
@@ -5438,6 +5471,8 @@ void MainWindow::UpdateFrameGenButton() {
         unavailable = tr("LSFG needs Lossless.dll from Lossless Scaling in the \"lossless\" folder "
                          "of the user directory. It is missing or could not be loaded.");
         break;
+    case VideoCore::FrameGenState::NvidiaFrameGen:
+        break;
     }
 
     if (!unavailable.isEmpty()) {
@@ -5448,9 +5483,14 @@ void MainWindow::UpdateFrameGenButton() {
         return;
     }
 
+    const QString fallback =
+        dlssg_fallback ? tr(" NVIDIA DLSS Frame Generation can't run for this game or setup, so "
+                            "FSR3 runs instead; the log says why.")
+                       : QString();
     if (frame_gen_generating) {
         frame_gen_status_button->setText(mode);
-        frame_gen_status_button->setToolTip(tr("Frame generation is running.%1").arg(target));
+        frame_gen_status_button->setToolTip(
+            tr("Frame generation is running.%1%2").arg(target, fallback));
         return;
     }
 
@@ -5462,8 +5502,8 @@ void MainWindow::UpdateFrameGenButton() {
     frame_gen_status_button->setToolTip(
         tr("Frame generation is on but generated no frames in the last half second. It pauses "
            "while it warms up, for a second after a frame takes longer than 100 ms, and while "
-           "frames arrive in bursts.%1")
-            .arg(target_met));
+           "frames arrive in bursts.%1%2")
+            .arg(target_met, fallback));
 }
 
 void MainWindow::UpdateVolumeUI() {
@@ -5540,7 +5580,9 @@ void MainWindow::OnCheckFirmwareDecryption(bool prompt) {
         // At startup only log it: loose ExeFS/RomFS dumps (all Switch 2 games so far) need no
         // keys, and a modal question blocked every unattended launch. Tools > Install Decryption
         // Keys still installs them.
-        LOG_WARNING(Frontend, "Decryption keys are missing: NCA, NSP and XCI games need them");
+        LOG_WARNING(Frontend, "Decryption keys are missing from {}: NCA, NSP and XCI games need them",
+                    Common::FS::PathToUTF8String(
+                        Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir)));
     } else if (!ContentManager::AreKeysPresent()) {
         const auto res = QtCommon::Frontend::Warning(
             tr("Derivation Components Missing"),

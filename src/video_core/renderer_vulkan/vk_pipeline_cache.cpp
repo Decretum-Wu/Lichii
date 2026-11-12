@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
@@ -15,22 +16,22 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <random>
 #include <span>
 #include <thread>
 #include <unordered_set>
 #include <vector>
-#include <bit>
-#include <numeric>
 #include "common/cityhash.h"
-#include "common/scope_exit.h"
+#include "common/fs/file_lock.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/memory_detect.h"
-#include "common/zstd_compression.h"
+#include "common/scope_exit.h"
 #include "common/thread.h"
 #include "common/thread_worker.h"
+#include "common/zstd_compression.h"
 #include "core/core.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
@@ -41,6 +42,7 @@
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
@@ -48,8 +50,8 @@
 #include "video_core/pipeline_cache_files.h"
 #include "video_core/renderer_vulkan/async_draw_policy.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
-#include "video_core/renderer_vulkan/mesh_fallback_limits.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
+#include "video_core/renderer_vulkan/mesh_fallback_limits.h"
 #include "video_core/renderer_vulkan/pipeline_eviction_policy.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_shader_emission.h"
@@ -74,7 +76,6 @@
 #include "video_core/surface.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
-#include "video_core/gpu_logging/gpu_logging.h"
 
 #ifdef __ANDROID__
 #include "../../android/app/src/main/jni/android_settings.h"
@@ -678,6 +679,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .max_per_stage_descriptor_sampled_images = device.GetMaxPerStageDescriptorSampledImages(),
         .max_per_stage_resources = device.GetMaxPerStageResources(),
         .max_per_stage_descriptor_storage_buffers = device.GetMaxPerStageDescriptorStorageBuffers(),
+        .max_per_stage_descriptor_samplers = device.GetMaxPerStageDescriptorSamplers(),
         .max_descriptor_set_samplers = device.GetMaxDescriptorSetSamplers(),
         .max_descriptor_set_uniform_buffers = device.GetMaxDescriptorSetUniformBuffers(),
         .max_descriptor_set_uniform_buffers_dynamic = device.GetMaxDescriptorSetUniformBuffersDynamic(),
@@ -699,8 +701,16 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_conditional_barrier = device.SupportsConditionalBarriers(),
         .single_lane_geometry_subgroups = !profile.SupportsSubgroupStage(Shader::Stage::Geometry),
         .support_byte_addressed_r16 = true,
+        // The arrays are indexed per invocation, which needs nonuniform indexing to be defined.
+        .support_handle_table_arrays = device.IsSampledImageArrayNonUniformIndexingSupported(),
     };
     host_info.ApplyDescriptorLimitPolicy();
+
+    LOG_INFO(Render_Vulkan,
+             "Bindless handle tables: sampled image arrays indexed per invocation {}, up to {} "
+             "sampled images per stage",
+             device.IsSampledImageArrayNonUniformIndexingSupported() ? "supported" : "unsupported",
+             device.GetMaxPerStageDescriptorSampledImages());
 
     if (device.GetMaxVertexInputAttributes() < Maxwell::NumVertexAttributes) {
         LOG_WARNING(Render_Vulkan, "maxVertexInputAttributes is too low: {} < {}",
@@ -1061,6 +1071,23 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     namespace CacheV2 = VideoCommon::ShaderCacheV2;
     pipeline_cache_filename = base_dir / CacheV2::FileName;
+    // Left by a boot load that never finished (a driver crash, abort or hang): this boot builds
+    // nothing from the cache. The lock is held for as long as the marker may be there, so while
+    // another emulator holds it, its load is running (or its crash dump is being written).
+    auto boot_marker = pipeline_cache_filename;
+    boot_marker += ".booting";
+    auto boot_lock_path = boot_marker;
+    boot_lock_path += ".lock";
+    const Common::FS::FileLock boot_lock{boot_lock_path};
+    const bool build_at_boot =
+        boot_lock.Held() ? !Common::FS::Exists(boot_marker) : !boot_lock.Busy();
+    if (boot_lock.Busy()) {
+        LOG_WARNING(Render_Vulkan, "Shader cache v2: another emulator is loading this title's "
+                                   "cache; building none at boot this time");
+    } else if (!build_at_boot) {
+        LOG_WARNING(Render_Vulkan, "Shader cache v2: the last boot ended while building cached "
+                                   "pipelines; building none at boot this time");
+    }
     const auto migration =
         MigrateLegacyPipelineCache(base_dir, pipeline_cache_filename, MaxUsedPipelineAge(device));
     if (migration.version) {
@@ -1073,6 +1100,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         LOG_WARNING(Render_Vulkan, "Couldn't start shader cache v2 from the older cache");
     }
     cache_v2 = std::make_unique<CacheV2::Cache>(pipeline_cache_filename);
+    if (!build_at_boot) {
+        cache_v2->KeepStalePrograms();
+    }
     shader_cache_v2 = cache_v2.get();
     pipeline_binaries = PipelineBinaries::Open(device, base_dir);
     // Without the lock: another emulator's appends are complete records or a cut-off tail.
@@ -1104,8 +1134,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     // With the shader precache this boot, the cached graphics pipelines skipped below are built
     // on the loading screen too, unless an earlier precache built them for this driver.
     namespace ShaderWarm = VideoCommon::ShaderWarm;
-    const bool precache = ShaderWarm::PrecacheBeforeStart(
-        Settings::values.precache_shaders.GetValue(), ShaderWarm::TakeWarmBeforeStart());
+    const bool precache =
+        ShaderWarm::PrecacheBeforeStart(Settings::values.precache_shaders.GetValue(),
+                                        ShaderWarm::TakeWarmBeforeStart()) &&
+        build_at_boot;
     std::unordered_set<u64> precached_pipelines;
     if (precache) {
         precached_pipelines = ShaderWarm::ReadPrecachedPipelines(
@@ -1125,8 +1157,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         vulkan_pipeline_cache =
             LoadVulkanPipelineCache(vulkan_pipeline_cache_filename, CACHE_VERSION);
     }
+    if (boot_lock.Held() && !Common::FS::NewFile(boot_marker)) {
+        LOG_WARNING(Common_Filesystem, "Couldn't create {}",
+                    Common::FS::PathToUTF8String(boot_marker));
+    }
     LoadPipelinesV2(title_id, std::move(log_v2), stop_loading, callback, load_begin, precache,
-                    std::move(precached_pipelines));
+                    std::move(precached_pipelines), build_at_boot);
+    if (boot_lock.Held()) {
+        Common::FS::RemoveFile(boot_marker);
+    }
 }
 
 bool PipelineCache::KeyFitsDevice(const GraphicsPipelineCacheKey& key) const {
@@ -1215,8 +1254,9 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                                     std::shared_ptr<const VideoCommon::ShaderCacheV2::LogFile> log,
                                     std::stop_token stop_loading,
                                     const VideoCore::DiskResourceLoadCallback& callback,
-                                    std::chrono::steady_clock::time_point load_begin,
-                                    bool precache, std::unordered_set<u64> precached_pipelines) {
+                                    std::chrono::steady_clock::time_point load_begin, bool precache,
+                                    std::unordered_set<u64> precached_pipelines,
+                                    bool build_at_boot) {
     namespace CacheV2 = VideoCommon::ShaderCacheV2;
     namespace StutterTrace = VideoCommon::StutterTrace;
     using CacheV2::RecordKind;
@@ -1303,7 +1343,7 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
     std::vector<CacheV2::LogAppend> relinked_appends;
     std::vector<CacheV2::LogRecord> relinked_records;
     std::unordered_set<u64> replaced_records;
-    if (!stale_programs.empty() && !stop_loading.stop_requested()) {
+    if (build_at_boot && !stale_programs.empty() && !stop_loading.stop_requested()) {
         const size_t stale_count = stale_programs.size();
         CacheV2::ForEach for_each = [&jobs](size_t count, const std::function<void(size_t)>& task) {
             VideoCommon::ParallelFor(jobs, count, task);
@@ -1383,6 +1423,9 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                 unreadable(record, "Compute pipeline record without a key");
                 continue;
             }
+            if (!build_at_boot) {
+                continue;
+            }
             compute_keys[*key].push_back(records.size());
             records.push_back(&record);
             continue;
@@ -1403,6 +1446,10 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
         }
         const u64 hash = key->Hash();
         if (!disk_pipelines.insert(hash).second) {
+            continue;
+        }
+        if (!build_at_boot) {
+            ++skipped_pipelines;
             continue;
         }
         const bool used = used_pipelines.empty() ? queued_graphics < MaxPipelinesWithoutUsedList
@@ -1845,7 +1892,8 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
 }
 
 void PipelineCache::QueueVulkanPipelineCacheFlush() {
-    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty()) {
+    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty() ||
+        !device.CanReadPipelineCacheDuringBuilds()) {
         return;
     }
     if (++pipelines_since_flush < VULKAN_CACHE_FLUSH_PIPELINES) {
@@ -1874,7 +1922,8 @@ void PipelineCache::QueueVulkanPipelineCacheFlush() {
 }
 
 void PipelineCache::QueueVulkanPipelineCacheSave() {
-    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty()) {
+    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty() ||
+        !device.CanReadPipelineCacheDuringBuilds()) {
         return;
     }
     // Not skipped when a timed flush is in flight: that one may have read the cache before the
@@ -2389,6 +2438,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             auto& program_va{programs[0]};
             auto program_vb{translate()};
             programs[index] = MergeDualVertexPrograms(program_va, program_vb, env, host_info);
+            // Each half fit its texture arrays to the stage limits on its own; joined, they are
+            // one stage.
+            Shader::Optimization::LimitSampledTextureArrays(programs[index], host_info);
         }
 
         if (device.GetDriverID() != VK_DRIVER_ID_NVIDIA_PROPRIETARY && Shader::Optimization::HasBrokenPattern(programs[index])) {
@@ -2403,6 +2455,22 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (programs[index].info.requires_layer_emulation) {
             layer_source_program = &programs[index];
         }
+    }
+    {
+        // Fit the set before mesh fallback chooses its auxiliary buffer bindings: cutting arrays
+        // can merge descriptors, so both their element counts and their binding counts can change.
+        std::array<Shader::IR::Program*, Maxwell::MaxShaderProgram> stages{};
+        size_t num_stages{};
+        for (size_t index = uses_vertex_a && uses_vertex_b ? 1 : 0;
+             index < Maxwell::MaxShaderProgram; ++index) {
+            const bool is_emulated_stage = layer_source_program != nullptr &&
+                                           index == static_cast<u32>(Maxwell::ShaderType::Geometry);
+            if (key.unique_hashes[index] != 0 || is_emulated_stage) {
+                stages[num_stages++] = &programs[index];
+            }
+        }
+        Shader::Optimization::LimitPipelineSampledTextureArrays(
+            std::span{stages.data(), num_stages}, host_info);
     }
     // Mesh emulation without VK_EXT_mesh_shader (prototype): a mesh program, after an optional
     // task program, drawing triangles without per-primitive outputs, before a pixel program only.
@@ -2432,13 +2500,17 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (!eligible) {
             return nullptr;
         }
-        // The output buffer's binding follows every program's (unified bindings, one per
-        // descriptor element, as the SPIR-V backend numbers them). The task and mesh programs
-        // share the compute stage, so their descriptors and the emulation's own buffers count
-        // against one set of per-stage limits.
+        // Task and mesh share the compute stage, including the fallback's storage buffers.
+        // Shrink their arrays before counting resources and assigning auxiliary bindings.
+        std::array<Shader::IR::Program*, 2> compute_programs{&programs[mesh_index], &programs[1]};
+        Shader::Optimization::LimitSharedStageSampledTextureArrays(
+            std::span{compute_programs.data(), has_task ? size_t{2} : size_t{1}}, host_info,
+            has_task ? 4U : 1U);
+        // Descriptor arrays occupy one binding, just as in DefineTextures and the layout builder.
         u32 output_binding{};
         u32 compute_storage_buffers{has_task ? 4U : 1U};
         u32 compute_sampled_images{};
+        u32 compute_samplers{};
         u32 compute_resources{compute_storage_buffers};
         for (size_t index = 1; index < Maxwell::MaxShaderProgram; ++index) {
             if (key.unique_hashes[index] == 0) {
@@ -2448,7 +2520,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             const bool emulated{index == mesh_index || (has_task && index == 1)};
             const auto add = [&](const auto& descriptors, u32* category) {
                 const u32 count{Shader::NumDescriptors(descriptors)};
-                output_binding += count;
+                output_binding += static_cast<u32>(descriptors.size());
                 if (emulated) {
                     compute_resources += count;
                     if (category) {
@@ -2462,14 +2534,20 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             add(info.image_buffer_descriptors, nullptr);
             add(info.texture_descriptors, &compute_sampled_images);
             add(info.image_descriptors, nullptr);
+            if (emulated) {
+                compute_samplers += Shader::NumDescriptors(info.texture_descriptors);
+            }
         }
         if (compute_storage_buffers > device.GetMaxPerStageDescriptorStorageBuffers() ||
             compute_sampled_images > device.GetMaxPerStageDescriptorSampledImages() ||
+            compute_samplers > device.GetMaxPerStageDescriptorSamplers() ||
             compute_resources > device.GetMaxPerStageResources()) {
-            LOG_WARNING(Render_Vulkan,
-                        "Mesh emulation skipped: {} storage buffers, {} sampled images and {} "
-                        "resources exceed the compute stage limits",
-                        compute_storage_buffers, compute_sampled_images, compute_resources);
+            LOG_WARNING(
+                Render_Vulkan,
+                "Mesh emulation skipped: {} storage buffers, {} sampled images, {} samplers "
+                "and {} resources exceed the compute stage limits",
+                compute_storage_buffers, compute_sampled_images, compute_samplers,
+                compute_resources);
             return nullptr;
         }
         mesh_emulation.emplace();
