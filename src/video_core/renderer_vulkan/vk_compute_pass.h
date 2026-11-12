@@ -97,7 +97,7 @@ public:
                                    ComputePassDescriptorQueue& compute_pass_descriptor_queue_);
 
     /// Writes the arguments of the three words at word `words` of `buffer` (`size` bytes) to
-    /// word `arguments`, after the transfer that wrote the words.
+    /// word `arguments`, after the transfer that wrote the words (verify mode reads them back).
     void Convert(VkBuffer buffer, VkDeviceSize size, u32 words, u32 arguments);
 
 private:

@@ -452,7 +452,7 @@ void ListGridArgumentsPass::Convert(VkBuffer buffer, VkDeviceSize size, u32 word
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+            .dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_HOST_READ_BIT,
         };
         const std::array<u32, 2> indices{words, arguments};
         const VkDescriptorSet set = descriptor_allocator.Commit();
@@ -465,7 +465,8 @@ void ListGridArgumentsPass::Convert(VkBuffer buffer, VkDeviceSize size, u32 word
         cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, indices);
         cmdbuf.Dispatch(1, 1, 1);
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                               VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, WRITE_BARRIER);
+                               VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                               WRITE_BARRIER);
     });
 }
 

@@ -325,8 +325,9 @@ public:
                        std::span<const u32> real);
     /// The keep id ending in `keep_bits` whose slot still holds its words.
     [[nodiscard]] std::optional<u64> FindKeptList(u32 keep_bits) const;
-    /// The kept words, after waiting for their copy. False if the slot holds another list.
-    [[nodiscard]] bool ReadKeptListWords(u64 keep_id, std::span<u32> words);
+    /// The kept words (or with `arguments`, the dispatch arguments made from them), after waiting
+    /// for their copy. False if the slot holds another list.
+    [[nodiscard]] bool ReadKeptListWords(u64 keep_id, std::span<u32> words, bool arguments = false);
     /// Verify mode: the kept list `keep_id`, if its words were also read the old way.
     [[nodiscard]] const ListKeep* KeptVerify(u64 keep_id) const;
     /// Records the copy of kept word `index` over the word at `offset` of `destination`.

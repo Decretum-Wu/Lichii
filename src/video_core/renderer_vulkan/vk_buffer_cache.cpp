@@ -698,14 +698,16 @@ std::optional<u64> BufferCacheRuntime::FindKeptList(u32 keep_bits) const {
     return keep.keep_id;
 }
 
-bool BufferCacheRuntime::ReadKeptListWords(u64 keep_id, std::span<u32> words) {
+bool BufferCacheRuntime::ReadKeptListWords(u64 keep_id, std::span<u32> words, bool arguments) {
     const ListKeep& keep = list_keeps[keep_id % LIST_KEEP_SLOTS];
     if (keep_id == 0 || keep.keep_id != keep_id || words.size() > 3) {
         return false;
     }
     scheduler.Wait(keep.tick);
     list_keep_buffer.Invalidate();
-    std::memcpy(words.data(), list_keep_buffer.Mapped().data() + ListKeepOffset(keep_id),
+    std::memcpy(words.data(),
+                list_keep_buffer.Mapped().data() + ListKeepOffset(keep_id) +
+                    (arguments ? LIST_KEEP_GRID : 0),
                 words.size_bytes());
     return true;
 }

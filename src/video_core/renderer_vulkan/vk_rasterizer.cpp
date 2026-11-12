@@ -2614,12 +2614,12 @@ std::optional<u64> RasterizerVulkan::Nx2FindKeptWord(DAddr device_addr, u32 mark
 
 void RasterizerVulkan::VerifyKeptGrid(u64 keep_id) {
     const auto* const keep = buffer_cache_runtime.KeptVerify(keep_id);
-    std::array<u32, 3> kept{};
-    if (keep == nullptr || !buffer_cache_runtime.ReadKeptListWords(keep_id, kept)) {
+    // The arguments the dispatch takes against what DispatchNativeCompute takes from the real
+    // words.
+    std::array<u32, 3> dispatched{};
+    if (keep == nullptr || !buffer_cache_runtime.ReadKeptListWords(keep_id, dispatched, true)) {
         return;
     }
-    // What the dispatch takes against what DispatchNativeCompute takes from the real words.
-    const std::array<u32, 3> dispatched{kept[0] & 0x7fffffff, kept[1] & 0xffff, kept[2] & 0xffff};
     const std::array<u32, 3> real{keep->real[0] & 0x7fffffff, keep->real[1] & 0xffff,
                                   keep->real[2] & 0xffff};
     Tegra::Nx2ListGrid::NoteVerify(
