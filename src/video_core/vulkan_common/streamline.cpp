@@ -825,13 +825,16 @@ VkSurfaceKHR CreateFrameGenSurface(VkInstance instance, void* window) {
 
 void DisableFrameGen(std::string_view reason) {
     State& state = GetState();
-    if (!state.frame_gen_available.exchange(false)) {
-        return;
-    }
-    // The function pointers stay: another thread may be past its FrameGenSession() check.
-    if (state.api.set_feature_loaded) {
+    {
+        // The DLSS-G calls check FrameGenSession() under this lock, so none runs once the flag
+        // is clear. The function pointers stay for the threads past an unlocked check.
         const auto lock = LockStreamline();
-        state.api.set_feature_loaded(sl::kFeatureDLSS_G, false);
+        if (!state.frame_gen_available.exchange(false)) {
+            return;
+        }
+        if (state.api.set_feature_loaded) {
+            state.api.set_feature_loaded(sl::kFeatureDLSS_G, false);
+        }
     }
     LOG_WARNING(Render_Vulkan, "NVIDIA DLSS Frame Generation is off: {}", reason);
     SetFrameGenReason(state, std::string{reason});

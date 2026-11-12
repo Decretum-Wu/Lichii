@@ -268,7 +268,9 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
 
     const bool nvidia_frame_gen = type == Settings::FrameGenType::NvidiaDlssG;
     if (unavailable || !Settings::values.frame_gen.GetValue() || nvidia_frame_gen) {
-        if (nvidia_frame_gen && Settings::values.frame_gen.GetValue()) {
+        if (!Settings::values.frame_gen.GetValue()) {
+            SetState(VideoCore::FrameGenState::Pending, format);
+        } else if (nvidia_frame_gen) {
             SetState(VideoCore::FrameGenState::NvidiaFrameGen, format);
         }
         if (chain || fsr3_chain) {

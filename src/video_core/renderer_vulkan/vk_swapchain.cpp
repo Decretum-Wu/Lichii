@@ -34,10 +34,20 @@ namespace Vulkan {
 
 namespace {
 
-/// Streamline's DLSS Frame Generation presents and paces the frames in this format.
+/// Streamline's DLSS Frame Generation presents and paces the frames in this format. Turning it
+/// on or off changes the present mode, which recreates the swapchain as NVIDIA asks.
 bool FrameGenPresents([[maybe_unused]] VkFormat format) {
 #ifdef EGLANTINE_STREAMLINE
-    return Streamline::FrameGenSession() && Streamline::FrameGenSupportsSwapchain(format);
+    return Streamline::FrameGenActive() && Streamline::FrameGenSupportsSwapchain(format);
+#else
+    return false;
+#endif
+}
+
+/// DLSS-G is loaded, so Streamline makes the swapchains, whether or not it generates frames.
+bool FrameGenLoaded() {
+#ifdef EGLANTINE_STREAMLINE
+    return Streamline::FrameGenSession();
 #else
     return false;
 #endif
@@ -452,7 +462,7 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
     } catch ([[maybe_unused]] const vk::Exception& exception) {
         // A lost surface or a window still in use is transient: the present loop retries those.
         const VkResult result = exception.GetResult();
-        if (!FrameGenPresents(surface_format.format) || result == VK_ERROR_SURFACE_LOST_KHR ||
+        if (!FrameGenLoaded() || result == VK_ERROR_SURFACE_LOST_KHR ||
             result == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) {
             throw;
         }

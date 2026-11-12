@@ -500,10 +500,10 @@ void FrameGenNextFrame() {
 }
 
 void FrameGenBeforePresent(const FrameGenPresent& present) {
+    const auto lock = LockStreamline();
     if (!FrameGenSession()) {
         return;
     }
-    const auto lock = LockStreamline();
     PresentState& state = Presents();
     UpdateMode(state, present);
 
@@ -546,11 +546,11 @@ void FrameGenBeforePresent(const FrameGenPresent& present) {
 }
 
 void FrameGenAfterPresent(u32 index) {
+    const auto lock = LockStreamline();
     if (!FrameGenSession()) {
         return;
     }
     const Api& api = GetApi();
-    const auto lock = LockStreamline();
     PresentState& state = Presents();
     if (sl::FrameToken* const token = TokenFor(index)) {
         SetMarker(sl::PCLMarker::ePresentEnd, *token);
@@ -611,10 +611,10 @@ void FrameGenAfterPresent(u32 index) {
 }
 
 void FrameGenClosePresent(u32 index) {
+    const auto lock = LockStreamline();
     if (!FrameGenSession()) {
         return;
     }
-    const auto lock = LockStreamline();
     PresentState& state = Presents();
     if (state.closed_present == index) {
         return;
@@ -644,10 +644,10 @@ u32 FrameGenGenerated() {
 }
 
 void FrameGenSuspend() {
+    const auto lock = LockStreamline();
     if (!FrameGenSession()) {
         return;
     }
-    const auto lock = LockStreamline();
     PresentState& state = Presents();
     state.with_inputs = 0;
     if (!state.on) {

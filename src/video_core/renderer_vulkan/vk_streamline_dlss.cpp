@@ -656,10 +656,8 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
         };
         sl::Result api_result = sl::Result::eOk;
-        std::unique_lock<std::mutex> tokens;
-        if (frame_gen) {
-            tokens = Streamline::LockStreamline();
-        }
+        // Also without DLSS-G: DisableFrameGen may unload it on the present thread meanwhile.
+        const auto lock = Streamline::LockStreamline();
         const auto result = VideoCommon::RecordDlssEvaluation(
             [&] {
                 if (!options_changed) {
