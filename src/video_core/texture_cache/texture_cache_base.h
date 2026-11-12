@@ -15,6 +15,7 @@
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <utility>
 // TODO: find out which don't require stable iters
 #include <unordered_map>
 #include "video_core/page_filter.h"
@@ -348,6 +349,19 @@ public:
         return render_targets;
     }
 
+    /// Images created, deleted and created from overlapping ones (joins), invalidations of every
+    /// channel's TIC tables, and TIC or TSC tables moved, since the last call.
+    struct Churn {
+        u64 created{};
+        u64 deleted{};
+        u64 joins{};
+        u64 invalidations{};
+        u64 refreshes{};
+    };
+    Churn TakeChurn() noexcept {
+        return std::exchange(churn, {});
+    }
+
     /// Mark images in a range as modified from the CPU
     void WriteMemory(DAddr cpu_addr, size_t size);
 
@@ -627,6 +641,7 @@ private:
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};
     u64 texture_bindings_serial = 0;
+    Churn churn;
     u64 last_feedback_loop_serial = 0;
     u64 last_feedback_texture_serial = 0;
     bool last_feedback_loop_result = false;

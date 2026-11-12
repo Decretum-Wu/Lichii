@@ -2031,7 +2031,16 @@ private:
             frames_ahead = 1;
         }
         const auto entered = std::chrono::steady_clock::now();
-        if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
+        static const bool fence_trace = [] {
+            const char* value = std::getenv("EDEN_NX2_PRESENT_FENCE_TRACE");
+            return value != nullptr && value[0] == '1';
+        }();
+        std::shared_ptr<TracedPresent> traced;
+        if (fence_trace) {
+            traced = TracePresentFence(~w[22], w[24], entered);
+        }
+        const bool auto_reached = frames_ahead == -1 && WaitForFrame(~w[22], w[24], true);
+        if (frames_ahead == 1 || (frames_ahead == -1 && !auto_reached)) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
                       ~w[22] < 192 ? system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(~w[22]) : 0U);
@@ -2059,6 +2068,9 @@ private:
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank(w[12], ctx.GetThread().GetOwnerProcess());
         const auto paced = std::chrono::steady_clock::now();
+        if (traced) {
+            FinishPresentFence(*traced, frames_ahead == -1 && !auto_reached, paced);
+        }
         if (Common::DkbFrameTrace::Enabled()) {
             const auto ms = [](auto duration) {
                 return std::chrono::duration<double, std::milli>(duration).count();
@@ -2156,6 +2168,124 @@ private:
         double target_ms{}, sleep_requested_ms{}, sleep_actual_ms{};
         bool deadline_reset{};
     } m_frame_trace;
+
+    /// EDEN_NX2_PRESENT_FENCE_TRACE: a present's fence from the present's entry until the GPU
+    /// thread reaches it. The guest action that notes it keeps it alive.
+    struct TracedPresent {
+        u8 kind{};
+        std::chrono::steady_clock::time_point entered{}, returned{};
+        std::atomic<std::chrono::steady_clock::rep> reached{}; ///< 0 until reached
+    };
+    struct FenceTrace {
+        /// At the present's entry: the fence is reached; the guest has submitted the increment
+        /// that reaches it (nvdrv's syncpoint max is at or past it); it has not; nvdrv has no such
+        /// syncpoint; the present has no fence.
+        enum Kind : u8 { Reached, Submitted, Beyond, Unallocated, NoFence, Count };
+        std::deque<std::shared_ptr<TracedPresent>> pending;
+        std::array<u32, Kind::Count> presents{}, suspended{}, gave_up{}, timed{};
+        std::array<double, Kind::Count> total_ms{}, max_ms{};
+        double after_return_ms{};
+        u32 after_return{};
+        u32 window{};
+        u32 last_id{}, last_value{}, last_guest{}, last_max{};
+    } m_fence_trace;
+
+    std::shared_ptr<TracedPresent> TracePresentFence(u32 fence_id, u32 fence_value,
+                                                     std::chrono::steady_clock::time_point entered) {
+        using Clock = std::chrono::steady_clock;
+        using Kind = FenceTrace::Kind;
+        auto& trace = m_fence_trace;
+        const auto ms = [](Clock::duration duration) {
+            return std::chrono::duration<double, std::milli>(duration).count();
+        };
+        // Earlier presents whose fence was reached since.
+        std::erase_if(trace.pending, [&](const std::shared_ptr<TracedPresent>& present) {
+            const auto reached = present->reached.load(std::memory_order_acquire);
+            if (reached == 0) {
+                return false;
+            }
+            const Clock::time_point reached_at{Clock::duration{reached}};
+            const double wait_ms = ms(reached_at - present->entered);
+            ++trace.timed[present->kind];
+            trace.total_ms[present->kind] += wait_ms;
+            trace.max_ms[present->kind] = (std::max)(trace.max_ms[present->kind], wait_ms);
+            if (reached_at > present->returned) {
+                trace.after_return_ms += ms(reached_at - present->returned);
+                ++trace.after_return;
+            }
+            return true;
+        });
+        auto present = std::make_shared<TracedPresent>();
+        present->entered = entered;
+        Kind kind = Kind::NoFence;
+        if (fence_id < 192) {
+            auto& syncpoints = system.Host1x().GetSyncpointManager();
+            auto& nvdrv = system.ServiceManager()
+                              .GetService<Nvidia::NVDRV>("nvdrv", true)
+                              ->GetModule()
+                              ->GetContainer()
+                              .GetSyncpointManager();
+            const bool allocated = nvdrv.IsSyncpointAllocated(fence_id);
+            const u32 submitted = allocated ? nvdrv.PeekSyncpointMaxValue(fence_id) : 0;
+            if (syncpoints.IsReadyGuest(fence_id, fence_value)) {
+                kind = Kind::Reached;
+            } else if (!allocated) {
+                kind = Kind::Unallocated;
+            } else {
+                kind = static_cast<s32>(fence_value - submitted) <= 0 ? Kind::Submitted
+                                                                       : Kind::Beyond;
+            }
+            trace.last_id = fence_id;
+            trace.last_value = fence_value;
+            trace.last_guest = syncpoints.GetGuestSyncpointValue(fence_id);
+            trace.last_max = submitted;
+            if (kind != Kind::Reached) {
+                syncpoints.RegisterGuestAction(fence_id, fence_value, [present] {
+                    present->reached.store(Clock::now().time_since_epoch().count(),
+                                           std::memory_order_release);
+                });
+                trace.pending.push_back(present);
+                if (trace.pending.size() > 64) {
+                    trace.pending.pop_front();
+                }
+            }
+        }
+        present->kind = kind;
+        ++trace.presents[kind];
+        trace.suspended[kind] += system.GPU().HasSuspendedChannels() ? 1 : 0;
+        return present;
+    }
+
+    void FinishPresentFence(TracedPresent& present, bool gave_up,
+                            std::chrono::steady_clock::time_point returned) {
+        using Kind = FenceTrace::Kind;
+        auto& trace = m_fence_trace;
+        present.returned = returned;
+        trace.gave_up[present.kind] += gave_up ? 1 : 0;
+        if (++trace.window < 600) {
+            return;
+        }
+        static constexpr std::array<const char*, Kind::Count> names{
+            "reached at entry", "submitted", "beyond submitted", "not allocated in nvdrv",
+            "no fence"};
+        std::string kinds;
+        for (size_t i = 0; i < Kind::Count; ++i) {
+            kinds += fmt::format(
+                "{} {} {} ({} with a suspended channel, {} auto waits gave up, reached in {:.2f} "
+                "ms mean, {:.2f} max over {})",
+                i == 0 ? "" : ",", names[i], trace.presents[i], trace.suspended[i],
+                trace.gave_up[i], trace.timed[i] == 0 ? 0.0 : trace.total_ms[i] / trace.timed[i],
+                trace.max_ms[i], trace.timed[i]);
+        }
+        LOG_INFO(Service,
+                 "nx2:vi2 present fences, last 600 presents:{}; reached after the present "
+                 "returned: {} presents, {:.2f} ms mean; last fence ({}, {:#x}) guest {:#x} nvdrv "
+                 "max {:#x}",
+                 kinds, trace.after_return,
+                 trace.after_return == 0 ? 0.0 : trace.after_return_ms / trace.after_return,
+                 trace.last_id, trace.last_value, trace.last_guest, trace.last_max);
+        trace = {.pending = std::move(trace.pending)};
+    }
 
     /**
      * Holds this present until the next vblank its word asks for, or for longer when an FPS limit

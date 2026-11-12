@@ -10,11 +10,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "common/thread_worker.h"
@@ -78,6 +80,16 @@ class RescalingPushConstant;
 class RenderAreaPushConstant;
 class Scheduler;
 
+/// EDEN_NX2_DRAW_REUSE_PROBE=1: how many draws repeat the previous frame's slowly changing state,
+/// and what preparing them costs (RasterizerVulkan::NoteDrawReuse).
+inline bool DrawReuseProbeEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_DRAW_REUSE_PROBE");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
 /// Mesh emulation on a device without VK_EXT_mesh_shader: the mesh program (stage 0) is built as
 /// a compute shader that writes its output to a storage buffer, and this vertex shader draws it
 /// (see Shader::Backend::SPIRV::EmitMeshEmulationVertex).
@@ -132,6 +144,8 @@ public:
         std::optional<MeshEmulationSetup> mesh_emulation = std::nullopt);
 
     static std::chrono::nanoseconds TakeHoldTime() noexcept;
+    /// Draws resolved from the texture memo and in full since the last call.
+    static std::pair<u64, u64> TakeTextureMemoCounts() noexcept;
 
     bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }
     const std::array<u64, 6>& ShaderHashes() const noexcept {
@@ -145,7 +159,8 @@ public:
         VideoCommon::SamplerId sampler;
     };
 
-    /// The sampled textures of the last configured draw, kept while a sampled frame dump runs.
+    /// The sampled textures of the last configured draw, kept while a sampled frame dump or the
+    /// draw reuse probe runs.
     std::span<const SampledImage> SampledImages() const noexcept {
         return sampled_images;
     }
