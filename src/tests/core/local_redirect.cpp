@@ -134,7 +134,7 @@ TEST_CASE("LocalRedirect: host names map to the user's server", "[core]") {
         Network::GetAddressInfo("c.example", std::nullopt)));
     REQUIRE(std::holds_alternative<Network::GetAddrInfoError>(
         Network::GetAddressInfo("192.0.2.7", std::nullopt)));
-    for (const char* name : {"localhost", "127.0.0.1"}) {
+    for (const char* name : {"localhost", "LOCALHOST.", "127.0.0.1"}) {
         const auto local = Network::GetAddressInfo(name, std::nullopt);
         REQUIRE(std::holds_alternative<std::vector<Network::AddrInfo>>(local));
         for (const auto& info : std::get<std::vector<Network::AddrInfo>>(local)) {

@@ -804,7 +804,8 @@ std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(
     std::string lookup = host;
     if (loopback_only) {
         hints.ai_flags = AI_NUMERICHOST;
-        if (Common::ToLower(lookup) == "localhost") {
+        if (const std::string name = Common::ToLower(lookup);
+            name == "localhost" || name == "localhost.") {
             lookup = "127.0.0.1";
         }
     }
