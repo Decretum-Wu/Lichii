@@ -823,7 +823,7 @@ std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(
     if (LocalRedirect::LoopbackOnly()) {
         std::erase_if(ret, [](const AddrInfo& info) { return !LocalRedirect::Allowed(info.addr); });
         if (ret.empty()) {
-            LOG_DEBUG(Network, "Local redirect: lookup of {} blocked (loopback only)", host);
+            LOG_DEBUG(Network, "Host redirect: lookup of {} blocked (loopback only)", host);
             return GetAddrInfoError::NONAME;
         }
     }
@@ -971,11 +971,11 @@ std::pair<SocketBase::AcceptResult, Errno> Socket::Accept() {
 Errno Socket::Connect(SockAddrIn addr_in) {
     // The guest's own address decides; the configured server it may then go to is the user's.
     if (!LocalRedirect::Allowed(addr_in)) {
-        LOG_DEBUG(Network, "Local redirect: connection to {}.{}.{}.{}:{} refused (loopback only)",
+        LOG_DEBUG(Network, "Host redirect: connection to {}.{}.{}.{}:{} refused (loopback only)",
                   addr_in.ip[0], addr_in.ip[1], addr_in.ip[2], addr_in.ip[3], addr_in.portno);
         return Errno::CONNREFUSED;
     }
-    // EDEN_NX2_ONLINE_SERVER stands in for TCP servers only.
+    // The redirect's server stands in for TCP servers only.
     if (socket_type == Type::STREAM) {
         addr_in = LocalRedirect::ConnectTarget(addr_in);
     }

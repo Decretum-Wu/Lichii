@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <mutex>
+#include <vector>
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -118,39 +119,44 @@ inline void LoadCaCertStore(SSL_CTX* ctx, const char* ca_cert, std::size_t size)
 }
 #endif
 
-/// The roots a connection verifies against while the custom servers' CA (EDEN_NX2_ONLINE_CA) is
-/// trusted: the usual ones plus that CA. Built once, the first time it is wanted. Connections
-/// get it through SSL_set1_verify_cert_store, so the CA follows the setting each time a game
-/// starts and is never added to the context's own store. Null when the CA can't be loaded
-/// (logged once): connections then verify against the context's store alone.
-X509_STORE* TestCaStore() {
-    static std::once_flag once;
+/// The roots a connection verifies against while the host redirect's CA (online_redirect_ca) is
+/// trusted: the usual ones plus that CA. Built the first time a connection wants it after the CA
+/// changed. Connections get it through SSL_set1_verify_cert_store, which keeps a reference, so
+/// the CA follows the setting each time a game starts and is never added to the context's own
+/// store. Null when the CA can't be loaded (logged once per CA): connections then verify against
+/// the context's store alone.
+X509_STORE* TestCaStore(const std::vector<u8>& der_data) {
+    static std::mutex mutex;
+    static std::vector<u8> built_for;
     static X509_STORE* store = nullptr;
-    std::call_once(once, [] {
-        // The same roots as the context's store (OneTimeInit).
+    std::scoped_lock lock{mutex};
+    if (der_data == built_for) {
+        return store;
+    }
+    X509_STORE_free(store);
+    store = nullptr;
+    built_for = der_data;
+    // The same roots as the context's store (OneTimeInit).
 #ifdef YUZU_BUNDLED_OPENSSL
-        X509_STORE* roots = CreateCaCertStore(kCert, sizeof(kCert));
+    X509_STORE* roots = CreateCaCertStore(kCert, sizeof(kCert));
 #else
-        X509_STORE* roots = X509_STORE_new();
+    X509_STORE* roots = X509_STORE_new();
 #endif
-        if (roots != nullptr && X509_STORE_set_default_paths(roots) != 1) {
-            X509_STORE_free(roots);
-            roots = nullptr;
-        }
-        const auto der_data = Network::LocalRedirect::TestCa();
-        const unsigned char* der = der_data.data();
-        X509* const ca = d2i_X509(nullptr, &der, static_cast<long>(der_data.size()));
-        if (roots != nullptr && ca != nullptr && X509_STORE_add_cert(roots, ca) == 1) {
-            store = roots;
-            LOG_INFO(Service_SSL, "Trusting the custom servers' CA (EDEN_NX2_ONLINE_CA)");
-        } else {
-            X509_STORE_free(roots);
-            LOG_ERROR(Service_SSL,
-                      "The custom servers' CA (EDEN_NX2_ONLINE_CA) could not be loaded; ignored");
-            CheckOpenSSLErrors();
-        }
-        X509_free(ca);
-    });
+    if (roots != nullptr && X509_STORE_set_default_paths(roots) != 1) {
+        X509_STORE_free(roots);
+        roots = nullptr;
+    }
+    const unsigned char* der = der_data.data();
+    X509* const ca = d2i_X509(nullptr, &der, static_cast<long>(der_data.size()));
+    if (roots != nullptr && ca != nullptr && X509_STORE_add_cert(roots, ca) == 1) {
+        store = roots;
+        LOG_INFO(Service_SSL, "Trusting the host redirect's CA certificate");
+    } else {
+        X509_STORE_free(roots);
+        LOG_ERROR(Service_SSL, "The host redirect's CA certificate could not be loaded; ignored");
+        CheckOpenSSLErrors();
+    }
+    X509_free(ca);
     return store;
 }
 
@@ -173,10 +179,10 @@ public:
             return CheckOpenSSLErrors();
         }
 
-        // Empty unless "Redirect online services to custom servers" is ticked. A CA that can't
-        // be loaded is ignored: the context's store then verifies the connection.
-        if (!Network::LocalRedirect::TestCa().empty()) {
-            X509_STORE* const store = TestCaStore();
+        // Empty unless the host redirect is on with a CA. A CA that can't be loaded is ignored:
+        // the context's store then verifies the connection.
+        if (const auto test_ca = Network::LocalRedirect::TestCa(); !test_ca.empty()) {
+            X509_STORE* const store = TestCaStore(test_ca);
             if (store != nullptr && SSL_set1_verify_cert_store(ssl, store) != 1) {
                 LOG_ERROR(Service_SSL, "SSL_set1_verify_cert_store failed");
                 return CheckOpenSSLErrors();

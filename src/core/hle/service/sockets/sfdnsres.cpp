@@ -101,7 +101,7 @@ static const constexpr std::array blockedDomains = {
 
 static bool IsBlockedHost(const std::string& host) {
     if (Network::LocalRedirect::Matches(host)) {
-        return false; // Sent to the custom servers (EDEN_NX2_ONLINE_HOSTS).
+        return false; // Sent to the user's server (online_redirect_hosts).
     }
     return std::any_of(
         blockedDomains.begin(), blockedDomains.end(),

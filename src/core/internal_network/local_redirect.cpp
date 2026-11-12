@@ -4,11 +4,15 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
-#include <cstdlib>
+#include <filesystem>
 #include <fstream>
-#include <initializer_list>
+#include <memory>
 #include <mutex>
 
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/internal_network/local_redirect.h"
@@ -62,111 +66,90 @@ std::optional<SockAddrIn> ParseServer(std::string_view text) {
     return SockAddrIn{Domain::INET, ip, *port};
 }
 
+std::vector<u8> ReadCa(const std::string& path) {
+    // Certificates are a few KiB: anything past the limit isn't one, and isn't read.
+    constexpr std::streamsize MaxCaBytes = 64 * 1024;
+    std::vector<u8> der(MaxCaBytes + 1);
+    std::ifstream file{std::filesystem::path{Common::FS::ToU8String(path)}, std::ios::binary};
+    file.read(reinterpret_cast<char*>(der.data()), MaxCaBytes + 1);
+    der.resize(static_cast<size_t>(file.gcount()));
+    // A DER certificate is an ASN.1 SEQUENCE; a PEM file or a missing one is not.
+    if (der.empty() || der.size() > MaxCaBytes || der.front() != 0x30) {
+        LOG_WARNING(Network,
+                    "Host redirect: the CA certificate is not a DER certificate of at most 64 KiB; "
+                    "ignored");
+        return {};
+    }
+    return der;
+}
+
 struct Config {
     std::vector<std::string> hosts;
     std::optional<SockAddrIn> server;
     bool loopback_only{};
     std::vector<u8> test_ca;
-
-    struct Empty {};
-    explicit Config(Empty) {}
-
-    [[nodiscard]] bool Any() const {
-        return !hosts.empty() || server || loopback_only || !test_ca.empty();
-    }
-
-    Config() {
-        if (const char* list = std::getenv("EDEN_NX2_ONLINE_HOSTS")) {
-            std::string_view rest{list};
-            while (!rest.empty()) {
-                const size_t comma = rest.find(',');
-                std::string host = Normalize(rest.substr(0, comma));
-                if (!host.empty()) {
-                    hosts.push_back(std::move(host));
-                }
-                rest =
-                    comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
-            }
-        }
-        if (const char* text = std::getenv("EDEN_NX2_ONLINE_SERVER"); text && *text) {
-            server = ParseServer(text);
-            if (!server) {
-                LOG_WARNING(Network, "EDEN_NX2_ONLINE_SERVER={} is not <ip>:<port>; ignored", text);
-            }
-        }
-        const char* loopback = std::getenv("EDEN_NX2_LOOPBACK_ONLY");
-        loopback_only = loopback != nullptr && loopback[0] != '\0' && loopback[0] != '0';
-        if (const char* path = std::getenv("EDEN_NX2_ONLINE_CA"); path && *path) {
-            // Certificates are a few KiB: anything past the limit isn't one, and isn't read.
-            constexpr std::streamsize MaxCaBytes = 64 * 1024;
-            std::ifstream file{path, std::ios::binary};
-            test_ca.resize(MaxCaBytes + 1);
-            file.read(reinterpret_cast<char*>(test_ca.data()), MaxCaBytes + 1);
-            test_ca.resize(static_cast<size_t>(file.gcount()));
-            // A DER certificate is an ASN.1 SEQUENCE; a PEM file or a missing one is not.
-            if (test_ca.empty() || test_ca.size() > MaxCaBytes || test_ca.front() != 0x30) {
-                LOG_WARNING(Network,
-                            "EDEN_NX2_ONLINE_CA={}: not a DER certificate of at most 64 KiB; "
-                            "ignored",
-                            path);
-                test_ca.clear();
-            }
-        }
-        if (Any()) {
-            LOG_INFO(Network,
-                     "Local redirect: {} host names, server {}, loopback only {}, test CA {} bytes",
-                     hosts.size(), server ? "set" : "unset", loopback_only, test_ca.size());
-        }
-    }
 };
 
-const Config& Configured() {
-    static const Config config;
-    return config;
-}
+std::mutex config_mutex;
+std::shared_ptr<const Config> current_config = std::make_shared<const Config>();
 
-/// Whether any of the variables is set, without reading what they name.
-bool AnyVariableSet() {
-    for (const char* name : {"EDEN_NX2_ONLINE_HOSTS", "EDEN_NX2_ONLINE_SERVER",
-                             "EDEN_NX2_LOOPBACK_ONLY", "EDEN_NX2_ONLINE_CA"}) {
-        if (const char* value = std::getenv(name); value != nullptr && *value != '\0') {
-            return true;
-        }
-    }
-    return false;
-}
-
-/// The environment's settings while "Redirect online services to custom servers" is ticked,
-/// else none. They are read (and the CA file loaded) only once the setting is first on.
-const Config& Get() {
-    if (Settings::values.online_service_redirect.GetValue()) {
-        return Configured();
-    }
-    static const Config none{Config::Empty{}};
-    static std::once_flag hinted;
-    std::call_once(hinted, [] {
-        if (AnyVariableSet()) {
-            LOG_WARNING(Network, "Local redirect: EDEN_NX2_ONLINE_* or EDEN_NX2_LOOPBACK_ONLY is "
-                                 "set, but \"Redirect online services to custom servers\" is "
-                                 "off in Configure > Network; ignored");
-        }
-    });
-    return none;
+std::shared_ptr<const Config> Get() {
+    std::scoped_lock lock{config_mutex};
+    return current_config;
 }
 
 bool IsLoopback(const SockAddrIn& address) {
     return address.ip[0] == 127;
 }
 
+std::string AddressToString(const SockAddrIn& address) {
+    return fmt::format("{}.{}.{}.{}:{}", address.ip[0], address.ip[1], address.ip[2],
+                       address.ip[3], address.portno);
+}
+
 } // Anonymous namespace
 
+void Configure() {
+    auto config = std::make_shared<Config>();
+    if (Settings::values.online_service_redirect.GetValue()) {
+        std::string_view rest{Settings::values.online_redirect_hosts.GetValue()};
+        while (!rest.empty()) {
+            const size_t comma = rest.find(',');
+            std::string host = Normalize(rest.substr(0, comma));
+            if (!host.empty()) {
+                config->hosts.push_back(std::move(host));
+            }
+            rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+        }
+        if (const auto& text = Settings::values.online_redirect_server.GetValue(); !text.empty()) {
+            config->server = ParseServer(text);
+            if (!config->server) {
+                LOG_WARNING(Network, "Host redirect: server address {} is not <ip>:<port>; ignored",
+                            text);
+            }
+        }
+        config->loopback_only = Settings::values.online_redirect_loopback_only.GetValue();
+        if (const auto& path = Settings::values.online_redirect_ca.GetValue(); !path.empty()) {
+            config->test_ca = ReadCa(path);
+        }
+        LOG_INFO(Network,
+                 "Host redirect on: {} (and subdomains) -> 127.0.0.1; TCP 127.0.0.1:443 -> {}; "
+                 "loopback only {}; extra CA certificate {} bytes",
+                 config->hosts.empty() ? "no host names" : fmt::format("{}", fmt::join(config->hosts, ", ")),
+                 config->server ? AddressToString(*config->server) : "unchanged",
+                 config->loopback_only, config->test_ca.size());
+    }
+    std::scoped_lock lock{config_mutex};
+    current_config = std::move(config);
+}
+
 bool Matches(std::string_view host) {
-    const auto& hosts = Get().hosts;
-    if (hosts.empty()) {
+    const auto config = Get();
+    if (config->hosts.empty()) {
         return false;
     }
     const std::string name = Normalize(host);
-    return std::ranges::any_of(hosts, [&](const std::string& entry) {
+    return std::ranges::any_of(config->hosts, [&](const std::string& entry) {
         return name == entry || (name.size() > entry.size() && name.ends_with(entry) &&
                                  name[name.size() - entry.size() - 1] == '.');
     });
@@ -187,7 +170,7 @@ std::optional<std::vector<AddrInfo>> Resolve(std::string_view host,
             port = ParsePort(*service).value_or(0);
         }
     }
-    LOG_INFO(Network, "Local redirect: {} resolves to 127.0.0.1", host);
+    LOG_INFO(Network, "Host redirect: {} resolves to 127.0.0.1", host);
     return std::vector<AddrInfo>{AddrInfo{
         .family = Domain::INET,
         .socket_type = Type::STREAM,
@@ -198,25 +181,24 @@ std::optional<std::vector<AddrInfo>> Resolve(std::string_view host,
 }
 
 SockAddrIn ConnectTarget(const SockAddrIn& address) {
-    const auto& server = Get().server;
-    if (!server || address.ip != IPv4Address{127, 0, 0, 1} || address.portno != 443) {
+    const auto config = Get();
+    if (!config->server || address.ip != IPv4Address{127, 0, 0, 1} || address.portno != 443) {
         return address;
     }
-    LOG_DEBUG(Network, "Local redirect: 127.0.0.1:443 -> {}.{}.{}.{}:{}", server->ip[0],
-              server->ip[1], server->ip[2], server->ip[3], server->portno);
-    return *server;
+    LOG_DEBUG(Network, "Host redirect: 127.0.0.1:443 -> {}", AddressToString(*config->server));
+    return *config->server;
 }
 
 bool Allowed(const SockAddrIn& address) {
-    return !Get().loopback_only || IsLoopback(address);
+    return !Get()->loopback_only || IsLoopback(address);
 }
 
 bool LoopbackOnly() {
-    return Get().loopback_only;
+    return Get()->loopback_only;
 }
 
-std::span<const u8> TestCa() {
-    return Get().test_ca;
+std::vector<u8> TestCa() {
+    return Get()->test_ca;
 }
 
 } // namespace Network::LocalRedirect
