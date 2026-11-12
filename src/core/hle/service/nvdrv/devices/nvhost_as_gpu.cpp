@@ -264,31 +264,28 @@ void nvhost_as_gpu::Nx2Unmap(u64 gpu_address, u64 size) {
 
 void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
     std::scoped_lock lock(mutex);
-    const auto it = nx2_device_ranges.find({cpu_address, size});
-    if (it == nx2_device_ranges.end()) {
-        return;
-    }
-    const Nx2DeviceRange range = it->second;
-    nx2_device_ranges.erase(it);
-    if (range.shared &&
-        !Nx2GpuMemoryRegistry::Get().ReleaseDeviceRange(range.asid, cpu_address, size)) {
-        return; // another address space of the process still maps it
-    }
     auto* session = container.GetSession(nx2_session);
-    auto* const mapper = range.heap && session != nullptr ? session->mapper.get() : nullptr;
     auto& smmu = system.Host1x().MemoryManager();
-    // Queued after the GPU unmaps of the range, so the GPU thread is done with it.
-    system.GPU().RunInOrder([&smmu, mapper, range, cpu_address, size] {
-        if (range.heap) {
-            if (mapper != nullptr) {
-                mapper->Unmap(cpu_address, size);
-            }
-            return;
+    Nx2EraseContainedRanges(nx2_device_ranges, cpu_address, size, [&](u64 range_cpu, u64 range_size,
+                                                                      const Nx2DeviceRange& range) {
+        if (range.shared &&
+            !Nx2GpuMemoryRegistry::Get().ReleaseDeviceRange(range.asid, range_cpu, range_size)) {
+            return; // another address space of the process still maps it
         }
-        smmu.Unmap(range.address, size);
-        smmu.Free(range.address, Common::AlignUp(size, 0x20000));
+        auto* const mapper = range.heap && session != nullptr ? session->mapper.get() : nullptr;
+        // Queued after the GPU unmaps of the range, so the GPU thread is done with it.
+        system.GPU().RunInOrder([&smmu, mapper, range, range_cpu, range_size] {
+            if (range.heap) {
+                if (mapper != nullptr) {
+                    mapper->Unmap(range_cpu, range_size);
+                }
+                return;
+            }
+            smmu.Unmap(range.address, range_size);
+            smmu.Free(range.address, Common::AlignUp(range_size, 0x20000));
+        });
+        LOG_DEBUG(Service_NVDRV, "Switch 2 released backing {:#x}+{:#x}", range_cpu, range_size);
     });
-    LOG_DEBUG(Service_NVDRV, "Switch 2 released backing {:#x}+{:#x}", cpu_address, size);
 }
 
 void nvhost_as_gpu::Nx2Sparse(u64 gpu_address, u64 size, bool create) {
