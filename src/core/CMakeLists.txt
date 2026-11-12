@@ -1165,6 +1165,8 @@ add_library(core STATIC
     hle/service/wlan/wlan.h
     internal_network/emu_net_state.cpp
     internal_network/emu_net_state.h
+    internal_network/local_redirect.cpp
+    internal_network/local_redirect.h
     internal_network/network.cpp
     internal_network/network.h
     internal_network/network_interface.cpp

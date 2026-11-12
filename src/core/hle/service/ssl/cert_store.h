@@ -7,7 +7,9 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "core/hle/result.h"
@@ -40,6 +42,10 @@ private:
     };
 
     std::map<CaCertificateId, Certificate> m_certs;
+    /// The launcher's test CA (EDEN_NX2_ONLINE_CA), under an id no system certificate uses. It
+    /// is in every list the store hands out: titles that run TLS in-process build their trust
+    /// store from these lists, whatever ids they ask for.
+    std::optional<std::pair<const CaCertificateId, Certificate>> m_test_ca;
 };
 
 } // namespace Service::SSL

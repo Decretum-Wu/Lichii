@@ -18,6 +18,7 @@
 
 #include "core/hle/service/sockets/nextendo_redirect.h"
 #include "core/hle/service/ssl/ssl_backend.h"
+#include "core/internal_network/local_redirect.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/sockets.h"
 
@@ -477,6 +478,21 @@ void OneTimeInit() {
         LOG_ERROR(Service_SSL, "SSL_CTX_set_default_verify_paths failed");
         CheckOpenSSLErrors();
         return;
+    }
+
+    // The launcher's test CA (EDEN_NX2_ONLINE_CA) next to the system's.
+    if (const auto test_ca = Network::LocalRedirect::TestCa(); !test_ca.empty()) {
+        const unsigned char* der = test_ca.data();
+        X509* const ca = d2i_X509(nullptr, &der, static_cast<long>(test_ca.size()));
+        const bool trusted =
+            ca != nullptr && X509_STORE_add_cert(SSL_CTX_get_cert_store(ssl_ctx), ca) == 1;
+        X509_free(ca);
+        if (trusted) {
+            LOG_INFO(Service_SSL, "Trusting the test CA (EDEN_NX2_ONLINE_CA)");
+        } else {
+            LOG_ERROR(Service_SSL, "The test CA (EDEN_NX2_ONLINE_CA) could not be loaded");
+            CheckOpenSSLErrors();
+        }
     }
 
     OneTimeInitLogFile();
