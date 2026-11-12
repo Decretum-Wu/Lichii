@@ -48,7 +48,8 @@ public:
     }
 
 private:
-    void Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale);
+    void Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale,
+                 Settings::FrameGenType type);
     /// Updates the status bar state and logs each change with its reason.
     void SetState(VideoCore::FrameGenState new_state, VkFormat format);
     /// Logs every 10 s how many frames were generated, when that changes.

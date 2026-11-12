@@ -249,7 +249,7 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
     if ((!chain && !fsr3_chain) || built_type != type || built_extent.width != extent.width ||
         built_extent.height != extent.height || built_format != format ||
         built_flow_scale != flow_scale) {
-        Rebuild(device, extent, format, flow_scale);
+        Rebuild(device, extent, format, flow_scale, type);
     }
 
     const u64 count = frame_count++;
@@ -262,7 +262,7 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
     generated_frames.fetch_add(GeneratedFrameCount(), std::memory_order_relaxed);
     LogActivity();
 
-    const bool use_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
+    const bool use_fsr3 = type == Settings::FrameGenType::Fsr3;
 
     if (use_fsr3 && fsr3_chain) {
         scheduler.RequestOutsideRenderPassOperationContext();
@@ -368,7 +368,7 @@ size_t FrameGen::GeneratedFrameCount() const {
 }
 
 void FrameGen::GenerateInto(const Device& device, Frame* destination, size_t generation) {
-    const bool use_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
+    const bool use_fsr3 = built_type == Settings::FrameGenType::Fsr3;
 
     if (use_fsr3 && fsr3_chain) {
         const f32 blend = static_cast<f32>(generation + 1) / static_cast<f32>(last_generations + 1);
@@ -393,13 +393,14 @@ void FrameGen::GenerateInto(const Device& device, Frame* destination, size_t gen
     }
 }
 
-void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale) {
+void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale,
+                       Settings::FrameGenType type) {
     scheduler.Finish();
     chain.reset();
     fsr3_chain.reset();
 
     built_flow_scale = flow_scale;
-    built_type = Settings::values.frame_gen_type.GetValue();
+    built_type = type;
 
     if (built_type == Settings::FrameGenType::Fsr3) {
         fsr3_chain.emplace(device, memory_allocator, extent, format);
