@@ -693,6 +693,95 @@ void RasterizerVulkan::ReportFastDraws() {
     stats = FastDrawStats{.window_start = now};
 }
 
+RasterizerVulkan::DrawReuse RasterizerVulkan::NoteDrawReuse(const GraphicsPipeline& pipeline,
+                                                            bool is_indexed) {
+    u64 key = buffer_cache.KeptGraphicsBindingsHash(true, true, false);
+    const auto mix = [&key](u64 value) { key = (key ^ value) * 0x100000001b3ULL; };
+    mix(reinterpret_cast<u64>(&pipeline));
+    if (const Framebuffer* const framebuffer = texture_cache.GetFramebuffer()) {
+        mix(reinterpret_cast<u64>(framebuffer->Handle()));
+        mix(reinterpret_cast<u64>(framebuffer->RenderPass()));
+    }
+    for (const auto& image : pipeline.SampledImages()) {
+        mix((u64{image.id.index} << 32) | image.sampler.index);
+    }
+    const auto& streams = maxwell3d->regs.vertex_streams;
+    for (u32 index = 0; index < streams.size(); ++index) {
+        if (streams[index].IsEnabled()) {
+            mix((u64{index} << 32) | streams[index].stride);
+        }
+    }
+    mix(is_indexed ? 1 : 0);
+    if (is_indexed) {
+        const auto& index_buffer = maxwell3d->draw_manager.draw_state.index_buffer;
+        mix(index_buffer.StartAddress());
+        mix(static_cast<u64>(index_buffer.format));
+    }
+    if (draw_reuse.previous_frame.contains(key)) {
+        draw_reuse.frame.insert(key);
+        return DrawReuse::Hit;
+    }
+    return draw_reuse.frame.insert(key).second ? DrawReuse::Miss : DrawReuse::Repeat;
+}
+
+void RasterizerVulkan::TickDrawReuse() {
+    auto& probe = draw_reuse;
+    std::swap(probe.previous_frame, probe.frame);
+    probe.frame.clear();
+    ++probe.frames;
+    const u64 now = VideoCommon::Nx2Profile::Now();
+    if (probe.window_start == 0) {
+        probe.window_start = now;
+    }
+    if (now - probe.window_start < 10'000'000'000ULL) {
+        return;
+    }
+    const auto churn = [&] {
+        std::scoped_lock lock{texture_cache.mutex};
+        return texture_cache.TakeChurn();
+    }();
+    const auto [memo_hits, memo_misses] = GraphicsPipeline::TakeTextureMemoCounts();
+    const double frames = static_cast<double>(probe.frames);
+    const auto per_frame = [frames](u64 count) { return static_cast<double>(count) / frames; };
+    static constexpr std::array<const char*, static_cast<size_t>(DrawReuse::Count)> names{
+        "hit", "same-frame repeat", "miss"};
+    std::string classes;
+    u64 classed = 0;
+    for (size_t index = 0; index < names.size(); ++index) {
+        const auto& draws = probe.draws[index];
+        classed += draws[0] + draws[1];
+        const auto& ns = probe.prepare_ns[index];
+        const auto micros = [&](DrawPath path) {
+            const size_t i = static_cast<size_t>(path);
+            return draws[i] == 0 ? 0.0
+                                 : static_cast<double>(ns[i]) / 1e3 / static_cast<double>(draws[i]);
+        };
+        classes += fmt::format("{} {} full {:.0f} ({:.2f} us) delta {:.0f} ({:.2f} us)",
+                               index == 0 ? "" : ",", names[index],
+                               per_frame(draws[static_cast<size_t>(DrawPath::Full)]),
+                               micros(DrawPath::Full),
+                               per_frame(draws[static_cast<size_t>(DrawPath::Delta)]),
+                               micros(DrawPath::Delta));
+    }
+    LOG_INFO(Render_Vulkan,
+             "Draw reuse per frame over {} frames:{}; gate {:.3f} ms/frame (full-path hits over "
+             "1.1 us); probe {:.2f} us/draw (left out of the times); {:.1f} images created, "
+             "{:.1f} deleted, {:.1f} joins, {:.1f} TIC table invalidations, {:.1f} TIC/TSC table "
+             "moves; texture memo {:.1f} hits, {:.1f} misses",
+             probe.frames, classes, per_frame(probe.gate_ns) / 1e6,
+             classed == 0 ? 0.0
+                          : static_cast<double>(probe.probe_ns) / 1e3 / static_cast<double>(classed),
+             per_frame(churn.created), per_frame(churn.deleted), per_frame(churn.joins),
+             per_frame(churn.invalidations), per_frame(churn.refreshes), per_frame(memo_hits),
+             per_frame(memo_misses));
+    probe.draws = {};
+    probe.prepare_ns = {};
+    probe.gate_ns = 0;
+    probe.probe_ns = 0;
+    probe.frames = 0;
+    probe.window_start = now;
+}
+
 // Experimental adaptation of PokeDinner commit 76df4591a747: execute the reset shader's
 // indirect record writes on the host until general GPU-address translation is available.
 bool RasterizerVulkan::TryNx2IndirectReset(bool is_indexed, u32 instance_count) {
@@ -782,6 +871,23 @@ bool RasterizerVulkan::TryNx2IndirectReset(bool is_indexed, u32 instance_count) 
 
 template <typename Func>
 void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_indirect) {
+    DrawReuse reuse = DrawReuse::Count;
+    DrawPath reuse_path = DrawPath::Full;
+    u64 reuse_probe_ns = 0;
+    const u64 reuse_start = DrawReuseProbeEnabled() ? VideoCommon::Nx2Profile::Now() : 0;
+    SCOPE_EXIT {
+        if (reuse == DrawReuse::Count) {
+            return;
+        }
+        const u64 ns = VideoCommon::Nx2Profile::Now() - reuse_start - reuse_probe_ns;
+        draw_reuse.probe_ns += reuse_probe_ns;
+        const size_t index = static_cast<size_t>(reuse);
+        ++draw_reuse.draws[index][static_cast<size_t>(reuse_path)];
+        draw_reuse.prepare_ns[index][static_cast<size_t>(reuse_path)] += ns;
+        if (reuse == DrawReuse::Hit && reuse_path == DrawPath::Full && ns > 1100) {
+            draw_reuse.gate_ns += ns - 1100;
+        }
+    };
 
     if (Common::DkbFrameTrace::Enabled()) {
         ++trace_draws;
@@ -1077,6 +1183,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
             kept_bindings != buffer_cache.KeptGraphicsBindingsHash(false, false, true)) {
             ++fast_draw_stats.binding_mismatches;
         }
+    }
+    if (reuse_start != 0) {
+        const u64 probe_start = VideoCommon::Nx2Profile::Now();
+        reuse = NoteDrawReuse(*pipeline, is_indexed);
+        reuse_path = path;
+        reuse_probe_ns = VideoCommon::Nx2Profile::Now() - probe_start;
     }
 
     TrackOcarinaCamera();
@@ -3366,6 +3478,9 @@ void RasterizerVulkan::TickFrame() {
     if (fast_draw_on) {
         ReportFastDraws();
         VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Frame);
+    }
+    if (DrawReuseProbeEnabled()) {
+        TickDrawReuse();
     }
     frame_dump.TickFrame();
     ++render_trace_frame;

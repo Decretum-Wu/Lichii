@@ -24,6 +24,7 @@
 #include "video_core/gpu_thread.h"
 #include "video_core/gpu_split.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_back_idle_trace.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
@@ -88,6 +89,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         auto& acquire_stats = VideoCommon::g_acquire_stats;
         namespace Profile = VideoCommon::Nx2Profile;
         auto& split = VideoCommon::GpuSplit::Get();
+        namespace BackIdleTrace = VideoCommon::BackIdleTrace;
+        using FrontState = BackIdleTrace::FrontState;
         while (!stop_token.stop_requested()) {
             Profile::Report();
             split.MaybeStart(system);
@@ -105,6 +108,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     resumed = scheduler.ResumePending(system.GPU());
                 }
                 const bool popped = state.queue.TryPop(next);
+                if (popped) {
+                    BackIdleTrace::SetFrontState(FrontState::Parse);
+                }
                 if (resumed || popped) {
                     if (last_wait == WaitEnd::PollTimedOut) {
                         VideoCommon::Count(acquire_stats.front_found_polling);
@@ -117,6 +123,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 if (!popped) {
                     if (!scheduler.HasPendingChannels()) {
                         continue;
+                    }
+                    if (BackIdleTrace::Enabled()) {
+                        BackIdleTrace::SetFrontState(scheduler.WaitsForListCopy()
+                                                         ? FrontState::PendingCopy
+                                                         : FrontState::PendingSemaphore);
                     }
                     // Mario Kart World's channels wait for semaphores its CPU releases, stores
                     // that send no wake, and the CPU usually releases soon after: for half a
@@ -162,7 +173,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 }
             } else {
                 Profile::Scope scope{Profile::Zone::Idle};
+                BackIdleTrace::SetFrontState(FrontState::QueueEmpty);
                 state.queue.PopWait(next, stop_token);
+                BackIdleTrace::SetFrontState(FrontState::Parse);
             }
             if (stop_token.stop_requested()) {
                 break;
