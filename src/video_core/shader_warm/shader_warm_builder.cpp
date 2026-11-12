@@ -321,26 +321,50 @@ u64 ReadWarmCount(const fs::path& warm_file) {
 }
 
 std::optional<WarmStamp> CurrentWarmStamp(const fs::path& warm_file, u64 entries, u32 driver,
-                                          u32 device_id, u32 cache_version) {
+                                          u32 device_id, u32 cache_version, u64 lowering) {
     std::error_code ec;
     const auto size = fs::file_size(warm_file, ec);
     if (ec) {
         return std::nullopt;
     }
-    const auto time = fs::last_write_time(warm_file, ec);
-    if (ec) {
+    // Hashed in chunks (the file is ~70 MB): tens of milliseconds at boot.
+    std::ifstream in(warm_file, std::ios::binary);
+    if (!in) {
         return std::nullopt;
     }
-    return WarmStamp{size,      static_cast<s64>(time.time_since_epoch().count()),
-                     entries,   driver,
-                     device_id, cache_version};
+    std::vector<char> chunk(8u << 20);
+    u64 hash = size;
+    u64 read_total = 0;
+    while (in) {
+        in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+        const auto got = static_cast<size_t>(in.gcount());
+        if (got == 0) {
+            break;
+        }
+        hash = Common::CityHash64WithSeed(chunk.data(), got, hash);
+        read_total += got;
+    }
+    if (read_total != size) {
+        return std::nullopt;
+    }
+    return WarmStamp{.size = size,
+                     .content_hash = hash,
+                     .entries = entries,
+                     .driver = driver,
+                     .device_id = device_id,
+                     .cache_version = cache_version,
+                     .lowering = lowering};
 }
 
 std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
     std::ifstream in(WarmMarkerPath(warm_file));
     WarmStamp stamp;
-    if (!(in >> stamp.size >> stamp.write_time >> stamp.entries >> stamp.driver >>
-          stamp.device_id >> stamp.cache_version)) {
+    // A marker of the older format (last-write time, no lowering) fails here: the compute
+    // programs not in the cache are built once more.
+    std::string format;
+    if (!(in >> format) || format != "v2" ||
+        !(in >> stamp.size >> stamp.content_hash >> stamp.entries >> stamp.driver >>
+          stamp.device_id >> stamp.cache_version >> stamp.lowering)) {
         return std::nullopt;
     }
     return stamp;
@@ -348,8 +372,9 @@ std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
 
 bool WriteWarmMarker(const fs::path& warm_file, const WarmStamp& stamp) {
     std::ofstream out(WarmMarkerPath(warm_file), std::ios::trunc);
-    out << stamp.size << ' ' << stamp.write_time << ' ' << stamp.entries << ' ' << stamp.driver
-        << ' ' << stamp.device_id << ' ' << stamp.cache_version << '\n';
+    out << "v2 " << stamp.size << ' ' << stamp.content_hash << ' ' << stamp.entries << ' '
+        << stamp.driver << ' ' << stamp.device_id << ' ' << stamp.cache_version << ' '
+        << stamp.lowering << '\n';
     out.close();
     return static_cast<bool>(out);
 }

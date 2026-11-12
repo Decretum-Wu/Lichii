@@ -38,27 +38,34 @@ std::filesystem::path WarmCountPath(const std::filesystem::path& warm_file);
 /// file of another size.
 u64 ReadWarmCount(const std::filesystem::path& warm_file);
 
-/// What a marker records: the precache file's size and last-write time, its entry count, the GPU
-/// driver version and device ID and the pipeline cache version.
+/// What a marker records: the precache file's size and content hash, its entry count, the GPU
+/// driver version and device ID, the pipeline cache version and the shader lowering's stamp.
+/// The content, not the last-write time: building the file again with the same shaders ("Precache
+/// Shaders" by hand) rebuilt every compute program (~3000, 8.5 min on a Ryzen 5 5600X). The
+/// lowering stamp: after an update that changes the shader recompiler the programs are built
+/// again at boot, where before the marker still said "done" and they were built during play.
 struct WarmStamp {
     u64 size{};
-    s64 write_time{};
+    u64 content_hash{};
     u64 entries{};
     u32 driver{};
     u32 device_id{};
     u32 cache_version{};
+    u64 lowering{};
 
-    /// True when `other` was written for the same file, driver, device and cache version (the
-    /// entry count is informative).
+    /// True when `other` was written for the same file contents, driver, device, cache version
+    /// and lowering (the entry count is informative).
     [[nodiscard]] bool Matches(const WarmStamp& other) const noexcept {
-        return size == other.size && write_time == other.write_time && driver == other.driver &&
-               device_id == other.device_id && cache_version == other.cache_version;
+        return size == other.size && content_hash == other.content_hash &&
+               driver == other.driver && device_id == other.device_id &&
+               cache_version == other.cache_version && lowering == other.lowering;
     }
 };
 
-/// The stamp of `warm_file` as it is now, empty when its size or time cannot be read.
+/// The stamp of `warm_file` as it is now, empty when it cannot be read.
 std::optional<WarmStamp> CurrentWarmStamp(const std::filesystem::path& warm_file, u64 entries,
-                                          u32 driver, u32 device_id, u32 cache_version);
+                                          u32 driver, u32 device_id, u32 cache_version,
+                                          u64 lowering = 0);
 
 /// The marker of `warm_file`, empty when there is none or it cannot be read.
 std::optional<WarmStamp> ReadWarmMarker(const std::filesystem::path& warm_file);
