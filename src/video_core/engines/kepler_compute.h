@@ -424,6 +424,9 @@ private:
     std::vector<UploadInfo> uploads;
     std::optional<GPUVAddr> indirect_compute{};
     std::optional<u64> kept_grid{};
+    /// The lists the grid markers of the QMD read last stand for (Nx2ListGrid::QmdWordList), 0
+    /// for a word that is no marker. Set by the QMD read before its dispatch.
+    std::array<u64, 3> qmd_grid_lists{};
     Nx2ListGrid::GridMarker* grid_marker{};
 };
 

@@ -184,9 +184,11 @@ public:
                                                     [[maybe_unused]] std::span<u32> words) {
         return false;
     }
-    /// On the split's back: the keep id of the kept list whose id ends in `keep_bits` (a
-    /// marker's), if its slot still holds it.
-    [[nodiscard]] virtual std::optional<u64> Nx2FindKeptList([[maybe_unused]] u32 keep_bits) {
+    /// On the split's back: the keep id of the list grid word `marker` at `device_addr` (in
+    /// guest memory) stands for, if the back patched that word from the list and still keeps it
+    /// (Nx2ListGrid::QmdWordList).
+    [[nodiscard]] virtual std::optional<u64> Nx2FindKeptWord([[maybe_unused]] DAddr device_addr,
+                                                             [[maybe_unused]] u32 marker) {
         return std::nullopt;
     }
 

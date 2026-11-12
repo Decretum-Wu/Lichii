@@ -121,7 +121,7 @@ public:
     void Nx2KeepListWords(u64 keep_id, GPUVAddr address, u64 hash,
                           std::span<const u32> real) override;
     [[nodiscard]] bool Nx2ReadKeptListWords(u64 keep_id, std::span<u32> words) override;
-    [[nodiscard]] std::optional<u64> Nx2FindKeptList(u32 keep_bits) override;
+    [[nodiscard]] std::optional<u64> Nx2FindKeptWord(DAddr device_addr, u32 marker) override;
     bool MustFlushRegion(DAddr addr, u64 size,
                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     VideoCore::RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) override;

@@ -352,18 +352,28 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             [&](u64 address, NativeQmdScheduler::Descriptor& descriptor) {
                 if (!memory_manager.IsFullyMappedRange(address, sizeof(descriptor))) return false;
                 memory_manager.ReadBlockUnsafe(address, descriptor.data(), sizeof(descriptor));
-                // Grid markers (nx2_list_grid.h) of a list no longer kept: its upload patched the
-                // real words in on the host GPU, so they come from there.
-                const bool orphan = std::ranges::any_of(
-                    std::span{descriptor}.subspan(12, 3), [this](u32 word) {
-                        return Nx2ListGrid::IsMarker(word) &&
-                               !rasterizer->Nx2FindKeptList(Nx2ListGrid::MarkerKeepBits(word));
-                    });
+                // Grid markers (nx2_list_grid.h): each word's list is the one the back patched at
+                // its address and still keeps. Any other marker (its slot reused, the word
+                // written since) takes the real words its upload patched in on the host GPU.
+                qmd_grid_lists = {};
+                bool unknown = false;
+                for (u32 i = 0; i < 3; ++i) {
+                    const u32 word = descriptor[12 + i];
+                    if (!Nx2ListGrid::IsMarker(word)) {
+                        continue;
+                    }
+                    const auto device = memory_manager.GpuToCpuAddress(address + (12 + i) * 4);
+                    const auto list =
+                        device ? rasterizer->Nx2FindKeptWord(*device, word) : std::nullopt;
+                    qmd_grid_lists[i] = list.value_or(0);
+                    unknown = unknown || !list;
+                }
                 if (const auto grid = memory_manager.GpuToCpuAddress(address + 12 * sizeof(u32));
-                    orphan && grid) {
+                    unknown && grid) {
                     rasterizer->FlushRegion(*grid, 3 * sizeof(u32));
                     memory_manager.ReadBlockUnsafe(address + 12 * sizeof(u32), descriptor.data() + 12,
                                                    3 * sizeof(u32));
+                    qmd_grid_lists = {};
                 }
                 if (static u32 logged{}; (descriptor[53] & (1U << 23)) && logged < 8) {
                     ++logged;
@@ -566,24 +576,24 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     SCOPE_EXIT {
         kept_grid.reset();
     };
-    // Markers of a list-fed grid macro (nx2_list_grid.h): a list's three, in order, dispatch
-    // from its kept words; any other mix gets them read back, and 0 for a list no longer kept.
+    // Markers of a list-fed grid macro (nx2_list_grid.h), their lists checked by the QMD read
+    // (qmd_grid_lists): a list's three, in order, dispatch from its kept words; any other mix
+    // gets them read back.
     if (const auto source = Nx2ListGrid::QmdGridSource(grid[0], grid[1], grid[2]);
         source.kind != Nx2ListGrid::GridKind::Direct) [[unlikely]] {
-        const auto keep_id = source.kind == Nx2ListGrid::GridKind::Indirect
-                                 ? rasterizer->Nx2FindKeptList(source.keep_bits)
-                                 : std::nullopt;
-        if (keep_id) {
-            kept_grid = keep_id;
+        const auto& lists = qmd_grid_lists;
+        if (source.kind == Nx2ListGrid::GridKind::Indirect && lists[0] != 0 &&
+            lists[0] == lists[1] && lists[1] == lists[2]) {
+            kept_grid = lists[0];
             grid = {1, 1, 1};
         } else {
-            for (u32& word : grid) {
+            for (u32 i = 0; i < 3; ++i) {
+                u32& word = grid[i];
                 if (!Nx2ListGrid::IsMarker(word)) {
                     continue;
                 }
                 std::array<u32, 3> words{};
-                const auto id = rasterizer->Nx2FindKeptList(Nx2ListGrid::MarkerKeepBits(word));
-                if (!id || !rasterizer->Nx2ReadKeptListWords(*id, words)) {
+                if (lists[i] == 0 || !rasterizer->Nx2ReadKeptListWords(lists[i], words)) {
                     // Unreachable unless a marker reached memory unpatched (the guard admits
                     // only patched destinations): never dispatched on.
                     LOG_ERROR(HW_GPU, "List-fed grid: QMD grid word {:#x} names no kept list",

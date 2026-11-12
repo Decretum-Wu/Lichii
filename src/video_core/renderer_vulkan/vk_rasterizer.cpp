@@ -2588,8 +2588,15 @@ bool RasterizerVulkan::Nx2ReadKeptListWords(u64 keep_id, std::span<u32> words) {
     return buffer_cache_runtime.ReadKeptListWords(keep_id, words);
 }
 
-std::optional<u64> RasterizerVulkan::Nx2FindKeptList(u32 keep_bits) {
-    return buffer_cache_runtime.FindKeptList(keep_bits);
+std::optional<u64> RasterizerVulkan::Nx2FindKeptWord(DAddr device_addr, u32 marker) {
+    std::optional<std::pair<u64, u32>> registered;
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        registered = buffer_cache.Nx2KeptWordList(device_addr);
+    }
+    return Tegra::Nx2ListGrid::QmdWordList(
+        marker, registered,
+        buffer_cache_runtime.FindKeptList(Tegra::Nx2ListGrid::MarkerKeepBits(marker)));
 }
 
 void RasterizerVulkan::VerifyKeptGrid(u64 keep_id) {
@@ -3804,17 +3811,14 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
 
 void RasterizerVulkan::InlineKeptWords(DAddr device_addr, std::span<const u8> data,
                                        std::span<const Tegra::Nx2ListGrid::KeptPatch> patches) {
-    boost::container::small_vector<u32, 8> offsets;
-    for (const auto& patch : patches) {
-        offsets.push_back(patch.offset);
-    }
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.Nx2NoteListHostWrite(device_addr, data.size());
         buffer_cache.Nx2InlineKeptWords(
-            device_addr, data, offsets, [&](auto& buffer, u32 offset, size_t i) {
-                buffer_cache_runtime.CopyKeptWord(patches[i].keep_id, patches[i].index,
-                                                  buffer.Handle(), offset);
+            device_addr, data, patches,
+            [&](auto& buffer, u32 offset, const Tegra::Nx2ListGrid::KeptPatch& patch) {
+                buffer_cache_runtime.CopyKeptWord(patch.keep_id, patch.index, buffer.Handle(),
+                                                  offset);
             });
     }
     query_cache.InvalidateRegion(device_addr, data.size());

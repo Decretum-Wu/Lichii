@@ -359,6 +359,23 @@ TEST_CASE("List grid dispatches a list's markers from its kept words", "[list_gr
           GridKind::ReadBack);
 }
 
+TEST_CASE("List grid trusts a QMD marker only where its list patched it", "[list_grid]") {
+    using Registered = std::optional<std::pair<u64, u32>>;
+    const u32 y = ListGrid::Marker(KeepId, 1);
+    // The word the back patched from the list, which its slot still holds.
+    CHECK(ListGrid::QmdWordList(y, Registered{{KeepId, 1}}, KeepId) == KeepId);
+    // The id wrapped: a list 2^16 later, with the same 16 bits, holds the slot now. The marker
+    // matches it, but the word was patched from the old list.
+    const u64 wrapped = KeepId + 0x10000;
+    CHECK(ListGrid::Marker(wrapped, 1) == y);
+    CHECK_FALSE(ListGrid::QmdWordList(y, Registered{{KeepId, 1}}, wrapped));
+    // A word written since (unregistered), another word of the list, or another list's bits.
+    CHECK_FALSE(ListGrid::QmdWordList(y, std::nullopt, KeepId));
+    CHECK_FALSE(ListGrid::QmdWordList(y, Registered{{KeepId, 0}}, KeepId));
+    CHECK_FALSE(ListGrid::QmdWordList(y, Registered{{KeepId + 1, 1}}, KeepId + 1));
+    CHECK_FALSE(ListGrid::QmdWordList(8, Registered{{KeepId, 1}}, KeepId));
+}
+
 TEST_CASE("List grid verify compares a run on the markers with the real run", "[list_grid]") {
     using Pairs = std::vector<std::pair<u32, u32>>;
     const u32 x = ListGrid::Marker(KeepId, 0);

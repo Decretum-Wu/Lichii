@@ -43,8 +43,9 @@
 // - On the back, an inline write that carries markers gets the kept words copied over them on the
 //   host GPU (RasterizerVulkan::AccelerateInlineToMemory), so every reader of those bytes sees the
 //   real words, and a QMD whose grid is a list's three markers dispatches indirectly from the kept
-//   copy (QmdGridSource). A QMD that outlived its list's slot takes the patched words from the
-//   host GPU (KeplerCompute's QMD read).
+//   copy (QmdGridSource). A QMD marker is trusted only at an address the back patched from that
+//   same list, with no write there since, while the list is kept (QmdWordList); any other QMD
+//   marker takes the patched words from the host GPU (KeplerCompute's QMD read).
 //
 // EDEN_NX2_LIST_HLE_VERIFY=1 also reads each list's words the old way and compares them with the
 // kept copy, every guarded macro's run on the markers with a run on the real words, and the words
@@ -995,6 +996,20 @@ struct GridSource {
     GridKind kind;
     u32 keep_bits{};
 };
+
+/// The list a QMD grid word `marker` stands for: the list whose word the back patched at its
+/// address (`registered`, BufferCache::Nx2KeptWordList: keep id and word), if that is the
+/// marker's word of that list and the marker's slot still holds the list (`kept`). The marker's
+/// 16 bits of keep id alone are never trusted: they wrap. Nothing otherwise, and the words come
+/// from the host GPU.
+[[nodiscard]] constexpr std::optional<u64> QmdWordList(
+    u32 marker, std::optional<std::pair<u64, u32>> registered, std::optional<u64> kept) {
+    if (!IsMarker(marker) || !registered || registered->second != MarkerIndex(marker) ||
+        (registered->first & 0xFFFF) != MarkerKeepBits(marker) || kept != registered->first) {
+        return std::nullopt;
+    }
+    return registered->first;
+}
 
 /// Where the grid of a QMD whose words 12 to 14 are `x`, `y` and `z` comes from.
 [[nodiscard]] constexpr GridSource QmdGridSource(u32 x, u32 y, u32 z) {
