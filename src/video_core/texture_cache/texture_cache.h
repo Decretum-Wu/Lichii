@@ -154,7 +154,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         aggressive_mode =
             allow_aggressive && (out_of_memory || total_used_memory >= critical_memory);
         const u64 mode_age = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
-        ticks_to_destroy = EvictionAge(mode_age, total_used_memory, device_budget, out_of_memory);
+        ticks_to_destroy = EvictionAge(mode_age, total_used_memory, retention_limit, out_of_memory);
         // EDEN_NX2_TC_MIN_AGE=<frames>: never evict images used more recently (thrash tests).
         static const u64 min_age = [] {
             const char* value = std::getenv("EDEN_NX2_TC_MIN_AGE");
@@ -214,7 +214,10 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
     // emptiest blocks go first, so blocks drain and go back to the driver; placement already
     // prefers the fullest blocks (best fit). Images with memory of their own sit in the middle.
     const auto Collect = [&] {
-        const u64 last_tick = frame_tick - (std::min)(frame_tick, ticks_to_destroy);
+        if (frame_tick < ticks_to_destroy) {
+            return;
+        }
+        const u64 last_tick = frame_tick - ticks_to_destroy;
         if constexpr (requires(const Image& image) { image.MemoryBlock(); }) {
             std::vector<ImageId> candidates;
             const size_t limit = num_iterations * 8;
@@ -418,7 +421,7 @@ void TextureCache<P>::TickFrame() {
             }
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
-                device_budget = budget;
+                retention_limit = 0;
                 if (budget > 2_GiB) {
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
                     if constexpr (requires { runtime.GetDeviceMemorySlack(); }) {
@@ -443,6 +446,8 @@ void TextureCache<P>::TickFrame() {
                             ? HostCriticalMemory(runtime.GetDeviceMemoryUsage(), *commit_room)
                             : (std::numeric_limits<u64>::max)();
                     critical_memory = (std::min)(critical_memory, host_critical);
+                    retention_limit = (std::min)(
+                        budget - (std::min)(pressure_margin + slack_margin, budget), host_critical);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all

@@ -16,10 +16,11 @@ namespace VideoCommon {
 constexpr u64 MinEvictionAge = 150;
 
 /// Frames since its last use before the collector may delete an image. `mode_age` is the age the
-/// collector's mode asks for; it applies as is only when the device is short of memory: an image
-/// could not be made, the driver's budget is unknown (0), or the usage has reached it.
-[[nodiscard]] constexpr u64 EvictionAge(u64 mode_age, u64 usage, u64 budget, bool out_of_memory) {
-    if (out_of_memory || budget == 0 || usage >= budget) {
+/// collector's mode asks for; it applies as is only when memory is short: an image could not be
+/// made, no limit is known (0), or the usage has reached `limit` (the room the driver's budget,
+/// its margins and the host's commit leave).
+[[nodiscard]] constexpr u64 EvictionAge(u64 mode_age, u64 usage, u64 limit, bool out_of_memory) {
+    if (out_of_memory || limit == 0 || usage >= limit) {
         return mode_age;
     }
     return (std::max)(mode_age, MinEvictionAge);
