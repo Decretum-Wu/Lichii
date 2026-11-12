@@ -84,9 +84,9 @@ bool Scheduler::ResumePending(GPU& gpu) {
     return any_progress;
 }
 
-bool Scheduler::WaitsOnListCopy() const {
-    return std::ranges::any_of(pending_channels, [](const auto& state) {
-        return state->payload->dma_pusher.WaitsOnListCopy();
+bool Scheduler::OnlyGuestCanResume() {
+    return std::ranges::all_of(pending_channels, [](const auto& state) {
+        return state->payload->dma_pusher.OnlyGuestCanResume();
     });
 }
 

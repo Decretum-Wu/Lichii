@@ -195,6 +195,16 @@ bool Puller::PendingAcquire::WaitsToReach() const {
     return static_cast<GpuSemaphoreOperation>(operation) == GpuSemaphoreOperation::AcquireGequal;
 }
 
+bool Puller::OnlyGuestCanRelease(DmaPusher& dma_pusher) const {
+    if (!pending_acquire) {
+        return false;
+    }
+    const auto device = dma_pusher.memory_manager.GpuToCpuAddress(pending_acquire->address);
+    return device && !dma_pusher.rasterizer->HoldsQueries(*device, sizeof(u32)) &&
+           !dma_pusher.rasterizer->MustFlushRegion(*device, sizeof(u32),
+                                                   VideoCommon::CacheType::All);
+}
+
 bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (!pending_acquire) {
         return true;
