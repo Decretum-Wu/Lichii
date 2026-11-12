@@ -271,10 +271,15 @@ void IPlatformServiceManager::RequestLoadNxFont(HLERequestContext& ctx) {
     const auto address = transfer->GetSourceAddress();
     for (size_t i = 0; i < impl->builtin_font_regions.size(); ++i) {
         const auto& region = impl->builtin_font_regions[i];
-        if (region.size != 0) {
-            memory.WriteBlock(address + region.offset,
-                              impl->shared_font.data() + impl->builtin_font_sources[i], region.size);
+        if (region.size == 0) {
+            continue;
         }
+        const u8* source = impl->shared_font.data() + impl->builtin_font_sources[i];
+        if (i == static_cast<size_t>(SharedFontType::JapanUSEuropeStandard) &&
+            !impl->builtin_standard_font.empty()) {
+            source = impl->builtin_standard_font.data();
+        }
+        memory.WriteBlock(address + region.offset, source, region.size);
     }
     std::vector<FontRegion> regions{impl->builtin_font_regions.begin(),
                                     impl->builtin_font_regions.end()};
