@@ -13,7 +13,9 @@
 #include "common/cpu_features.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
+#include "common/literals.h"
 #include "common/logging.h"
+#include "common/memory_detect.h"
 #include "common/nx2_sampler.h"
 #include "common/adpf.h"
 #include "common/settings.h"
@@ -138,8 +140,9 @@ std::optional<u64> Switch2ProgramId(FileSys::ProgramMetadata& metadata,
     return metadata.GetTitleID();
 }
 
-// Detect the platform and program before initializing the kernel memory layout and guest clock:
-// the id of a Switch 2 program, or nothing for any other program.
+} // namespace
+
+// Detect the platform and program before initializing the kernel memory layout and guest clock.
 std::optional<u64> FindSwitch2Program(const FileSys::VirtualFile& file, u64 program_id,
                                       std::size_t program_index) {
     FileSys::ProgramMetadata metadata;
@@ -197,8 +200,6 @@ std::optional<u64> FindSwitch2Program(const FileSys::VirtualFile& file, u64 prog
     const auto npdm = dir != nullptr ? dir->GetFile("main.npdm") : nullptr;
     return Switch2ProgramId(metadata, npdm);
 }
-
-} // namespace
 
 struct System::Impl {
     explicit Impl(System& system)
@@ -419,6 +420,16 @@ struct System::Impl {
         Kernel::KSystemControl::SetApplicationProgramId(switch2_program_id.value_or(0));
         Settings::SetCurrentProgramIsSwitch2(switch2_program);
         Settings::SetAstcRecompressionOverride(std::nullopt);
+
+        if (const auto ram = Common::GetHostRam();
+            switch2_program && Common::IsBelowSwitch2RamMinimum(ram)) {
+            using namespace Common::Literals;
+            LOG_WARNING(Core,
+                        "Low host RAM: {:.3g} GB {}; Switch 2 titles need at least 16 GB (32 GB "
+                        "recommended)",
+                        static_cast<f64>(ram.bytes) / f64{1_GiB},
+                        ram.installed ? "installed" : "usable");
+        }
 
         // Switch 2 titles size their heap from the total memory and need the 12 GiB layout. Set it
         // as a per-game value, so RestoreGlobalState brings back the configured layout afterwards.

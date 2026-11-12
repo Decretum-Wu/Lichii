@@ -33,7 +33,9 @@
 
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
+#include "common/literals.h"
 #include "common/logging.h"
+#include "common/memory_detect.h"
 #include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/string_util.h"
@@ -638,6 +640,15 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         if (restarted) {
             std::error_code ec;
             std::filesystem::remove(RestartHandoffPath(), ec);
+        } else if (const auto ram = Common::GetHostRam();
+                   Settings::CurrentProgramIsSwitch2() && Common::IsBelowSwitch2RamMinimum(ram)) {
+            using namespace Common::Literals;
+            fmt::print(stderr,
+                       "Warning: this PC has {:.3g} GB of RAM. Switch 2 games need at least 16 GB, "
+                       "and 32 GB is recommended.\nGames can crash, and can even freeze or crash "
+                       "the whole PC.\nThis setup isn't supported, so please don't open issues or "
+                       "ask for help about crashes on it.\n",
+                       static_cast<f64>(ram.bytes) / f64{1_GiB});
         }
         break; // Expected case
     case Core::SystemResultStatus::ErrorGetLoader:
