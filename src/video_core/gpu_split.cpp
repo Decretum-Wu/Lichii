@@ -753,7 +753,7 @@ void GpuSplit::ReportAcquire() {
     }
     LOG_INFO(HW_GPU,
              "Front waits for the back in 10 s by site: {}; acquire methods not met without a "
-             "drain: {} ({} still not met after it, which drain again to release the fences); "
+             "drain: {} ({} still not met at a second read, which suspend their channels); "
              "drains for a queued release of unknown value (a reduction or a counter) to a word memory "
              "already meets: {} of {}",
              sites.empty() ? "none" : sites, trigger_not_met, trigger_not_met_twice,

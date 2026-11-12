@@ -69,7 +69,7 @@ struct AcquireStats {
     std::atomic<u64> queued_unknown{};  ///< Of drain_queued: its value is unknown (a reduction)
     std::atomic<u64> queued_unknown_met{}; ///< ...and the word in memory already meets the acquire
     std::atomic<u64> trigger_not_met{};    ///< Acquire methods not met without a drain (NotMet)
-    std::atomic<u64> trigger_not_met_twice{}; ///< ...still not met after it: fences drain again
+    std::atomic<u64> trigger_not_met_twice{}; ///< ...still not met at a second read: suspended
     std::atomic<u64> valve_drains{}; ///< Of drained: polls of an unmet acquire, once per 1 ms
     std::atomic<u64> polls{};     ///< Polls that keep waiting without a drain
     std::atomic<u64> acquire_polls{}; ///< Polls of suspended channels waiting on an acquire
@@ -293,9 +293,14 @@ public:
     void ReportAcquire();
     /// Waits until the back executed everything sent so far.
     void Drain(DrainSite site = DrainSite::Other);
-    /// The ring position after the entries sent so far, for WaitUntil.
+    /// The ring position after the entries sent so far, for WaitUntil and Ran.
     [[nodiscard]] u64 Position() const {
         return write_position;
+    }
+    /// Whether the back executed everything sent before `position`. It may tell so a little
+    /// late: the back stores its position every few thousand words and when it runs out of work.
+    [[nodiscard]] bool Ran(u64 position) const {
+        return consumed.load(std::memory_order_acquire) >= position;
     }
     /// Waits until the back executed the entries sent before `position`. Returns whether any of
     /// them was still queued.
@@ -316,6 +321,16 @@ public:
     void NoteSync() {
         last_sync_position = write_position;
         synced_writer_position = last_writer_position;
+    }
+    /// The position after the last compute or copy work sent (NoteWriter).
+    [[nodiscard]] u64 LastWriterPosition() const {
+        return last_writer_position;
+    }
+    /// NoteSync for a host-level wait sent at `position`, after the compute and copy work up to
+    /// `writers` (Position and LastWriterPosition then), that the front passes only now.
+    void NoteSyncAt(u64 position, u64 writers) {
+        last_sync_position = (std::max)(last_sync_position, position);
+        synced_writer_position = (std::max)(synced_writer_position, writers);
     }
     /// Waits until the back executed the work sent before the last NoteSync. Returns whether any
     /// of it was still queued.
