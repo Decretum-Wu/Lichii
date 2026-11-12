@@ -8,6 +8,7 @@
 
 #include "common/display_hdr.h"
 #include "common/dkb_frame_trace.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #ifdef _WIN32
@@ -24,6 +25,9 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_surface.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#endif
 
 namespace Vulkan {
 
@@ -224,7 +228,16 @@ void PresentManager::LogPacing(const Frame* frame, std::chrono::steady_clock::du
     }
 }
 
-PresentManager::~PresentManager() = default;
+PresentManager::~PresentManager() {
+    // FrameGenSuspend uses state only the present thread touches: stop that thread first.
+    if (present_thread.joinable()) {
+        present_thread.request_stop();
+        present_thread.join();
+    }
+#ifdef EGLANTINE_STREAMLINE
+    Streamline::FrameGenSuspend();
+#endif
+}
 
 Frame* PresentManager::GetRenderFrame() {
 
@@ -245,6 +258,9 @@ Frame* PresentManager::GetRenderFrame() {
     frame->present_done.Reset();
     frame->color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     frame->present_spacing = {};
+#ifdef EGLANTINE_STREAMLINE
+    frame->frame_gen = false;
+#endif
 
     return frame;
 }
@@ -460,6 +476,9 @@ void PresentManager::UpdateHdrMetadata() {
 
 // Returns false after discarding a deferred or incompatible frame; creation exceptions propagate.
 bool PresentManager::RecreateSwapchain(Frame* frame) {
+#ifdef EGLANTINE_STREAMLINE
+    Streamline::FrameGenSuspend();
+#endif
     if (swapchain.Create(*surface, frame->width, frame->height, frame->format,
                          frame->color_space)) {
         SetImageCount();
@@ -526,6 +545,13 @@ void PresentManager::DiscardFrame(Frame* frame) {
 }
 
 void PresentManager::CopyToSwapchain(Frame* frame) {
+#ifdef EGLANTINE_STREAMLINE
+    SCOPE_EXIT {
+        if (frame->frame_gen) {
+            Streamline::FrameGenClosePresent(frame->frame_gen_frame.index);
+        }
+    };
+#endif
     bool requires_recreation = false;
 
     for (u32 attempt = 0; attempt < MAX_PRESENT_ATTEMPTS; ++attempt) {
@@ -737,7 +763,24 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
     }
 
     // Present
+#ifdef EGLANTINE_STREAMLINE
+    if (frame->frame_gen) {
+        Streamline::FrameGenBeforePresent({
+            .frame = frame->frame_gen_frame,
+            .guest_rect = frame->guest_rect,
+            .frame_extent = {frame->width, frame->height},
+            .swapchain_extent = extent,
+            .swapchain_format = swapchain.GetImageFormat(),
+            .swapchain_images = static_cast<u32>(swapchain.GetImageCount()),
+        });
+    }
+#endif
     swapchain.Present(render_semaphore);
+#ifdef EGLANTINE_STREAMLINE
+    if (frame->frame_gen) {
+        Streamline::FrameGenAfterPresent(frame->frame_gen_frame.index);
+    }
+#endif
 }
 
 } // namespace Vulkan

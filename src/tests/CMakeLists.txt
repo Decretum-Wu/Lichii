@@ -24,6 +24,7 @@ add_executable(tests
     core/nx2_thread_stats.cpp
     core/nx2_debug_server.cpp
     core/nx2_present_pacer.cpp
+    core/nx2_frame_interval.cpp
     core/ldn_lan_protocol.cpp
     core/perf_stats.cpp
     core/key_derivation.cpp
@@ -86,6 +87,7 @@ add_executable(tests
     video_core/fire_emblem_upscale.cpp
     video_core/dlss_contract.cpp
     video_core/dlss_mode.cpp
+    video_core/frame_gen_choice.cpp
     video_core/ampere_fast_fusion.cpp
     video_core/ampere_async_copy.cpp
     video_core/ampere_trap_guards.cpp
@@ -182,6 +184,7 @@ add_executable(tests
     common/unique_function.cpp
     common/zstd_compression.cpp
     core/core_timing.cpp
+    core/local_redirect.cpp
     core/nextendo_redirect.cpp
     core/thread_startup_policy.cpp
     core/nup_writer.cpp

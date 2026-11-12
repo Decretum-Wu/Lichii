@@ -53,6 +53,23 @@ TEST_CASE("Ampere BRA.CONV always branches and BRA.DIV never does", "[video_core
     REQUIRE(CountMaxwell(dropped, 0xe24, 52) == 0);
 }
 
+TEST_CASE("Ampere HSETP2 takes a constant buffer operand", "[video_core][ampere]") {
+    // HSETP2.AND P1, PT, RZ, c[0x7][0xfc], !P1 (0x634): the constant is loaded into a scratch
+    // register and the register form emitted.
+    const std::array<Instruction, 2> code{{
+        {{0xff007634, (0xfcU << 6) | (7U << 22), (4U << 12) | (1U << 17) | (7U << 20) | (9U << 23),
+          0}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    const u64 load = FindMaxwell(lowered, 0x4c98, 48);
+    REQUIRE(load != 0);
+    CHECK(((load >> 20) & 0x3fff) == 0xfc / 4);
+    CHECK(((load >> 34) & 0x1f) == 7);
+    REQUIRE(CountMaxwell(lowered, 0x5d20, 48) == 1);
+}
+
 TEST_CASE("Ampere TLD.SCR.LZ takes its handle from a uniform register", "[video_core][ampere]") {
     // TLD.SCR.LZ R5, R8, R4, R5, UR4, 0x0, 2D, 0x7 -> Maxwell TLD.B.
     const std::array<Instruction, 2> code{{

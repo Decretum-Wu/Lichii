@@ -11,12 +11,17 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "video_core/frame_gen_choice.h"
 #include "video_core/renderer_vulkan/present/frame_gen.h"
 #include "video_core/renderer_vulkan/present/util.h"
 #include "video_core/renderer_vulkan/vk_present_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/vulkan_common/vk_enum_string_helper.h"
 #include "video_core/vulkan_common/vulkan_device.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#include "video_core/vulkan_common/streamline_frame_gen.h"
+#endif
 
 namespace Vulkan {
 
@@ -27,15 +32,53 @@ constexpr u64 LSFG_REQUIRED_FRAMES = 2;
 constexpr u32 LSFG_RECURRENCE_FRAMES = 2;
 constexpr auto ACTIVITY_LOG_INTERVAL = std::chrono::seconds(10);
 
-[[nodiscard]] std::string ModeText() {
-    const char* type =
-        Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3 ? "FSR3" : "LSFG";
+[[nodiscard]] std::string ModeText(Settings::FrameGenType active) {
+    const char* type = active == Settings::FrameGenType::Fsr3 ? "FSR3" : "LSFG";
     const u32 target_rate = Settings::values.frame_gen_target_rate.GetValue();
     if (target_rate != 0) {
         return fmt::format("{} up to {}x towards {} FPS", type, Settings::MAX_FRAME_GEN_MULTIPLIER,
                            target_rate);
     }
     return fmt::format("{} {}x", type, Settings::FrameGenMultiplier());
+}
+
+/// Why NVIDIA DLSS Frame Generation isn't this session's frame generator, if it isn't. Streamline
+/// decided that when the game started.
+[[nodiscard]] VideoCore::DlssgBlock DlssgBlocked() {
+#ifdef EGLANTINE_STREAMLINE
+    if (Streamline::FrameGenSession()) {
+        return VideoCore::DlssgBlock::None;
+    }
+    return VideoCore::BlockedDlssg({
+        .streamline = true,
+        .dlss = Settings::values.nvidia_dlss.GetValue(),
+        .program_id = Settings::GetCurrentProgramID(),
+        .loaded = false,
+    });
+#else
+    return VideoCore::DlssgBlock::NoStreamline;
+#endif
+}
+
+[[nodiscard]] std::string DlssgBlockedText(VideoCore::DlssgBlock block) {
+    switch (block) {
+    case VideoCore::DlssgBlock::None:
+        break;
+    case VideoCore::DlssgBlock::NoStreamline:
+        return "this build has no NVIDIA Streamline";
+    case VideoCore::DlssgBlock::DlssOff:
+        return "\"Use NVIDIA DLSS\" is off, and DLSS-G takes its inputs from DLSS";
+    case VideoCore::DlssgBlock::NoGameInputs:
+        return fmt::format("no game motion vectors for {:016X}", Settings::GetCurrentProgramID());
+    case VideoCore::DlssgBlock::NotLoaded:
+#ifdef EGLANTINE_STREAMLINE
+        if (std::string reason = Streamline::FrameGenUnavailableReason(); !reason.empty()) {
+            return reason;
+        }
+#endif
+        return "NVIDIA Streamline did not start";
+    }
+    return {};
 }
 
 [[nodiscard]] f32 ManualFlowScale() {
@@ -213,13 +256,23 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
                        VkExtent2D guest_extent) {
     generated = false;
 
-    const Settings::FrameGenType type = Settings::values.frame_gen_type.GetValue();
+    const Settings::FrameGenType chosen = Settings::values.frame_gen_type.GetValue();
+    const Settings::FrameGenType type =
+        chosen == Settings::FrameGenType::NvidiaDlssG
+            ? VideoCore::ActiveFrameGenType(chosen, DlssgBlocked())
+            : chosen;
     if (type == Settings::FrameGenType::Lsfg && !shaders) {
         shaders.emplace(device);
     }
     unavailable = type == Settings::FrameGenType::Lsfg && !shaders->IsValid();
 
-    if (unavailable || !Settings::values.frame_gen.GetValue()) {
+    const bool nvidia_frame_gen = type == Settings::FrameGenType::NvidiaDlssG;
+    if (unavailable || !Settings::values.frame_gen.GetValue() || nvidia_frame_gen) {
+        if (!Settings::values.frame_gen.GetValue()) {
+            SetState(VideoCore::FrameGenState::Pending, format);
+        } else if (nvidia_frame_gen) {
+            SetState(VideoCore::FrameGenState::NvidiaFrameGen, format);
+        }
         if (chain || fsr3_chain) {
             scheduler.Finish();
             chain.reset();
@@ -293,9 +346,25 @@ void FrameGen::SetState(VideoCore::FrameGenState new_state, VkFormat format) {
     }
     switch (new_state) {
     case VideoCore::FrameGenState::Running:
-        LOG_INFO(Render_Vulkan, "Frame generation on: {}, presenting {}", ModeText(),
+        if (Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::NvidiaDlssG) {
+            LOG_INFO(Render_Vulkan,
+                     "Frame generation: NVIDIA DLSS-G unavailable ({}), using {}, presenting {}",
+                     DlssgBlockedText(DlssgBlocked()), ModeText(Settings::FrameGenType::Fsr3),
+                     string_VkFormat(format));
+            break;
+        }
+        LOG_INFO(Render_Vulkan, "Frame generation on: {}, presenting {}",
+                 ModeText(Settings::values.frame_gen_type.GetValue()), string_VkFormat(format));
+        break;
+#ifdef EGLANTINE_STREAMLINE
+    case VideoCore::FrameGenState::NvidiaFrameGen:
+        LOG_INFO(Render_Vulkan,
+                 "Frame generation on: NVIDIA DLSS-G {}x (numFramesToGenerateMax {}), presenting "
+                 "{}",
+                 Streamline::FrameGenGenerated() + 1, Streamline::FrameGenMaxGenerated(),
                  string_VkFormat(format));
         break;
+#endif
     case VideoCore::FrameGenState::UnsupportedSurface:
         LOG_WARNING(Render_Vulkan,
                     "Frame generation is on but not running: the GPU can't write {} from a compute "
@@ -338,12 +407,12 @@ void FrameGen::LogActivity() {
             LOG_INFO(Render_Vulkan,
                      "Frame generation ({}) idle: {:.0f} game FPS, no frames generated. It waits "
                      "while the game is below 10 FPS, after hitches and once the target is met",
-                     ModeText(), static_cast<f32>(activity.frames) / seconds);
+                     ModeText(built_type), static_cast<f32>(activity.frames) / seconds);
         } else {
             LOG_INFO(Render_Vulkan,
                      "Frame generation ({}) generating: {:.0f} game FPS + {:.0f} generated, {:.1f} "
                      "per game frame",
-                     ModeText(), static_cast<f32>(activity.frames) / seconds,
+                     ModeText(built_type), static_cast<f32>(activity.frames) / seconds,
                      static_cast<f32>(activity.generated) / seconds, per_frame);
         }
         activity.logged_per_frame = per_frame;
