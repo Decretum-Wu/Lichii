@@ -234,7 +234,7 @@ QString FormatPatchNameVersions(const FileSys::PatchManager& patch_manager,
     FileSys::VirtualFile update_raw;
     loader.ReadUpdateRaw(update_raw);
     for (const auto& patch : patch_manager.GetPatches(update_raw)) {
-        const bool is_update = patch.name == "Update";
+        const bool is_update = patch.type == FileSys::PatchType::Update;
         if (!updatable && is_update) {
             continue;
         }
