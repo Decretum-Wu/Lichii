@@ -208,7 +208,15 @@ bool IsMissingKeyStatus(ResultStatus status) {
 
 ResultStatus GetContainerProgramStatus(FileSys::VirtualFile file, FileType type) {
     const auto nsp = OpenContainerAsNsp(std::move(file), type);
-    return nsp ? nsp->GetProgramStatus() : ResultStatus::Success;
+    if (!nsp) {
+        return ResultStatus::Success;
+    }
+    // Without the header key the title id is unreadable. With it, an update or add-on is no game.
+    const auto status = nsp->GetProgramStatus();
+    if (status != ResultStatus::ErrorMissingHeaderKey && (nsp->GetProgramTitleID() & 0x1800) != 0) {
+        return ResultStatus::ErrorNSPMissingProgramNCA;
+    }
+    return status;
 }
 
 FileType GuessFromFilename(const std::string& name) {
