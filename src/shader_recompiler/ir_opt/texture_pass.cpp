@@ -12,6 +12,7 @@
 #include <vector>
 #include <bit>
 #include <optional>
+#include "common/nx2_experiments.h"
 #include "common/container/unordered_map.h"
 #include <tuple>
 #include <limits>
@@ -1344,7 +1345,8 @@ TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const H
                 }
                 // The word the search found may be the pointer a load reads the handle through
                 // (a light table's address): that binds no texture.
-                const bool pointer_word{!ReachesOutsideLoads(inst.Arg(0), legacy_inst, block)};
+                const bool pointer_word{!Common::Nx2Experiments::Revert1523() &&
+                                        !ReachesOutsideLoads(inst.Arg(0), legacy_inst, block)};
                 static std::atomic<int> warnings{};
                 if (warnings.fetch_add(1, std::memory_order_relaxed) < 32) {
                     LOG_WARNING(Shader, "Bindless {} handle not computable per draw (stopped at {}): "

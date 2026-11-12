@@ -13,6 +13,7 @@
 
 #include <fmt/ranges.h>
 
+#include "common/nx2_experiments.h"
 #include "common/common_types.h"
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/nvn_storage_descriptor.h"
@@ -976,7 +977,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     const Id zero{u32_zero_value};
     // Inlined at each of their calls, a program with ~30 candidate buffers took NVIDIA's compiler
     // 2.4 s (Ocarina's foliage compute programs; 0.6 s as calls, same accesses).
-    const spv::FunctionControlMask helper_control{spv::FunctionControlMask::DontInline};
+    const spv::FunctionControlMask helper_control{Common::Nx2Experiments::Revert1462Spirv()
+                                                      ? spv::FunctionControlMask::MaskNone
+                                                      : spv::FunctionControlMask::DontInline};
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback) {
         AddLabel();
@@ -1040,6 +1043,13 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                                              OpULessThan(U1, distance, best_distance))};
                 best_distance = OpSelect(U64, better, distance, best_distance);
                 best_index = OpSelect(U32[1], better, Const(static_cast<u32>(index)), best_index);
+            }
+            if (Common::Nx2Experiments::Revert1462Spirv()) {
+                for (size_t index = 0; index < num_buffers; ++index) {
+                    access(index, bases[index],
+                           OpIEqual(U1, best_index, Const(static_cast<u32>(index))));
+                }
+                return;
             }
             std::vector<Sirit::Literal> literals;
             std::vector<Id> labels;

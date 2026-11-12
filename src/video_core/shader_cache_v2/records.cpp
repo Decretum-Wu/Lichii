@@ -26,7 +26,8 @@ constexpr u32 ProgramPayloadVersion = 1;
 } // Anonymous namespace
 
 u64 LoweringStamp() {
-    return GeneratedLoweringStamp;
+    return Common::Nx2Experiments::Revert1462Lower() ? GeneratedLoweringStamp ^ 0x1462146214621462ULL
+                                                     : GeneratedLoweringStamp;
 }
 
 ProgramKeyInputs MakeProgramKeyInputs(Shader::Stage stage, u32 header_size,

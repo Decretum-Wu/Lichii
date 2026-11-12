@@ -27,6 +27,7 @@
 
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 
+#include "common/nx2_experiments.h"
 #include "common/assert.h"
 #include "common/dkb_frame_trace.h"
 #include "shader_recompiler/exception.h"
@@ -2668,7 +2669,8 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
     // get the clean area the caches would return without a look under their locks (after
     // Stephen Jayakar's EDEN_NX2_READ_FASTPATH, eb3553bcb8).
     std::optional<VideoCore::RasterizerDownloadArea> texture_area;
-    if (texture_cache.page_filter.Any(addr, size)) {
+    const bool revert_1479 = Common::Nx2Experiments::Revert1479();
+    if (revert_1479 || texture_cache.page_filter.Any(addr, size)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_area = texture_cache.GetFlushArea(addr, size);
     }
@@ -2682,7 +2684,7 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
         return *texture_area;
     }
     if (buffer_cache.FlushesOnCpuRead() &&
-        (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
+        (revert_1479 || !Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
          Tegra::Nx2MayBeGpuWritten(addr, size))) {
         std::scoped_lock lock{buffer_cache.mutex};
         auto area = buffer_cache.GetFlushArea(addr, size);

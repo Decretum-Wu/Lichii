@@ -20,6 +20,7 @@
 #include <vector>
 #include <fmt/ranges.h>
 
+#include "common/nx2_experiments.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/multi_range_refresh.h"
@@ -344,9 +345,11 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     area->end_address = device_addr_end_aligned;
     // Preflushable data is downloaded at fences, but only where it is marked (QueueFenceDownload):
     // the rest of the range still needs this flush.
+    const bool revert_1462 = Common::Nx2Experiments::Revert1462Flush();
     if (memory_tracker.IsRegionPreflushable(device_addr, size) &&
-        !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
-                                          device_addr_end_aligned - device_addr_start_aligned)) {
+        (revert_1462 ||
+         !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
+                                           device_addr_end_aligned - device_addr_start_aligned))) {
         // Fence downloads keep it, once the first read's download is in guest memory.
         area->in_flight = std::ranges::any_of(read_downloads, [&](const ReadDownload& download) {
             return download.write_ranges.Intersects(
@@ -354,8 +357,10 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         });
         area->preemtive = !area->in_flight;
         // The core keeps this area: a later GPU write to its unmarked pages must arm them again.
-        read_trapped_ranges.Subtract(device_addr_start_aligned,
-                                     device_addr_end_aligned - device_addr_start_aligned);
+        if (!revert_1462) {
+            read_trapped_ranges.Subtract(device_addr_start_aligned,
+                                         device_addr_end_aligned - device_addr_start_aligned);
+        }
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
