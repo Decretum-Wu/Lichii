@@ -78,7 +78,6 @@
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_drain_check.h"
 #include "video_core/nx2_fast_draw.h"
-#include "video_core/plan_workers.h"
 #include "video_core/nx2_list_stats.h"
 #include "video_core/nx2_profile.h"
 
@@ -463,51 +462,12 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
-    VideoCommon::PlanWorkers::Get().SetPlanner(&pipeline_cache);
-    buffer_cache.SetQueryPages(&query_cache.page_filter);
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
-    VideoCommon::PlanWorkers::Get().SetPlanner(nullptr);
     VideoCommon::GpuSplit::Get().SetIdleHook(nullptr, nullptr);
     scheduler.WaitWorker();
     scheduler.Finish();
-}
-
-GraphicsPipeline* RasterizerVulkan::LookUpPipeline() {
-    using Workers = VideoCommon::PlanWorkers;
-    const VideoCommon::DrawPlan* const plan = Workers::CurrentPlan();
-    if (plan == nullptr) {
-        return pipeline_cache.CurrentGraphicsPipeline();
-    }
-    auto& workers = Workers::Get();
-    bool valid = false;
-    if (Workers::Verify()) {
-        GraphicsPipeline* const found = pipeline_cache.CurrentGraphicsPipeline();
-        if (plan->pipeline == nullptr) {
-            if (plan->key_hash != 0) {
-                workers.NotePipeline(plan->key_hash == pipeline_cache.CurrentKeyHash()
-                                         ? Workers::PipelineOutcome::SameKeyUnplanned
-                                         : Workers::PipelineOutcome::OtherKeyUnplanned);
-            }
-            return found;
-        }
-        const bool matched = pipeline_cache.PlannedPipelineMatches(*plan, valid);
-        workers.NotePipeline(!valid    ? Workers::PipelineOutcome::Stale
-                             : matched ? Workers::PipelineOutcome::Matched
-                                       : Workers::PipelineOutcome::Differed);
-        return found;
-    }
-    if (plan->pipeline == nullptr) {
-        return pipeline_cache.CurrentGraphicsPipeline();
-    }
-    GraphicsPipeline* const planned = pipeline_cache.TakePlannedPipeline(*plan, valid);
-    if (!valid) {
-        workers.NotePipeline(Workers::PipelineOutcome::Stale);
-        return pipeline_cache.CurrentGraphicsPipeline();
-    }
-    workers.NotePipeline(Workers::PipelineOutcome::Used);
-    return planned;
 }
 
 GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_indirect) {
@@ -1064,7 +1024,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     if (delta_pipeline != nullptr && taken_relookup) {
         {
             Profile::Scope scope{Profile::Zone::PipelineLookup};
-            looked_up = LookUpPipeline();
+            looked_up = pipeline_cache.CurrentGraphicsPipeline();
         }
         if (looked_up == delta_pipeline) {
             ++fast_draw_stats.relookup_same;
@@ -1087,7 +1047,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
          last_full_reason == FullDraw::StateChanged)) {
         if (looked_up == nullptr) {
             Profile::Scope scope{Profile::Zone::PipelineLookup};
-            looked_up = LookUpPipeline();
+            looked_up = pipeline_cache.CurrentGraphicsPipeline();
         }
         if (looked_up != nullptr && RevisitDraw(looked_up, is_indirect)) {
             --fast_draw_stats.full[static_cast<size_t>(last_full_reason)];
@@ -1100,7 +1060,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
                                      : looked_up != nullptr             ? looked_up
                                                                         : [&] {
         Profile::Scope scope{Profile::Zone::PipelineLookup};
-        return LookUpPipeline();
+        return pipeline_cache.CurrentGraphicsPipeline();
     }()};
     const bool verify_views = verify_pipeline != nullptr && verify_pipeline == pipeline;
     if (verify_pipeline != nullptr) {

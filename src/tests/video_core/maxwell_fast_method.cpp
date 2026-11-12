@@ -72,8 +72,7 @@ struct GpuSplitTestAccess {
     static u64 Execute(GpuSplit& split, u64 position, u64 available) {
         const size_t index = position & GpuSplit::RingMask;
         const size_t size = split.Execute(
-            &split.ring[index], std::min<u64>(available - position, GpuSplit::RingWords - index),
-            split.back_engine);
+            &split.ring[index], std::min<u64>(available - position, GpuSplit::RingWords - index));
         return position + (size != 0 ? size : GpuSplit::RingWords - index);
     }
 

@@ -133,13 +133,12 @@ void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
 void SetCurrentThreadToAllCores();
 
-enum class PinnedRole : u32 { GpuFront, GpuBack, GpuPrep, GuestCore };
+enum class PinnedRole : u32 { GpuFront, GpuBack, GuestCore };
 
 /// The experimental pin_gpu_threads setting (Windows and Linux): the split GPU thread's front and
 /// back each get a physical performance core of their own and the guest cores keep off those two.
-/// With EDEN_NX2_PREP_LANE=1 the back's preparation lane (GpuPrep) gets a third one where the CPU
-/// has a core to spare; else GpuPrep is not pinned. Skipped, with one log line, on CPUs with too
-/// few cores, with EDEN_HYBRID_CORES=0 (Windows), and on other hosts.
+/// Skipped, with one log line, on CPUs with too few cores, with EDEN_HYBRID_CORES=0 (Windows), and
+/// on other hosts.
 void PinCurrentThread(PinnedRole role);
 
 void RefreshThreadPolicies();

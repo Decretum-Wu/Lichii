@@ -165,8 +165,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // TickWork ends fast draw reuse itself when it runs a request.
                     split.Defer([gpu = &system.GPU()] { gpu->TickWork(); },
                                 VideoCommon::GpuSplit::Writes::Caches,
-                                VideoCommon::GpuSplit::FastDrawNeutral |
-                                    VideoCommon::GpuSplit::LanePrep);
+                                VideoCommon::GpuSplit::FastDrawNeutral);
                 } else if (auto* run = std::get_if<RunCommand>(&next.data)) {
                     if (run->before_later_reads) {
                         // GPU memory maps unmap caches (UnmapMemory downloads): the back's state.
@@ -180,22 +179,20 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // Writes guest memory with what the caches hold of it.
                     split.Defer([rasterizer_ptr, addr = flush->addr,
                                  size = flush->size] { rasterizer_ptr->FlushRegion(addr, size); },
-                                VideoCommon::GpuSplit::Writes::Caches,
-                                VideoCommon::GpuSplit::LanePrep);
+                                VideoCommon::GpuSplit::Writes::Caches);
                 } else if (const auto* invalidate = std::get_if<InvalidateRegionCommand>(&next.data)) {
                     split.Defer(
                         [rasterizer_ptr, addr = invalidate->addr, size = invalidate->size] {
                             rasterizer_ptr->OnCacheInvalidation(addr, size);
                         },
-                        VideoCommon::GpuSplit::Writes::Noted, VideoCommon::GpuSplit::LanePrep);
+                        VideoCommon::GpuSplit::Writes::Noted);
                 } else {
                     ASSERT(false);
                 }
                 split.Defer([state_ptr = &state, fence = next.fence,
                              block = next.block] { SignalCommand(*state_ptr, fence, block); },
                             VideoCommon::GpuSplit::Writes::Noted,
-                            VideoCommon::GpuSplit::FastDrawNeutral |
-                                VideoCommon::GpuSplit::LanePrep);
+                            VideoCommon::GpuSplit::FastDrawNeutral);
                 split.Publish();
                 last_progress = std::chrono::steady_clock::now();
                 continue;

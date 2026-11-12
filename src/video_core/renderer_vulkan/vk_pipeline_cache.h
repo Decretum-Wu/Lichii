@@ -33,7 +33,6 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/bounded_store.h"
-#include "video_core/plan_workers.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
@@ -109,41 +108,6 @@ using VideoCommon::ShaderInfo;
 
 using VideoCommon::ShaderPools;
 
-/// graphics_cache as the plan workers read it: written only by the thread that owns the cache,
-/// read by any. Entries are only added; Clear (pipelines evicted) bumps the generation first and
-/// keeps the nodes it drops alive, so a reader never touches freed memory and a plan made before
-/// it is known to be stale.
-class PlannedPipelineIndex {
-public:
-    struct Node {
-        GraphicsPipelineCacheKey key;
-        GraphicsPipeline* pipeline;
-    };
-
-    PlannedPipelineIndex();
-
-    /// Owner thread.
-    void Insert(const GraphicsPipelineCacheKey& key, GraphicsPipeline* pipeline);
-    /// Owner thread.
-    void Clear();
-    /// Any thread.
-    [[nodiscard]] const Node* Find(const GraphicsPipelineCacheKey& key) const noexcept;
-    [[nodiscard]] u64 Generation() const noexcept {
-        return generation.load(std::memory_order_acquire);
-    }
-
-private:
-    static constexpr size_t Capacity = size_t{1} << 17;
-    struct Entry {
-        std::atomic<u64> hash{};
-        std::atomic<const Node*> node{};
-    };
-    std::unique_ptr<Entry[]> entries;
-    std::vector<std::unique_ptr<Node>> nodes;
-    size_t count{};
-    std::atomic<u64> generation{1};
-};
-
 struct ComputePipelineCacheEntry {
     std::unique_ptr<ComputePipeline> pipeline;
     std::string failure;
@@ -159,7 +123,7 @@ struct ComputePipelineCacheEntry {
                                        const ComputePipelineCacheKey& key) const;
 };
 
-class PipelineCache : public VideoCommon::ShaderCache, public VideoCommon::DrawPlanner {
+class PipelineCache : public VideoCommon::ShaderCache {
 public:
     explicit PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, const Device& device,
                            Scheduler& scheduler, DescriptorPool& descriptor_pool,
@@ -170,25 +134,6 @@ public:
     ~PipelineCache();
 
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
-
-    /// Plan workers (VideoCommon::PlanWorkers), any worker thread: the graphics pipeline of the
-    /// draw `mirror` is at, when its shaders are registered and a draw used the pipeline before.
-    void Plan(const VideoCommon::PlanMirror& mirror, VideoCommon::DrawPlan& plan) override;
-
-    /// Preparation lane: CurrentGraphicsPipeline from the pipeline `plan` names, with the same
-    /// effects on this cache, when nothing it depends on changed since it was planned. `valid`:
-    /// whether it could stand for the lookup (else the result is null; look up as usual).
-    [[nodiscard]] GraphicsPipeline* TakePlannedPipeline(const VideoCommon::DrawPlan& plan,
-                                                        bool& valid);
-
-    /// EDEN_NX2_PREP_PLAN_VERIFY, right after CurrentGraphicsPipeline: whether `plan` named the
-    /// pipeline it chose. `valid`: whether the plan still held.
-    [[nodiscard]] bool PlannedPipelineMatches(const VideoCommon::DrawPlan& plan,
-                                              bool& valid) const;
-    /// The hash of the key the last lookup used.
-    [[nodiscard]] u64 CurrentKeyHash() const noexcept {
-        return graphics_key.Hash();
-    }
 
     void TickFrame();
 
@@ -396,9 +341,6 @@ private:
     std::stop_source serialization_stop;
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;
-
-    /// What the plan workers look pipelines up in (Plan).
-    PlannedPipelineIndex planned_index;
 };
 
 } // namespace Vulkan

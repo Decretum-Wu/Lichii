@@ -229,7 +229,7 @@ inline void NoteEntry(DmaPusher& pusher, const CommandListHeader& header,
             state.skipped.fetch_add(1, std::memory_order_relaxed);
             split.Defer([memory = &pusher.memory_manager, rasterizer = pusher.rasterizer, address,
                          parsed] { CheckSkipped(memory, rasterizer, address, parsed); },
-                        VideoCommon::GpuSplit::Writes::Caches, VideoCommon::GpuSplit::LanePrep);
+                        VideoCommon::GpuSplit::Writes::Caches);
         }
     }
     if (g_entries) {
@@ -237,7 +237,7 @@ inline void NoteEntry(DmaPusher& pusher, const CommandListHeader& header,
         state.compared[path].fetch_add(1, std::memory_order_relaxed);
         split.Defer([memory = &pusher.memory_manager, address, parsed,
                      path] { CheckCompared(memory, address, parsed, path); },
-                    VideoCommon::GpuSplit::Writes::Noted, VideoCommon::GpuSplit::LanePrep);
+                    VideoCommon::GpuSplit::Writes::Noted);
     }
 }
 

@@ -90,16 +90,6 @@ public:
     /// Runs on the thread that owns the cache, between frames.
     void RefreshDebugRejections(bool unrejected);
 
-    /// Any thread (plan workers): the shader starting at `addr` and its unique hash, and the
-    /// removal generation (RemovalGeneration) under the same lock. False if none is registered.
-    [[nodiscard]] bool LookupShared(VAddr addr, const ShaderInfo*& info, u64& unique_hash,
-                                    u64& generation) const;
-    /// Bumped whenever shaders are removed: a ShaderInfo looked up before is alive while it
-    /// stays the same.
-    [[nodiscard]] u64 RemovalGeneration() const noexcept {
-        return removal_generation.load(std::memory_order_acquire);
-    }
-
 protected:
     struct GraphicsEnvironments {
         std::array<GraphicsEnvironment, NUM_PROGRAMS> envs;
@@ -203,8 +193,6 @@ private:
     /// Bounds of every address ever rejected (never shrinks): a quick test for invalidations.
     std::atomic<VAddr> rejected_lowest{~VAddr{}};
     std::atomic<VAddr> rejected_highest{};
-    /// RemovalGeneration: written under lookup_mutex.
-    std::atomic<u64> removal_generation{};
 };
 
 } // namespace VideoCommon

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
-#include <chrono>
 #include <cstdlib>
 #include <thread>
 
@@ -32,7 +31,6 @@
 #include "video_core/nx2.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
-#include "video_core/plan_workers.h"
 
 namespace VideoCommon {
 
@@ -145,29 +143,17 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     check_owner = std::getenv("EDEN_NX2_SPLIT_CHECK") != nullptr;
     profile_publishes = Nx2Profile::Enabled();                      // TEST
     log_methods = std::getenv("EDEN_NX2_ACQUIRE_STATS") != nullptr; // TEST
-    static const bool lane_wanted = [] {
-        const char* value = std::getenv("EDEN_NX2_PREP_LANE");
-        return value != nullptr && value[0] == '1';
-    }();
-    lane = lane_wanted;
     ring = std::make_unique<u64[]>(RingWords);
     if (!placed_log) {
         placed_log = std::make_unique<PlacedLogEntry[]>(PlacedLogSize);
     }
     ++starts; // Before the back starts: it tags the entries of fenced writes with it (EntryTag)
-    if (lane) {
-        prep_ring = std::make_unique<u64[]>(PrepWords);
-        prep_thread = std::jthread([this](std::stop_token stop_token) { PrepLoop(stop_token); });
-        // Before the method lane starts: it sends them its changes from its first record on.
-        PlanWorkers::Get().Start(PlanWorkers::Configured());
-    }
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
     const char* jit = std::getenv("EDEN_NX2_MME_JIT");
     front_macros = mode == '2' && (jit == nullptr || jit[0] != '0');
-    LOG_INFO(HW_GPU, "GPU thread split: engine methods run on a second thread{}{}",
-             front_macros ? ", macros on the first" : "",
-             lane ? ", draws are prepared on a third (EDEN_NX2_PREP_LANE)" : "");
+    LOG_INFO(HW_GPU, "GPU thread split: engine methods run on a second thread{}",
+             front_macros ? ", macros on the first" : "");
 }
 
 void GpuSplit::Stop() {
@@ -178,14 +164,6 @@ void GpuSplit::Stop() {
     wake.fetch_add(1, std::memory_order_seq_cst);
     wake.notify_one();
     back_thread.join();
-    if (prep_thread.joinable()) {
-        // After the method lane: it no longer sends anything.
-        prep_thread.request_stop();
-        prep_wake.fetch_add(1, std::memory_order_seq_cst);
-        prep_wake.notify_one();
-        prep_thread.join();
-        PlanWorkers::Get().Stop();
-    }
     active = false;
     // The split is static and outlives the emulation session. The next session's back thread
     // starts reading at 0: with the old positions kept it skipped through the new, empty ring a
@@ -197,6 +175,7 @@ void GpuSplit::Stop() {
     last_sync_position = 0;
     synced_writer_position = 0;
     last_entry_start = 0;
+    back_entry_start = 0;
     semaphore_writes.clear();
     semaphore_writes_limit = 1024;
     last_any_write = 0;
@@ -217,23 +196,6 @@ void GpuSplit::Stop() {
     front_engine = nullptr;
     back_engine = nullptr;
     front_macros = false;
-    lane = false;
-    prep_ring.reset();
-    prep_write = 0;
-    prep_published_local = 0;
-    prep_consumed_cache = 0;
-    prep_batch = NoBatch;
-    prep_batch_end = 0;
-    for (auto* const engine : lane_stale_engines) {
-        engine->lane_stale = false; // Nothing runs now: the next run brings the mirror up to date
-    }
-    lane_stale_engines.clear();
-    prep_engine = nullptr;
-    prep_published.store(0, std::memory_order_relaxed);
-    prep_consumed.store(0, std::memory_order_relaxed);
-    prep_idle_at.store(~u64{0}, std::memory_order_relaxed);
-    prep_waiting.store(false, std::memory_order_relaxed);
-    method_waiting.store(false, std::memory_order_relaxed);
     published.store(0, std::memory_order_relaxed);
     consumed.store(0, std::memory_order_relaxed);
     back_idle_at.store(~u64{0}, std::memory_order_relaxed);
@@ -414,13 +376,6 @@ std::string GpuSplit::DescribeState(u64 device_address) const {
         write_position, published_local, consumed.load(std::memory_order_acquire),
         back_idle_at.load(std::memory_order_relaxed), back_waiting.load(std::memory_order_relaxed),
         last_writer_position, last_sync_position);
-    if (lane) {
-        text += fmt::format("; prep lane: published {}, consumed {}, idle at {:#x}, waiting {}",
-                            prep_published.load(std::memory_order_acquire),
-                            prep_consumed.load(std::memory_order_acquire),
-                            prep_idle_at.load(std::memory_order_relaxed),
-                            prep_waiting.load(std::memory_order_relaxed));
-    }
     if (const auto it = semaphore_writes.find(device_address & ~u64{3});
         it != semaphore_writes.end()) {
         const SemaphoreWrite& write = it->second;
@@ -713,48 +668,28 @@ std::string GpuSplit::MethodEndingAt(u64 end) const {
     return fmt::format("{} {:#x}", EngineName(sent.engine), sent.method);
 }
 
-void GpuSplit::DeferFunction(std::function<void()>&& func, Writes writes, u64 flags) {
+void GpuSplit::DeferFunction(std::function<void()>&& func, Writes writes) {
     auto* const heap = new std::function<void()>(std::move(func));
     Defer(
         [heap] {
             (*heap)();
             delete heap;
         },
-        writes, flags);
+        writes);
 }
 
-size_t GpuSplit::EntrySize(const u64* entry) {
+size_t GpuSplit::Execute(const u64* entry, size_t words) {
     const u64 head = entry[0];
     switch (static_cast<Kind>(head & 0xf)) {
     case Kind::Wrap:
         return 0;
     case Kind::Engine:
-        return 2;
-    case Kind::Method:
-        return (head & HasSegment) != 0 ? 2 : 1;
-    case Kind::Multi: {
-        const u32 amount = static_cast<u32>(head >> 32);
-        return ((head & HasSegment) != 0 ? 3 : 2) + (amount + 1) / 2;
-    }
-    case Kind::Call:
-        return 2 + static_cast<size_t>((head >> 8) & 0xffffff);
-    }
-    return 1;
-}
-
-size_t GpuSplit::Execute(const u64* entry, size_t words,
-                         Tegra::Engines::EngineInterface*& lane_engine) {
-    const u64 head = entry[0];
-    switch (static_cast<Kind>(head & 0xf)) {
-    case Kind::Wrap:
-        return 0;
-    case Kind::Engine:
-        lane_engine = reinterpret_cast<Tegra::Engines::EngineInterface*>(entry[1]);
+        back_engine = reinterpret_cast<Tegra::Engines::EngineInterface*>(entry[1]);
         return 2;
     case Kind::Method: {
         const u32 method = static_cast<u32>((head >> 8) & 0xffff);
         const u32 argument = static_cast<u32>(head >> 32);
-        auto* const engine = lane_engine;
+        auto* const engine = back_engine;
         if (engine->fast_maxwell3d) {
             // Nx2Perf: as below without the profile zones (off with fast_maxwell3d) and the
             // virtual call.
@@ -826,7 +761,7 @@ size_t GpuSplit::Execute(const u64* entry, size_t words,
         const u32 method = static_cast<u32>((head >> 8) & 0xffff);
         const u32 amount = static_cast<u32>(head >> 32);
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
-        auto* const engine = lane_engine;
+        auto* const engine = back_engine;
         if (!engine->reports_fast_draw_breaks) {
             Nx2FastDraw::Break(Nx2FastDraw::Reason::OtherEngine);
         }
@@ -841,8 +776,7 @@ size_t GpuSplit::Execute(const u64* entry, size_t words,
     }
     case Kind::Call: {
         if ((head & FastDrawNeutral) == 0) {
-            Nx2FastDraw::Break((head & TrackedWrites) != 0 ? Nx2FastDraw::Reason::HostWork
-                                                           : Nx2FastDraw::Reason::Call);
+            Nx2FastDraw::Break(Nx2FastDraw::Reason::Call);
         }
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);
         reinterpret_cast<void (*)(const u64*)>(entry[1])(entry + 2);
@@ -853,13 +787,8 @@ size_t GpuSplit::Execute(const u64* entry, size_t words,
 }
 
 void GpuSplit::BackLoop(std::stop_token stop_token) {
-    // With the preparation lane, it is the back the traces mean (PrepLoop).
-    std::optional<Common::DkbCpuTrace::Registration> cpu_trace;
-    std::optional<StutterTrace::ThreadScope> stutter_thread;
-    if (!lane) {
-        cpu_trace.emplace(Common::DkbCpuTrace::Role::GpuBack);
-        stutter_thread.emplace(StutterTrace::Thread::Back);
-    }
+    const Common::DkbCpuTrace::Registration cpu_trace{Common::DkbCpuTrace::Role::GpuBack};
+    const StutterTrace::ThreadScope stutter_thread{StutterTrace::Thread::Back};
     Common::SetCurrentThreadName("GPUBack");
     on_back_thread = true;
     back_running.store(true, std::memory_order_release);
@@ -869,10 +798,6 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         Common::PinCurrentThread(Common::PinnedRole::GpuBack);
     }
     system->RegisterHostThread();
-    if (lane) {
-        MethodLoop(stop_token);
-        return;
-    }
 #ifdef _WIN32
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
 #endif
@@ -929,10 +854,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         u64 last_store = read_position;
         while (read_position != available) {
             const size_t index = read_position & RingMask;
-            t_entry_start = read_position;
+            back_entry_start = read_position;
             const size_t size =
-                Execute(&ring[index], std::min<u64>(available - read_position, RingWords - index),
-                        back_engine);
+                Execute(&ring[index], std::min<u64>(available - read_position, RingWords - index));
             read_position += size != 0 ? size : RingWords - index;
             if (hook_requested.load(std::memory_order_relaxed) &&
                 idle_hook != nullptr) [[unlikely]] {
@@ -955,351 +879,6 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         }
         consumed.store(read_position, std::memory_order_seq_cst);
         NotifyFront();
-    }
-    back_running.store(false, std::memory_order_seq_cst);
-    front_wake.fetch_add(1, std::memory_order_seq_cst);
-    front_wake.notify_all();
-}
-
-void GpuSplit::MethodLoop(std::stop_token stop_token) {
-    on_method_lane = true;
-    // Its breaks land on the preparation lane, in order (Maxwell3DLane).
-    Nx2FastDraw::t_defer_breaks = true;
-    u64 read_position = 0;
-    u64 last_progress = 0;
-    while (!stop_token.stop_requested()) {
-        Nx2Profile::Report("GPU back thread", true);
-        u64 available = published.load(std::memory_order_acquire);
-        if (available == read_position) {
-            // The preparation lane runs the hooks: this lane only waits for the front.
-            back_idle_at.store(read_position, std::memory_order_relaxed);
-            Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
-            for (u32 spins = 0; spins < 8192 && available == read_position; ++spins) {
-                Pause();
-                available = published.load(std::memory_order_acquire);
-            }
-            if (available == read_position) {
-                back_waiting.store(true, std::memory_order_seq_cst);
-                const u32 seen = wake.load(std::memory_order_seq_cst);
-                available = published.load(std::memory_order_seq_cst);
-                if (available == read_position && !stop_token.stop_requested()) {
-                    wake.wait(seen, std::memory_order_seq_cst);
-                }
-                back_waiting.store(false, std::memory_order_relaxed);
-                continue;
-            }
-        }
-        while (read_position != available) {
-            const size_t index = read_position & RingMask;
-            const u64* const entry = &ring[index];
-            const size_t limit = std::min<u64>(available - read_position, RingWords - index);
-            const u64 head = entry[0];
-            size_t size = 0;
-            switch (static_cast<Kind>(head & 0xf)) {
-            case Kind::Wrap:
-                read_position += RingWords - index;
-                continue;
-            case Kind::Engine:
-                // Both lanes follow the engine selection.
-                back_engine = reinterpret_cast<Tegra::Engines::EngineInterface*>(entry[1]);
-                size = 2;
-                LaneForward(entry, size, read_position);
-                break;
-            case Kind::Method:
-            case Kind::Multi:
-                if (back_engine->runs_on_method_lane) {
-                    MarkLaneStale(back_engine);
-                    t_entry_start = read_position;
-                    size = Execute(entry, limit, back_engine);
-                    MarkLaneStale(back_engine);
-                    break;
-                }
-                FlushLaneEngines();
-                size = EntrySize(entry);
-                LaneForward(entry, size, read_position);
-                break;
-            case Kind::Call:
-                if ((head & LaneMethod) != 0) {
-                    t_entry_start = read_position;
-                    size = Execute(entry, limit, back_engine);
-                    break;
-                }
-                FlushLaneEngines();
-                size = EntrySize(entry);
-                LaneForward(entry, size, read_position);
-                if ((head & LanePrep) == 0) {
-                    // It may touch what this lane runs on: it runs while this lane waits.
-                    u64* const record = LaneReserve(1);
-                    record[0] = PrepRecord | static_cast<u64>(PrepKind::Sync);
-                    ++prep_write;
-                    prep_batch = NoBatch;
-                    LaneWait();
-                }
-                break;
-            }
-            read_position += size;
-            if ((read_position - last_progress >= 4096 ||
-                 read_position >= wait_target.load(std::memory_order_relaxed)) &&
-                read_position != available) {
-                FlushLaneEngines();
-                LaneProgress(read_position);
-                last_progress = read_position;
-            }
-        }
-        // What the method lane ran must be in the mirrors before the front learns it ran.
-        FlushLaneEngines();
-        LaneProgress(read_position);
-        last_progress = read_position;
-    }
-    on_method_lane = false;
-    Nx2FastDraw::t_defer_breaks = false;
-    // The preparation lane stores back_running once it stopped too (Stop stops it after this).
-}
-
-void GpuSplit::FlushLaneEngines() {
-    if (lane_stale_engines.empty()) {
-        return;
-    }
-    for (auto* const engine : lane_stale_engines) {
-        if (engine->lane_stale) {
-            engine->lane_flush(engine);
-            engine->lane_stale = false;
-        }
-    }
-    lane_stale_engines.clear();
-}
-
-void GpuSplit::LaneWait() {
-    lane_waits.fetch_add(1, std::memory_order_relaxed); // TEST (EDEN_NX2_PREP_LEAD_STATS)
-    method_waiting.store(true, std::memory_order_seq_cst);
-    LanePublish();
-    const u64 target = prep_write;
-    Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
-    for (u32 spins = 0;; ++spins) {
-        prep_consumed_cache = prep_consumed.load(std::memory_order_acquire);
-        if (prep_consumed_cache >= target) {
-            method_waiting.store(false, std::memory_order_release);
-            return;
-        }
-        if (spins < 16384) {
-            Pause();
-        } else {
-            std::this_thread::yield();
-        }
-    }
-}
-
-void GpuSplit::LaneWaitForSpace(size_t words) {
-    if (prep_write + words - prep_consumed_cache <= PrepWords) {
-        return;
-    }
-    LanePublish();
-    for (u32 spins = 0;; ++spins) {
-        prep_consumed_cache = prep_consumed.load(std::memory_order_acquire);
-        if (prep_write + words - prep_consumed_cache <= PrepWords) {
-            return;
-        }
-        if (spins < 4096) {
-            Pause();
-        } else {
-            std::this_thread::yield();
-        }
-    }
-}
-
-u64* GpuSplit::LaneReserve(size_t words) {
-    size_t index = prep_write & PrepMask;
-    if (index + words > PrepWords) {
-        const size_t rest = PrepWords - index;
-        LaneWaitForSpace(rest);
-        prep_ring[index] = PrepRecord | static_cast<u64>(PrepKind::Wrap);
-        prep_write += rest;
-        prep_batch = NoBatch;
-        index = 0;
-    }
-    LaneWaitForSpace(words);
-    return &prep_ring[index];
-}
-
-void GpuSplit::LaneForward(const u64* entry, size_t words, u64 position) {
-    // Entries that follow each other in the ring go in one batch while it fits before the end.
-    // The preparation lane reads a batch as one run of words from its head: one that reached
-    // the end of the ring is closed (its next word, at the ring's start, is not after it).
-    const bool extend =
-        prep_batch != NoBatch && position == prep_batch_end &&
-        (prep_batch & PrepMask) + (prep_write - prep_batch) + words <= PrepWords &&
-        prep_write + words - prep_consumed_cache <= PrepWords;
-    if (!extend) {
-        u64* const head = LaneReserve(2 + words);
-        head[0] = position;
-        head[1] = 0;
-        prep_batch = prep_write;
-        prep_write += 2;
-    }
-    std::memcpy(&prep_ring[prep_write & PrepMask], entry, words * sizeof(u64));
-    prep_write += words;
-    prep_ring[(prep_batch + 1) & PrepMask] += words;
-    prep_batch_end = position + words;
-    if (LanePublishDue()) {
-        LanePublish();
-    }
-}
-
-void GpuSplit::LaneProgress(u64 position) {
-    u64* const record = LaneReserve(2);
-    record[0] = PrepRecord | static_cast<u64>(PrepKind::Progress);
-    record[1] = position;
-    prep_write += 2;
-    LanePublish();
-}
-
-void GpuSplit::LanePublish() {
-    // A published batch is closed: the preparation lane may have read its size already.
-    prep_batch = NoBatch;
-    prep_published_local = prep_write;
-    prep_published.store(prep_write, std::memory_order_seq_cst);
-    if (prep_waiting.load(std::memory_order_seq_cst)) {
-        prep_wake.fetch_add(1, std::memory_order_seq_cst);
-        prep_wake.notify_one();
-    }
-}
-
-void GpuSplit::PrepLoop(std::stop_token stop_token) {
-    const Common::DkbCpuTrace::Registration cpu_trace{Common::DkbCpuTrace::Role::GpuBack};
-    const StutterTrace::ThreadScope stutter_thread{StutterTrace::Thread::Back};
-    Common::SetCurrentThreadName("GPUPrep");
-    on_back_thread = true;
-    on_prep_thread = true;
-    Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
-    Common::SetCurrentThreadToPerformanceCores();
-    if (Settings::values.pin_gpu_threads.GetValue()) {
-        Common::PinCurrentThread(Common::PinnedRole::GpuPrep);
-    }
-    system->RegisterHostThread();
-#ifdef _WIN32
-    g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
-#endif
-    // TEST (EDEN_NX2_PREP_TEST_DELAY_NS): spins this long before each call it runs.
-    static const s64 test_delay_ns = [] {
-        const char* value = std::getenv("EDEN_NX2_PREP_TEST_DELAY_NS");
-        return value != nullptr ? std::atoll(value) : s64{0};
-    }();
-    u64 read_position = 0;
-    while (!stop_token.stop_requested()) {
-        Nx2Profile::Report("GPU prep thread", true);
-        MaybeTick();
-        u64 available = prep_published.load(std::memory_order_acquire);
-        if (available == read_position) {
-            prep_consumed.store(read_position, std::memory_order_release);
-            prep_idle_at.store(read_position, std::memory_order_relaxed);
-            Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
-            const GpuWaitStats::IdleScope idle{GpuWaitStats::g_back_idle_ns};
-            for (u32 spins = 0; spins < 8192 && available == read_position &&
-                                !hook_requested.load(std::memory_order_relaxed) &&
-                                !tick_requested.load(std::memory_order_relaxed);
-                 ++spins) {
-                Pause();
-                available = prep_published.load(std::memory_order_acquire);
-            }
-            if (available == read_position && idle_hook != nullptr) {
-                hook_requested.store(false, std::memory_order_seq_cst);
-                idle_hook(idle_argument);
-                available = prep_published.load(std::memory_order_acquire);
-            }
-            if (available == read_position) {
-                // LanePublish bumps prep_wake when it sees prep_waiting (as Publish, `wake`).
-                prep_waiting.store(true, std::memory_order_seq_cst);
-                const u32 seen = prep_wake.load(std::memory_order_seq_cst);
-                available = prep_published.load(std::memory_order_seq_cst);
-                if (available == read_position && !stop_token.stop_requested() &&
-                    !hook_requested.load(std::memory_order_seq_cst) &&
-                    !tick_requested.load(std::memory_order_seq_cst)) {
-                    prep_wake.wait(seen, std::memory_order_seq_cst);
-                }
-                prep_waiting.store(false, std::memory_order_relaxed);
-                continue;
-            }
-        }
-        u64 last_store = read_position;
-        while (read_position != available) {
-            const size_t index = read_position & PrepMask;
-            const u64 head = prep_ring[index];
-            if ((head & PrepRecord) == 0) {
-                const u64 origin = head;
-                const size_t words = static_cast<size_t>(prep_ring[index + 1]);
-                if (index + 2 + words > PrepWords) [[unlikely]] {
-                    LOG_CRITICAL(HW_GPU, "GPU split preparation lane: batch at {:#x} runs past "
-                                         "the ring's end ({} words)",
-                                 read_position, words);
-                }
-                const u64* const entries = &prep_ring[index + 2];
-                for (size_t offset = 0; offset < words;) {
-                    t_entry_start = origin + offset;
-                    const size_t size = Execute(entries + offset, words - offset, prep_engine);
-                    offset += size != 0 ? size : words - offset;
-                    if (hook_requested.load(std::memory_order_relaxed) &&
-                        idle_hook != nullptr) [[unlikely]] {
-                        hook_requested.store(false, std::memory_order_seq_cst);
-                        idle_hook(idle_argument);
-                    }
-                    MaybeTick();
-                }
-                read_position += 2 + words;
-            } else {
-                switch (static_cast<PrepKind>(head & 0xff)) {
-                case PrepKind::Wrap:
-                    read_position += PrepWords - index;
-                    break;
-                case PrepKind::Progress:
-                    consumed.store(prep_ring[index + 1], std::memory_order_seq_cst);
-                    NotifyFront();
-                    read_position += 2;
-                    break;
-                case PrepKind::Call: {
-                    const size_t words = static_cast<size_t>(prep_ring[index + 1]);
-                    t_entry_start = prep_ring[index + 2];
-                    const auto thunk = reinterpret_cast<void (*)(const u64*, std::span<const u32>)>(
-                        prep_ring[index + 3]);
-                    const size_t data_words = static_cast<size_t>(prep_ring[index + 4]);
-                    const u64* const function = &prep_ring[index + 5];
-                    const auto* const data = reinterpret_cast<const u32*>(
-                        &prep_ring[index + words - (data_words + 1) / 2]);
-                    if (test_delay_ns != 0) [[unlikely]] {
-                        // TEST: a slower preparation lane, to expose completion published early.
-                        const auto until = std::chrono::steady_clock::now() +
-                                           std::chrono::nanoseconds{test_delay_ns};
-                        while (std::chrono::steady_clock::now() < until) {
-                        }
-                    }
-                    thunk(function, std::span<const u32>{data, data_words});
-                    read_position += words;
-                    if ((head & PrepSync) != 0) {
-                        prep_consumed.store(read_position, std::memory_order_seq_cst);
-                    }
-                    if (hook_requested.load(std::memory_order_relaxed) &&
-                        idle_hook != nullptr) [[unlikely]] {
-                        hook_requested.store(false, std::memory_order_seq_cst);
-                        idle_hook(idle_argument);
-                    }
-                    MaybeTick();
-                    break;
-                }
-                case PrepKind::Sync:
-                    read_position += 1;
-                    prep_consumed.store(read_position, std::memory_order_seq_cst);
-                    break;
-                default:
-                    LOG_CRITICAL(HW_GPU, "GPU split preparation lane: bad record {:#x}", head);
-                    read_position = available;
-                    break;
-                }
-            }
-            if (read_position - last_store >= 4096) {
-                prep_consumed.store(read_position, std::memory_order_release);
-                last_store = read_position;
-            }
-        }
-        prep_consumed.store(read_position, std::memory_order_release);
     }
     back_running.store(false, std::memory_order_seq_cst);
     front_wake.fetch_add(1, std::memory_order_seq_cst);

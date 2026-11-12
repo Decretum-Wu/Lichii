@@ -164,33 +164,6 @@ TEST_CASE("Core pinning: no processors reported", "[common][core_pinning]") {
     CheckSkipped(plan);
 }
 
-TEST_CASE("Core pinning: the preparation lane gets a core of its own when asked",
-          "[common][core_pinning]") {
-    std::vector<LogicalProcessor> processors;
-    AddCores(processors, 8, 2, 1);
-    AddCores(processors, 16, 1, 0);
-    const auto without = Common::PlanGpuThreadPinning(processors);
-    CHECK(without.prep.empty());
-    const auto plan = Common::PlanGpuThreadPinning(processors, true);
-    CHECK(plan.front == Ids(2, 2));
-    CHECK(plan.back == Ids(4, 2));
-    CHECK(plan.prep == Ids(6, 2));
-    CHECK(plan.guest == Concat(Ids(0, 2), Ids(8, 8)));
-    CheckCoresAreDedicated(processors, plan);
-    for (const u32 id : plan.guest) {
-        CHECK(CoreOf(processors, id) != CoreOf(processors, plan.prep.front()));
-    }
-}
-
-TEST_CASE("Core pinning: 6 cores leave the preparation lane unpinned",
-          "[common][core_pinning]") {
-    const auto plan = Common::PlanGpuThreadPinning(Uniform(6, 2), true);
-    CHECK(plan.front == Ids(2, 2));
-    CHECK(plan.back == Ids(4, 2));
-    CHECK(plan.prep.empty());
-    CHECK(plan.guest == Concat(Ids(0, 2), Ids(6, 6)));
-}
-
 TEST_CASE("Core pinning: the enumeration order does not change the cores",
           "[common][core_pinning]") {
     const auto ordered = Uniform(8, 2);

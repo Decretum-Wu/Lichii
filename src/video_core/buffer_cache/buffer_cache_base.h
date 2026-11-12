@@ -52,8 +52,6 @@
 #include "video_core/nx2_download_trace.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_read_trace.h"
-#include "video_core/page_filter.h"
-#include "video_core/plan_workers.h"
 #include "video_core/rasterizer_download_area.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/types.h"
@@ -818,10 +816,7 @@ private:
     /// the delta chain.
     [[nodiscard]] bool UniformRangeKept(size_t stage, u32 index, DAddr device_addr,
                                         u32 size) const noexcept;
-    void NoteUniformWrite(DAddr device_addr, u64 size, bool plan_write = true) {
-        if (plan_write) {
-            NotePlanWrite(device_addr, size);
-        }
+    void NoteUniformWrite(DAddr device_addr, u64 size) {
         UniformKeep& keep = uniform_keep;
         if (keep.memory_writes.size() == keep.memory_writes.capacity()) {
             keep.memory_writes_lost = true;
@@ -829,43 +824,6 @@ private:
         }
         keep.memory_writes.emplace_back(device_addr, device_addr + size);
     }
-    /// Plan workers: guest memory the caches were told about being written (CPU writes, engine
-    /// writes, copies, downloads), by page: each bucket of pages holds the preparation lane's
-    /// progress at the last write to one of them (PlanWorkers::ProcessedSeq). Under the cache's
-    /// mutex.
-    void NotePlanWrite(DAddr device_addr, u64 size) {
-        if (!VideoCommon::PlanWorkers::Get().Active() || size == 0) [[likely]] {
-            return;
-        }
-        const u64 seq = VideoCommon::PlanWorkers::Get().ProcessedSeq();
-        const u64 first = device_addr >> PlanWritePageBits;
-        const u64 last = (device_addr + size - 1) >> PlanWritePageBits;
-        if (last - first >= plan_write_seqs.size()) {
-            plan_write_all = seq;
-            return;
-        }
-        for (u64 page = first; page <= last; ++page) {
-            plan_write_seqs[page % plan_write_seqs.size()] = seq;
-        }
-    }
-    /// Whether [device_addr, +size) may have been written since the preparation lane was done
-    /// with draw `seq`.
-    [[nodiscard]] bool PlanWrittenSince(u64 seq, DAddr device_addr, u64 size) const noexcept {
-        if (plan_write_all >= seq) {
-            return true;
-        }
-        const u64 first = device_addr >> PlanWritePageBits;
-        const u64 last = (device_addr + size - 1) >> PlanWritePageBits;
-        for (u64 page = first; page <= last; ++page) {
-            if (plan_write_seqs[page % plan_write_seqs.size()] >= seq) {
-                return true;
-            }
-        }
-        return false;
-    }
-    static constexpr u64 PlanWritePageBits = 12;
-    std::array<u64, 8192> plan_write_seqs{};
-    u64 plan_write_all{};
     /// EDEN_NX2_UBO_KEEP_VERIFY=1: binds what a keep would skip the original way and logs where
     /// guest memory changed.
     const bool ubo_keep_verify = [] {
@@ -887,26 +845,6 @@ private:
         u64 verified{};
         u64 mismatches{};
     } uniform_keep;
-
-    /// The plan of the draw being prepared whose uniform hashes hold (BeginGraphicsUniforms).
-    const VideoCommon::DrawPlan* uniform_plan{};
-    /// The query cache's pages (SetQueryPages): planned hashes aren't trusted there.
-    const VideoCommon::PageFilter* query_pages{};
-
-public:
-    void SetQueryPages(const VideoCommon::PageFilter* pages) noexcept {
-        query_pages = pages;
-    }
-
-private:
-    struct UniformPlanChecks {
-        u64 plans{};    ///< Draws whose plan's uniform hashes held
-        u64 stale{};    ///< Draws whose plan's guest memory changed since it was read
-        u64 used{};     ///< Uniform buffers bound with a planned hash
-        u64 verified{}; ///< EDEN_NX2_PREP_PLAN_VERIFY: hashes that matched the bytes
-        u64 differed{}; ///< EDEN_NX2_PREP_PLAN_VERIFY: hashes that didn't
-        u64 logged{};   ///< Mismatches logged (the first 16 ever)
-    } uniform_plan_checks;
 
     boost::container::small_vector<BufferCopy, 4> upload_copies;
 

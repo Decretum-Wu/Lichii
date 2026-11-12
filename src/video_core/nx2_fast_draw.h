@@ -56,13 +56,6 @@ enum class Reason : u8 {
     Frame,
     TextureHeaders,
     Map,
-    /// Around a macro: what it runs breaks for itself (HLE programs write registers directly).
-    Macro,
-    /// 3D methods and deferred calls that write guest memory only where its readers learn of it
-    /// otherwise (barriers, waits, clears, host cache invalidations, fence work, releases).
-    HostWork,
-    /// Texture downloads into guest memory (BumpPlanMemorySerial only).
-    Download,
     Count,
 };
 
@@ -70,7 +63,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
     "register",      "method",    "constant buffer data", "inline data",
     "other engine",  "deferred call", "tick work",        "invalidation",
     "fence release", "indirect reset", "frame",           "texture header data",
-    "memory map",    "macro",     "host work",            "download",
+    "memory map",
 };
 
 inline std::atomic<bool> g_enabled{true};
@@ -108,10 +101,6 @@ inline std::atomic<u64> g_memory_serial{1};
 /// The reason of the break that bumped g_serial last and, for Register and Method, its 3D method
 /// (diagnostics; on the thread that draws, the first break since it read the serial).
 inline std::atomic<u32> g_last_break{};
-/// As g_memory_serial, for what plan workers' reads of guest memory hold under
-/// (PlanMemorySerial): only the breaks BumpsPlanMemory names, and fence releases that download
-/// buffers or images and texture downloads (BumpPlanMemorySerial).
-alignas(64) inline std::atomic<u64> g_plan_memory_serial{1};
 
 /// The thread that draws reads the serials before each draw (Serial, MemorySerial). Once one of
 /// its breaks bumped a serial since it last read it, more change nothing it compares: they skip
@@ -121,120 +110,18 @@ inline thread_local bool t_reads_serials{};
 inline thread_local bool t_serial_bumped{};
 inline thread_local bool t_memory_serial_bumped{};
 
-/// The split's method lane (EDEN_NX2_PREP_LANE, gpu_split.h) runs the 3D engine ahead of the
-/// rasterizer: there a break waits until the lane sends the state it changed (TakePendingBreak),
-/// so it lands in order before the draws after it.
-inline thread_local bool t_defer_breaks{};
-inline thread_local bool t_break_pending{};
-inline thread_local bool t_memory_break_pending{};
-inline thread_local bool t_plan_memory_break_pending{};
-inline thread_local u32 t_pending_break{};
-
-/// In a break sent on (TakePendingBreak): a break other than a register change was among them.
-inline constexpr u32 MemoryBreakBit = 0x8000'0000U;
-/// ...and one other than a fence release (g_plan_memory_serial).
-inline constexpr u32 PlanMemoryBreakBit = 0x4000'0000U;
-
-/// Breaks after which guest memory a plan worker read may differ in ways nothing else tells:
-/// 3D methods with side effects and inline uploads, deferred calls, GPU tick work (flushes),
-/// invalidations, indirect resets and unmaps. Not register changes, constant buffer data (the
-/// workers lay it over memory), fence releases (their downloads bump the serial themselves and
-/// query results land on pages the query cache marks), other engines (their memory writes reach
-/// the buffer cache, which logs them for the plans), macros, host work (buffer downloads are
-/// logged, texture and fence downloads bump the serial, query results land on marked pages) or
-/// frames.
-[[nodiscard]] constexpr bool BumpsPlanMemory(Reason reason) {
-    switch (reason) {
-    case Reason::Method:
-    case Reason::InlineData:
-    case Reason::Call:
-    case Reason::TickWork:
-    case Reason::Invalidation:
-    case Reason::IndirectReset:
-    case Reason::Map:
-        return true;
-    default:
-        return false;
-    }
-}
-
-/// TEST: plan memory serial bumps by reason, and by 3D method for Method breaks.
-inline std::array<std::atomic<u64>, static_cast<size_t>(Reason::Count)> g_plan_bumps{};
-inline std::array<std::atomic<u32>, 0xe00> g_plan_bump_methods{};
-inline void CountPlanBump(u32 last) {
-    const u32 reason = last & 0xff;
-    if (reason < g_plan_bumps.size()) {
-        g_plan_bumps[reason].fetch_add(1, std::memory_order_relaxed);
-    }
-    const u32 method = (last >> 8) & 0x3fffff;
-    if (reason == static_cast<u32>(Reason::Method) && method < g_plan_bump_methods.size()) {
-        g_plan_bump_methods[method].fetch_add(1, std::memory_order_relaxed);
-    }
-}
-
 inline void Break(Reason reason, u32 method = 0) {
     if (Enabled()) {
-        const u32 last = static_cast<u32>(reason) | (method << 8);
-        if (t_defer_breaks) {
-            t_break_pending = true;
-            t_memory_break_pending |= reason != Reason::Register;
-            if (BumpsPlanMemory(reason)) {
-                t_plan_memory_break_pending = true;
-                CountPlanBump(last);
-            }
-            t_pending_break = last;
-            return;
-        }
         if (reason != Reason::Register && !(t_reads_serials && t_memory_serial_bumped)) {
             g_memory_serial.fetch_add(1, std::memory_order_relaxed);
             t_memory_serial_bumped = t_reads_serials;
         }
-        if (BumpsPlanMemory(reason)) {
-            g_plan_memory_serial.fetch_add(1, std::memory_order_seq_cst);
-            CountPlanBump(last);
-        }
         if (!(t_reads_serials && t_serial_bumped)) {
             g_serial.fetch_add(1, std::memory_order_relaxed);
-            g_last_break.store(last, std::memory_order_relaxed);
+            g_last_break.store(static_cast<u32>(reason) | (method << 8), std::memory_order_relaxed);
             t_serial_bumped = t_reads_serials;
         }
     }
-}
-
-/// A break that landed elsewhere (TakePendingBreak), as Break with its reason and method.
-inline void BreakAs(u32 last) {
-    if ((last & MemoryBreakBit) != 0) {
-        g_memory_serial.fetch_add(1, std::memory_order_relaxed);
-    }
-    if ((last & PlanMemoryBreakBit) != 0) {
-        g_plan_memory_serial.fetch_add(1, std::memory_order_seq_cst);
-    }
-    g_serial.fetch_add(1, std::memory_order_relaxed);
-    g_last_break.store(last & ~(MemoryBreakBit | PlanMemoryBreakBit), std::memory_order_relaxed);
-}
-
-/// A fence release or texture download that writes guest memory other than query results,
-/// before and after it writes.
-inline void BumpPlanMemorySerial(Reason counted_as = Reason::Fence) {
-    g_plan_memory_serial.fetch_add(1, std::memory_order_seq_cst);
-    CountPlanBump(static_cast<u32>(counted_as));
-}
-
-[[nodiscard]] inline u64 PlanMemorySerial() {
-    return g_plan_memory_serial.load(std::memory_order_seq_cst);
-}
-
-/// Method lane: the break waiting since the last call, if any.
-[[nodiscard]] inline bool TakePendingBreak(u32& last) {
-    if (!t_break_pending) {
-        return false;
-    }
-    t_break_pending = false;
-    last = t_pending_break | (t_memory_break_pending ? MemoryBreakBit : 0) |
-           (t_plan_memory_break_pending ? PlanMemoryBreakBit : 0);
-    t_memory_break_pending = false;
-    t_plan_memory_break_pending = false;
-    return true;
 }
 
 /// The thread that draws: what it compares fast draws with (and, from then on, its next break
@@ -286,8 +173,7 @@ private:
 };
 
 /// Light changes since the last draw that can reach texture handles. Written and read on the
-/// thread that runs the 3D engine and the rasterizer (the split's back); with its preparation lane
-/// the method lane collects them and sends them on with its draws (MergeDelta).
+/// thread that runs the 3D engine and the rasterizer (the split's back).
 struct Delta {
     static constexpr size_t MaxWrites = 16;
 
@@ -355,7 +241,7 @@ struct Delta {
     }
 };
 
-inline thread_local Delta g_delta;
+inline Delta g_delta;
 
 /// Moves g_delta into `out` and clears it, copying only the ranges in use (Delta is ~0.5 KiB and
 /// taken for every draw).
@@ -441,33 +327,13 @@ inline void NoteDeviceData(DAddr begin, DAddr end) {
 inline std::atomic<u64> g_unchanged_writes{};
 
 /// Notes data about to be written to [begin, begin + bytes) in GPU memory: inline constant buffer
-/// `words`, unless memory holds those words already (on the thread that writes them, after
-/// everything sent before), or with `words` null data not known yet (reports). Texture and sampler
-/// headers are checked by the caller.
+/// `words`, unless memory holds those words already, or with `words` null data not known yet
+/// (reports). Texture and sampler headers are checked by the caller.
 void NoteWrittenData(Tegra::MemoryManager& memory, GPUVAddr begin, const void* words, u64 bytes);
 /// NoteWrittenData for inline constant buffer `words` the caller is about to write: true when
 /// the write changes nothing and can be left out (memory holds the words, and neither the GPU
 /// caches nor a download for a guest read may hold others there). Fast draws off: false.
 [[nodiscard]] bool WriteData(Tegra::MemoryManager& memory, GPUVAddr begin, const void* words,
                              u64 bytes);
-
-/// Adds the changes another thread collected (the method lane's) to this thread's.
-inline void MergeDelta(const Delta& other) {
-    Delta& delta = g_delta;
-    for (size_t stage = 0; stage < delta.binds.size(); ++stage) {
-        delta.binds[stage] |= other.binds[stage];
-    }
-    for (u32 i = 0; i < other.num_writes; ++i) {
-        delta.no_uniform_keeps |= AppendRange(delta.write_begin, delta.write_end,
-                                              delta.num_writes, other.write_begin[i],
-                                              other.write_end[i]);
-    }
-    for (u32 i = 0; i < other.num_device_writes; ++i) {
-        delta.no_uniform_keeps |= AppendRange(delta.device_begin, delta.device_end,
-                                              delta.num_device_writes, other.device_begin[i],
-                                              other.device_end[i]);
-    }
-    delta.no_uniform_keeps |= other.no_uniform_keeps;
-}
 
 } // namespace VideoCommon::Nx2FastDraw

@@ -263,17 +263,6 @@ struct FixedPipelineState {
 
     void Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFeatures& features);
 
-    /// Refresh from the registers alone, as with every dirty flag set (the plan workers'): the
-    /// vertex input, viewport swizzles and blending are taken from `regs` too.
-    void RefreshFrom(const Maxwell& regs, Maxwell::PrimitiveTopology topology,
-                     Tegra::Engines::Maxwell3D::EngineHint engine_state,
-                     const DynamicFeatures& features);
-
-    void RefreshImpl(const Maxwell& regs, Maxwell::PrimitiveTopology topology,
-                     Tegra::Engines::Maxwell3D::EngineHint engine_state,
-                     const DynamicFeatures& features, bool refresh_vertex_input,
-                     bool refresh_swizzles);
-
     /// attribute_types as the registers give it: with VK_EXT_vertex_input_dynamic_state, all that
     /// the vertex attribute formats put in the key.
     [[nodiscard]] static u64 DynamicAttributeTypes(const Maxwell& regs) noexcept;

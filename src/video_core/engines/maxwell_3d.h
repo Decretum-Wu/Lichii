@@ -41,7 +41,6 @@ class MemoryManager;
 
 namespace VideoCommon {
 class GpuSplit;
-class Maxwell3DLane;
 }
 
 namespace VideoCore {
@@ -3222,26 +3221,6 @@ public:
         return execute_on;
     }
 
-    /// EDEN_NX2_PREP_LANE: the engine the split's method lane runs, with its preparation lane's
-    /// side (prep_lane.h), or null (the mirror, or no lane).
-    [[nodiscard]] VideoCommon::Maxwell3DLane* Lane() const {
-        return lane;
-    }
-    void SetLane(VideoCommon::Maxwell3DLane* lane_) {
-        lane = lane_;
-    }
-    /// Maxwell3DLane::RunMacro: the mirror holds shadow RAM entries of the engine's.
-    void SetLaneShadows() {
-        lane_shadows = true;
-    }
-    /// The mirror's side of the methods the preparation lane runs on it (Maxwell3DLane).
-    void LaneQueryCondition() {
-        ProcessQueryCondition();
-    }
-    Upload::State& LaneUpload() {
-        return upload_state;
-    }
-
     VideoCore::RasterizerInterface& Rasterizer() {
         return *rasterizer;
     }
@@ -3331,23 +3310,13 @@ private:
         const auto control = shadow_state.shadow_ram_control;
         if (control == Regs::ShadowRamControl::Track ||
             control == Regs::ShadowRamControl::TrackWithFilter) {
-            if (lane_shadows) [[unlikely]] {
-                LaneShadowWritten(method);
-            }
             return shadow_state.reg_array[method] = argument;
         }
         if (control == Regs::ShadowRamControl::Replay) {
-            if (lane_shadows) [[unlikely]] {
-                return LaneShadow(method);
-            }
             return shadow_state.reg_array[method];
         }
         return argument;
     }
-    /// The preparation lane's mirror may hold shadow RAM entries a macro it ran wrote
-    /// (Maxwell3DLane::RunMacro): a tracked write takes the entry back, a replay reads it there.
-    void LaneShadowWritten(u32 method);
-    u32 LaneShadow(u32 method);
 
     /// Stores a register's value and sets its dirty flags. Defined here for the same reason.
     void ProcessDirtyRegisters(u32 method, u32 argument) {
@@ -3364,14 +3333,9 @@ private:
             VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register, method);
         }
         regs.reg_array[method] = argument;
-        NoteRegisterWritten(method);
         for (const auto& table : dirty.tables) {
             dirty.flags[table[method]] = true;
         }
-    }
-    /// Maxwell3DLane: which 64-register blocks were written since it last looked (bit i: block i).
-    void NoteRegisterWritten(u32 method) {
-        lane_written_blocks |= u64{1} << (method >> 6);
     }
 
     /// CallMethodFast for a state register (not in execution_mask): a write of the value the
@@ -3452,15 +3416,6 @@ private:
     VideoCommon::Nx2FastDraw::DeviceSpans fast_draw_sampler_spans;
 
     VideoCore::RasterizerInterface* rasterizer = nullptr;
-    VideoCommon::Maxwell3DLane* lane{};
-    bool lane_shadows{}; ///< SetLaneShadows was called
-
-public:
-    /// NoteRegisterWritten's blocks (Maxwell3DLane::Build takes them).
-    u64 lane_written_blocks{~u64{0}};
-    static_assert(Regs::NUM_REGS / 64 <= 64);
-
-private:
 
     /// Start offsets of each macro in macro_memory
     std::array<u32, 0x80> macro_positions{};

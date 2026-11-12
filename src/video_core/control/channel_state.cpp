@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/assert.h"
-#include "common/settings.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/engines/fermi_2d.h"
@@ -17,7 +16,6 @@
 #include "video_core/macro.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
-#include "video_core/prep_lane.h"
 
 namespace Tegra::Control {
 namespace {
@@ -64,17 +62,7 @@ ChannelState::Payload::Payload(Core::System& system, MemoryManager& memory_manag
     , kepler_memory(memory_manager)
     , nv01_timer(memory_manager)
     , dma_pusher(system, memory_manager, channel_state)
-{
-    // The split runs only with Vulkan, whose state tracker reads the mirror (PrepMaxwell3D).
-    if (VideoCommon::PrepLaneEnabled() &&
-        Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan) {
-        prep_maxwell_3d.emplace(memory_manager);
-        maxwell_3d_lane = std::make_unique<VideoCommon::Maxwell3DLane>(maxwell_3d, *prep_maxwell_3d);
-        maxwell_3d.SetLane(maxwell_3d_lane.get());
-    }
-}
-
-ChannelState::Payload::~Payload() = default;
+{}
 
 ChannelState::ChannelState(s32 bind_id_)
     : bind_id{bind_id_}
@@ -92,10 +80,6 @@ void ChannelState::Init(Core::System& system, u64 program_id_) {
         const auto macros = Nx2MacroContext();
         payload->maxwell_3d.SetNativeMacroContext(macros);
         payload->maxwell_3d.SetNativeTuringMacroMode(true);
-        if (payload->prep_maxwell_3d) {
-            // The mirror runs the engine's inline uploads (Maxwell3DLane::UploadData).
-            payload->prep_maxwell_3d->SetNativeTuringMacroMode(true);
-        }
         payload->kepler_compute.SetNativeMacroMode(&macros->engine, macros->positions,
                                                    macros.get());
         payload->kepler_compute.SetNativeDataRam(&payload->maxwell_3d.GetNativeDataRam());
@@ -106,13 +90,7 @@ void ChannelState::Init(Core::System& system, u64 program_id_) {
 void ChannelState::BindRasterizer(VideoCore::RasterizerInterface* rasterizer) {
     payload->dma_pusher.BindRasterizer(rasterizer);
     memory_manager->BindRasterizer(rasterizer);
-    if (payload->maxwell_3d_lane) {
-        payload->maxwell_3d_lane->BindRasterizer(rasterizer);
-        payload->prep_maxwell_3d->BindRasterizer(rasterizer);
-        payload->maxwell_3d.BindRasterizer(payload->maxwell_3d_lane.get());
-    } else {
-        payload->maxwell_3d.BindRasterizer(rasterizer);
-    }
+    payload->maxwell_3d.BindRasterizer(rasterizer);
     payload->fermi_2d.BindRasterizer(rasterizer);
     payload->kepler_memory.BindRasterizer(rasterizer);
     payload->kepler_compute.BindRasterizer(rasterizer);

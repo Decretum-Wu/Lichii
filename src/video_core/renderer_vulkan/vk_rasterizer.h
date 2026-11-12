@@ -498,9 +498,6 @@ private:
         RevisitKind,       ///< indirect, inline index or frame dump draws
         RevisitGeneration, ///< the pipeline kept other state since (or gave it to another)
     };
-    /// The pipeline of a draw resolved in full: a plan worker's (PlanWorkers) when it still holds,
-    /// else CurrentGraphicsPipeline.
-    GraphicsPipeline* LookUpPipeline();
     /// The pipeline the draw can take the delta path with, or null for a full resolve. Clears
     /// the remembered draw either way: only a recorded draw remembers one again. With
     /// taken_relookup set, the pipeline is only where the kept state is: the draw looks its own

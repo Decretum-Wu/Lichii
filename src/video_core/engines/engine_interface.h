@@ -57,12 +57,6 @@ public:
     /// Fast draw (nx2_fast_draw.h): the engine reports its own changes (Maxwell3D); a method of any other
     /// engine ends draw reuse.
     bool reports_fast_draw_breaks{};
-    /// The split's method lane runs this engine's methods (EDEN_NX2_PREP_LANE, gpu_split.h); the
-    /// preparation lane reads a mirror of its state, which lane_flush brings up to date. Set on
-    /// the method lane once it ran something of the engine's, cleared by lane_flush.
-    bool runs_on_method_lane{};
-    bool lane_stale{};
-    void (*lane_flush)(EngineInterface* engine){};
 
 protected:
     virtual void ConsumeSinkImpl(Core::System& system) {

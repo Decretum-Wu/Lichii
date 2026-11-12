@@ -138,13 +138,6 @@ public:
     const std::array<u64, 6>& ShaderHashes() const noexcept {
         return key.unique_hashes;
     }
-    /// The uniform buffers each stage binds and the sizes its shaders read (fixed when built).
-    const std::array<u32, 5>& EnabledUniformBufferMasks() const noexcept {
-        return enabled_uniform_buffer_masks;
-    }
-    const VideoCommon::UniformBufferSizes& UniformBufferSizes() const noexcept {
-        return uniform_buffer_sizes;
-    }
 
     struct SampledImage {
         u32 stage;

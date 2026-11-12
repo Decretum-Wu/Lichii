@@ -61,8 +61,7 @@ template <typename Func>
 void OnBack(const Func& func,
             VideoCommon::GpuSplit::Writes writes = VideoCommon::GpuSplit::Writes::Anywhere) {
     if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-        // Only the rasterizer: with the preparation lane, that lane runs it.
-        split.Defer(func, writes, VideoCommon::GpuSplit::LanePrep);
+        split.Defer(func, writes);
     } else {
         func();
     }
@@ -256,7 +255,7 @@ void RequestFlush(DmaPusher& dma_pusher, Puller::PendingAcquire& acquire, u64 de
         [rasterizer = dma_pusher.rasterizer, device] {
             rasterizer->FlushRegion(device, sizeof(u32), VideoCommon::CacheType::BufferCache);
         },
-        VideoCommon::GpuSplit::Writes::Caches, VideoCommon::GpuSplit::LanePrep);
+        VideoCommon::GpuSplit::Writes::Caches);
     acquire.flush_position = split.Position();
     acquire.flushed = true;
 }

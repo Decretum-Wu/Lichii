@@ -125,31 +125,9 @@ u64 FixedPipelineState::DynamicAttributeTypes(const Maxwell& regs) noexcept {
 }
 
 void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFeatures& features) {
-    auto& flags = maxwell3d.dirty.flags;
-    const bool vertex_input_dirty = flags[Dirty::VertexInput];
-    const bool swizzles_dirty = flags[Dirty::ViewportSwizzles];
-    RefreshImpl(maxwell3d.regs, maxwell3d.draw_manager.draw_state.topology, maxwell3d.engine_state,
-                features, vertex_input_dirty, swizzles_dirty);
-    // With dynamic vertex input the command buffer update resets the flag.
-    if (vertex_input_dirty && !features.has_dynamic_vertex_input) {
-        flags[Dirty::VertexInput] = false;
-    }
-    flags[Dirty::ViewportSwizzles] = false;
-    if (!features.has_extended_dynamic_state_3_blend) {
-        flags[Dirty::Blending] = false;
-    }
-}
+    const Maxwell& regs = maxwell3d.regs;
+    const auto topology_ = maxwell3d.draw_manager.draw_state.topology;
 
-void FixedPipelineState::RefreshFrom(const Maxwell& regs, Maxwell::PrimitiveTopology topology_,
-                                     Tegra::Engines::Maxwell3D::EngineHint engine_state,
-                                     const DynamicFeatures& features) {
-    RefreshImpl(regs, topology_, engine_state, features, true, true);
-}
-
-void FixedPipelineState::RefreshImpl(const Maxwell& regs, Maxwell::PrimitiveTopology topology_,
-                                     Tegra::Engines::Maxwell3D::EngineHint engine_state,
-                                     const DynamicFeatures& features, bool refresh_vertex_input,
-                                     bool refresh_swizzles) {
     driver_id = features.driver_id;
     driver_version = features.driver_version;
 
@@ -214,7 +192,7 @@ void FixedPipelineState::RefreshImpl(const Maxwell& regs, Maxwell::PrimitiveTopo
     smooth_lines.Assign(regs.line_anti_alias_enable != 0 ? 1 : 0);
     alpha_to_coverage_enabled.Assign(regs.anti_alias_alpha_control.alpha_to_coverage != 0 ? 1 : 0);
     alpha_to_one_enabled.Assign(regs.anti_alias_alpha_control.alpha_to_one != 0 ? 1 : 0);
-    app_stage.Assign(engine_state);
+    app_stage.Assign(maxwell3d.engine_state);
 
     depth_bounds_min = static_cast<u32>(regs.depth_bounds[0]);
     depth_bounds_max = static_cast<u32>(regs.depth_bounds[1]);
@@ -238,11 +216,12 @@ void FixedPipelineState::RefreshImpl(const Maxwell& regs, Maxwell::PrimitiveTopo
                          : 0;
     point_size = std::bit_cast<u32>(regs.point_size);
 
-    if (refresh_vertex_input) {
+    if (maxwell3d.dirty.flags[Dirty::VertexInput]) {
         if (features.has_dynamic_vertex_input) {
             // Dirty flag will be reset by the command buffer update
             attribute_types = DynamicAttributeTypes(regs);
         } else {
+            maxwell3d.dirty.flags[Dirty::VertexInput] = false;
             enabled_divisors = 0;
             for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
                 const bool is_enabled = regs.vertex_stream_instances.IsInstancingEnabled(index);
@@ -261,7 +240,8 @@ void FixedPipelineState::RefreshImpl(const Maxwell& regs, Maxwell::PrimitiveTopo
             }
         }
     }
-    if (refresh_swizzles) {
+    if (maxwell3d.dirty.flags[Dirty::ViewportSwizzles]) {
+        maxwell3d.dirty.flags[Dirty::ViewportSwizzles] = false;
         const auto& transform = regs.viewport_transform;
         std::ranges::transform(transform, viewport_swizzles.begin(), [](const auto& viewport) {
             return static_cast<u16>(viewport.swizzle.raw);
@@ -283,6 +263,7 @@ void FixedPipelineState::RefreshImpl(const Maxwell& regs, Maxwell::PrimitiveTopo
         // Switch 2 command paths) left a stale state in the key (Ocarina forest fog drawn
         // without blending = black screen on GPUs without dynamic blend state, e.g. AMD).
         {
+            maxwell3d.dirty.flags[Dirty::Blending] = false;
             for (size_t index = 0; index < attachments.size(); ++index) {
                 attachments[index].Refresh(regs, index);
                 auto& attachment = attachments[index];

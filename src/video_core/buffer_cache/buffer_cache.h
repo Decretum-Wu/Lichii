@@ -145,16 +145,6 @@ void BufferCache<P>::TickFrame() {
                      keep.kept, keep.streamed_binds, keep.verified, keep.mismatches);
         }
         keep.kept = keep.streamed_binds = keep.verified = keep.mismatches = 0;
-        UniformPlanChecks& checks = uniform_plan_checks;
-        if (checks.plans + checks.stale != 0 &&
-            (Nx2Profile::Enabled() || VideoCommon::PlanWorkers::Verify())) {
-            LOG_INFO(HW_GPU,
-                     "Planned uniforms in 600 frames: {} draws with hashes that held, {} with "
-                     "guest memory changed since read, {} buffers bound by hash; verify: {} "
-                     "hashes matched, {} differed",
-                     checks.plans, checks.stale, checks.used, checks.verified, checks.differed);
-        }
-        checks = {.logged = checks.logged};
     }
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
         for (const auto& [address, size] : uploaded_buffer_ranges) {
@@ -2084,17 +2074,6 @@ void BufferCache<P>::SetUniformBuffersState(const std::array<u32, NUM_STAGES>& m
 
 template <class P>
 void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
-    // The plan worker's hashes hold while the guest memory it read hasn't changed since.
-    {
-        const VideoCommon::DrawPlan* const plan = VideoCommon::PlanWorkers::CurrentPlan();
-        const bool planned = plan != nullptr && plan->num_uniforms != 0;
-        const bool holds = planned && plan->memory == gpu_memory &&
-                           plan->map_serial == gpu_memory->MapSerial() &&
-                           plan->memory_serial == Nx2FastDraw::PlanMemorySerial();
-        uniform_plan = holds ? plan : nullptr;
-        uniform_plan_checks.plans += holds ? 1 : 0;
-        uniform_plan_checks.stale += planned && !holds ? 1 : 0;
-    }
     UniformKeep& keep = uniform_keep;
     const bool unwritten = !keep.memory_writes_lost && keep.draw_deletions == buffer_deletions;
     keep.draw_deletions = buffer_deletions;
@@ -2528,7 +2507,6 @@ Common::RangeSet<DAddr> BufferCache<P>::PendingCpuWriteRanges() {
 template <class P>
 void BufferCache<P>::WriteDownloadedMemory(const Common::RangeSet<DAddr>& cpu_written,
                                            DAddr device_addr, const u8* data, u64 size) {
-    NotePlanWrite(device_addr, size);
     // TEST (EDEN_NX2_READ_CHECK): newer GPU bytes than an early download brought before.
     if (!early_landed.empty()) [[unlikely]] {
         ForgetEarlyLanded(device_addr, size);
@@ -3023,37 +3001,8 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                 const u64 rebinds =
                     VideoCommon::UniformStreamReuseState<typename Runtime::StreamUniformRef>()
                         .rebinds;
-                // A plan worker's hash of the bytes stands for comparing them (PlanWorkers),
-                // but where query results land: those come at fence time, unseen by plans.
-                const VideoCommon::DrawPlan::Uniform* const planned =
-                    uniform_plan != nullptr ? uniform_plan->FindUniform(stage, index) : nullptr;
-                std::optional<VideoCommon::PlannedUniformHash> planned_hash;
-                const u64 differed_before = uniform_plan_checks.differed;
-                if (planned != nullptr && planned->size == size &&
-                    planned->address ==
-                        maxwell3d->state.shader_stages[stage].const_buffers[index].address &&
-                    (query_pages == nullptr || !query_pages->Any(device_addr, size)) &&
-                    !PlanWrittenSince(uniform_plan->processed_at_read, device_addr, size)) {
-                    planned_hash = VideoCommon::PlannedUniformHash{
-                        .low = planned->hash_low,
-                        .high = planned->hash_high,
-                        .verify = VideoCommon::PlanWorkers::Verify(),
-                        .verified = &uniform_plan_checks.verified,
-                        .differed = &uniform_plan_checks.differed,
-                    };
-                    ++uniform_plan_checks.used;
-                }
                 streamed = VideoCommon::BindSmallUniformReusing(
-                    runtime, device_memory, stage, index, binding_index, device_addr, size,
-                    planned_hash ? &*planned_hash : nullptr);
-                if (planned_hash && uniform_plan_checks.differed != differed_before &&
-                    uniform_plan_checks.logged < 16) [[unlikely]] {
-                    ++uniform_plan_checks.logged;
-                    LOG_ERROR(HW_GPU,
-                              "Planned uniform verify: stage {} slot {} at {:#x} (device {:#x}) "
-                              "+{:#x}: the plan's hash isn't the bytes'",
-                              stage, index, planned->address, device_addr, size);
-                }
+                    runtime, device_memory, stage, index, binding_index, device_addr, size);
                 const u64 rebound =
                     VideoCommon::UniformStreamReuseState<typename Runtime::StreamUniformRef>()
                         .rebinds -
@@ -3763,9 +3712,7 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     OutdateReadDownloads(device_addr, size);
     NoteReadBackWrite(device_addr, size);
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
-    // Not for plans: guest memory, which planned uniform hashes stand for, changes only when
-    // the download lands (WriteDownloadedMemory logs it).
-    NoteUniformWrite(device_addr, size, false);
+    NoteUniformWrite(device_addr, size);
     MarkVertexBuffersStale(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
     QueueFenceDownload(device_addr, size);
