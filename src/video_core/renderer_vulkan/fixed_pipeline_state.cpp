@@ -251,7 +251,7 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
         });
     }
     if (!extended_dynamic_state_2_logic_op) {
-        dynamic_state.Refresh2(regs, topology_, extended_dynamic_state_2);
+        dynamic_state.Refresh2(regs, regs.RasterTopology(topology_), extended_dynamic_state_2);
     }
     if (!extended_dynamic_state_3_blend) {
         // Always rebuilt: a blend register written without raising Dirty::Blending (native
