@@ -441,6 +441,10 @@ struct Values {
                                                            Specialization::Default,
                                                            true,
                                                            true};
+    // NVIDIA DLSS Frame Generation (DLSS-G with Reflex and PCL, through Streamline). Only with
+    // nvidia_dlss on; while it runs, the frame_gen* frame generation stays off.
+    SwitchableSetting<bool> nvidia_dlss_frame_gen{linkage, false, "nvidia_dlss_frame_gen",
+                                                  Category::Renderer};
     SwitchableSetting<bool> ocarina_fsr{linkage, false, "ocarina_fsr", Category::Renderer};
     // AMD FSR 4 in place of FSR 3.1 where FSR replaces a game's upscaler (Windows, AMD's driver).
     SwitchableSetting<bool> amd_fsr4{linkage, false, "amd_fsr4", Category::Renderer};

@@ -234,7 +234,8 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
         // Only builds with NVIDIA Streamline (Windows) can use it.
         if (setting->Id() == Settings::values.nvidia_dlss.Id() ||
             setting->Id() == Settings::values.nvidia_dlss_quality.Id() ||
-            setting->Id() == Settings::values.nvidia_dlss_preset.Id()) {
+            setting->Id() == Settings::values.nvidia_dlss_preset.Id() ||
+            setting->Id() == Settings::values.nvidia_dlss_frame_gen.Id()) {
             continue;
         }
 #endif

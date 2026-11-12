@@ -236,6 +236,13 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            "L/M require DLSS 310.5 or newer; the download button provides 310.9.16. "
            "If Fire Emblem shows horizontal lines with L/M at 2x, try K. "
            "NVIDIA app overrides may supersede this choice. Apply/OK updates it while playing."));
+    INSERT(Settings, nvidia_dlss_frame_gen, tr("NVIDIA DLSS Frame Generation"),
+           tr("Generates frames between the game's own with NVIDIA DLSS Frame Generation.\nNeeds "
+              "\"Use NVIDIA DLSS\" on, a GeForce RTX 40 series or newer GPU, and Hardware-"
+              "accelerated GPU scheduling on in Windows' graphics settings.\nVSync is not "
+              "available with it: Lichii presents without VSync while it runs.\nWith HDR output it "
+              "needs HDR format HDR10; it stays off with scRGB.\nTakes effect when a game "
+              "starts."));
     INSERT(Settings, anti_aliasing, tr("Anti-Aliasing Method:"),
            tr("The anti-aliasing method to use.\nSMAA offers the best quality.\nFXAA "
               "can produce a more stable picture in lower resolutions.\nOff while HDR output "

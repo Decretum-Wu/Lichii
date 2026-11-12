@@ -92,6 +92,8 @@ private:
     VkCommandBuffer BeginSingleTimeCommands();
     void EndSingleTimeCommands(VkCommandBuffer command_buffer);
     void Report() const;
+    /// The surface the swapchain is made for, once the device exists.
+    VkSurfaceKHR PresentationSurface();
 
     /// The encoding and luminances this frame is presented with; picks the swapchain format
     /// again when the HDR settings or the monitor's state changed.

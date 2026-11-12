@@ -9,6 +9,8 @@
 #include <limits>
 #include <vector>
 
+#include <fmt/format.h>
+
 #ifdef __ANDROID__
 #include <android/api-level.h>
 #endif
@@ -23,10 +25,23 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "vulkan/vulkan_core.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#include "video_core/vulkan_common/streamline_frame_gen.h"
+#endif
 
 namespace Vulkan {
 
 namespace {
+
+/// Streamline's DLSS Frame Generation presents and paces the frames in this format.
+bool FrameGenPresents([[maybe_unused]] VkFormat format) {
+#ifdef EGLANTINE_STREAMLINE
+    return Streamline::FrameGenAvailable() && Streamline::FrameGenSupportsSwapchain(format);
+#else
+    return false;
+#endif
+}
 
 VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
                                          VkFormat requested_format,
@@ -69,7 +84,11 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
 }
 
 static VkPresentModeKHR ChooseSwapPresentMode(bool has_imm, bool has_mailbox,
-                                              bool has_fifo_relaxed) {
+                                              bool has_fifo_relaxed, VkFormat format) {
+    // DLSS Frame Generation on Vulkan doesn't support VSync.
+    if (FrameGenPresents(format) && (has_imm || has_mailbox)) {
+        return has_imm ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_MAILBOX_KHR;
+    }
     // Mailbox doesn't lock the application like FIFO (vsync)
     // FIFO present mode locks the framerate to the monitor's refresh rate
     Settings::VSyncMode setting = [has_imm, has_mailbox]() {
@@ -347,7 +366,8 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
     surface_format = ChooseSwapSurfaceFormat(formats, requested_format, requested_color_space);
     Common::DisplayHdrMonitor::Instance().SetPresentingHdr(surface_format.colorSpace !=
                                                            VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
-    present_mode = ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed);
+    present_mode =
+        ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed, surface_format.format);
 
     u32 requested_image_count{capabilities.minImageCount + 1};
     // Ensure Triple buffering if possible.
@@ -420,7 +440,26 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
     const auto updated_capabilities = physical_device.GetSurfaceCapabilitiesKHR(VkSurfaceKHR(surface));
     swapchain_ci.imageExtent = ChooseSwapExtent(updated_capabilities, width, height);
     // Don't add code within this and the swapchain creation.
-    swapchain = device.GetLogical().CreateSwapchainKHR(swapchain_ci);
+    try {
+        swapchain = device.GetLogical().CreateSwapchainKHR(swapchain_ci);
+    } catch ([[maybe_unused]] const vk::Exception& exception) {
+        // A lost surface or a window still in use is transient: the present loop retries those.
+        const VkResult result = exception.GetResult();
+        if (!FrameGenPresents(surface_format.format) || result == VK_ERROR_SURFACE_LOST_KHR ||
+            result == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) {
+            throw;
+        }
+#ifdef EGLANTINE_STREAMLINE
+        // Keep the game running without frame generation: DLSS-G unloaded, the hooks reach the
+        // driver's swapchain.
+        Streamline::DisableFrameGen(
+            fmt::format("Streamline's swapchain failed ({})", exception.what()));
+#endif
+        present_mode =
+            ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed, surface_format.format);
+        swapchain_ci.presentMode = present_mode;
+        swapchain = device.GetLogical().CreateSwapchainKHR(swapchain_ci);
+    }
 
     extent = swapchain_ci.imageExtent;
 
@@ -479,7 +518,8 @@ void Swapchain::SetHdrMetadata(u16 peak_luminance, u16 reference_white) const {
 }
 
 bool Swapchain::NeedsPresentModeUpdate() const {
-    const auto requested_mode = ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed);
+    const auto requested_mode =
+        ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed, surface_format.format);
     return present_mode != requested_mode;
 }
 
