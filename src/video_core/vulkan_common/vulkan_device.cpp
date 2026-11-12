@@ -530,7 +530,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     }
 
     SetupFamilies(surface);
-    const auto queue_cis = GetDeviceQueueCreateInfos();
+    auto queue_cis = GetDeviceQueueCreateInfos();
 
     // GetSuitability has already configured the linked list of features for us.
     // Reuse it here.
@@ -831,6 +831,74 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     if (host_float16_supported || (device_float16 && WantsAmdFsr4(driver_id))) {
         features.shader_float16_int8.shaderFloat16 = VK_TRUE;
     }
+
+#ifdef EGLANTINE_STREAMLINE
+    // With manual hooking the renderer creates the features and queues DLSS Frame Generation
+    // needs. Anything missing turns frame generation off, never the device.
+    std::vector<float> queue_priorities;
+    u32 first_streamline_queue = 0;
+    if (streamline_extensions && Streamline::FrameGenPending()) {
+        const bool has_descriptor_indexing =
+            instance_version >= VK_API_VERSION_1_2 || extensions.descriptor_indexing;
+        const std::array<std::pair<std::string_view, bool>, 16> enabled{{
+            {"timelineSemaphore", features.timeline_semaphore.timelineSemaphore == VK_TRUE},
+            {"bufferDeviceAddress",
+             features.buffer_device_address.bufferDeviceAddress == VK_TRUE},
+            {"descriptorIndexing", has_descriptor_indexing},
+            {"hostQueryReset", features.host_query_reset.hostQueryReset == VK_TRUE},
+            {"storageBuffer8BitAccess", features.bit8_storage.storageBuffer8BitAccess == VK_TRUE},
+            {"uniformAndStorageBuffer8BitAccess",
+             features.bit8_storage.uniformAndStorageBuffer8BitAccess == VK_TRUE},
+            {"shaderFloat16", features.shader_float16_int8.shaderFloat16 == VK_TRUE},
+            {"shaderInt8", features.shader_float16_int8.shaderInt8 == VK_TRUE},
+            {"vulkanMemoryModel", features.vulkan_memory_model.vulkanMemoryModel == VK_TRUE},
+            {"synchronization2", features.synchronization2.synchronization2 == VK_TRUE},
+            {"maintenance4", features.maintenance4.maintenance4 == VK_TRUE},
+            {"subgroupSizeControl",
+             features.subgroup_size_control.subgroupSizeControl == VK_TRUE},
+            {"computeFullSubgroups",
+             features.subgroup_size_control.computeFullSubgroups == VK_TRUE},
+            {"robustImageAccess", features.robust_image_access.robustImageAccess == VK_TRUE},
+            {"shaderDemoteToHelperInvocation",
+             features.shader_demote_to_helper_invocation.shaderDemoteToHelperInvocation ==
+                 VK_TRUE},
+            {"uniformBufferStandardLayout",
+             features.uniform_buffer_standard_layout.uniformBufferStandardLayout == VK_TRUE},
+        }};
+        std::string missing;
+        for (const std::string& name : Streamline::FrameGenDeviceFeatures()) {
+            const auto it = std::ranges::find(enabled, std::string_view{name},
+                                              &std::pair<std::string_view, bool>::first);
+            if (it == enabled.end() || !it->second) {
+                missing += (missing.empty() ? "" : ", ") + name;
+            }
+        }
+        if (!missing.empty()) {
+            Streamline::DropFrameGen(fmt::format("the device does not enable {}", missing));
+        }
+    }
+    if (const Streamline::QueueCounts extra = Streamline::ExtraQueues();
+        streamline_extensions && extra.graphics + extra.compute != 0) {
+        const auto ci = std::ranges::find(queue_cis, graphics_family,
+                                          &VkDeviceQueueCreateInfo::queueFamilyIndex);
+        const u32 available = physical.GetQueueFamilyProperties()[graphics_family].queueCount;
+        const u32 wanted = ci->queueCount + extra.graphics + extra.compute;
+        if (wanted > available) {
+            Streamline::DropFrameGen(
+                fmt::format("it needs {} graphics and {} compute queues beyond the renderer's {}, "
+                            "and the graphics family has {}",
+                            extra.graphics, extra.compute, ci->queueCount, available));
+        } else {
+            // Streamline's queues come after the renderer's. Priority 0 as Streamline's own
+            // vkCreateDevice gives them.
+            first_streamline_queue = ci->queueCount;
+            queue_priorities.assign(ci->pQueuePriorities, ci->pQueuePriorities + ci->queueCount);
+            queue_priorities.resize(wanted, 0.0f);
+            ci->queueCount = wanted;
+            ci->pQueuePriorities = queue_priorities.data();
+        }
+    }
+#endif
     logical = vk::Device::Create(physical, queue_cis, ExtensionListForVulkan(loaded_extensions), first_next, dld);
 
     graphics_queue = logical.GetQueue(graphics_family);
@@ -838,8 +906,8 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 
 #ifdef EGLANTINE_STREAMLINE
     if (streamline_extensions) {
-        streamline_attached =
-            Streamline::AttachDevice(instance, physical, *logical, graphics_family, dld);
+        streamline_attached = Streamline::AttachDevice(instance, physical, *logical,
+                                                       graphics_family, first_streamline_queue, dld);
     } else if (Streamline::WantsDevice()) {
         Streamline::Stop();
     }
@@ -1296,10 +1364,23 @@ bool Device::GetSuitability(bool requires_swapchain) {
 #ifdef EGLANTINE_STREAMLINE
     // The extensions NVIDIA's DLSS asks for, where the device has them all.
     if (Streamline::WantsDevice()) {
-        const std::vector<std::string> wanted = Streamline::DeviceExtensions();
+        const auto supported = [&](const std::string& name) {
+            return supported_extensions.contains(name);
+        };
+        std::vector<std::string> wanted = Streamline::DeviceExtensions();
+        // Frame generation's extensions must not cost DLSS its own.
+        if (!std::ranges::all_of(wanted, supported) && Streamline::FrameGenPending()) {
+            std::string missing;
+            for (const std::string& name : wanted) {
+                if (!supported(name)) {
+                    missing += (missing.empty() ? "" : ", ") + name;
+                }
+            }
+            Streamline::DropFrameGen(fmt::format("the device lacks {}", missing));
+            wanted = Streamline::DeviceExtensions();
+        }
         // Streamline may ask for no extensions at all.
-        const bool all = std::ranges::all_of(
-            wanted, [&](const std::string& name) { return supported_extensions.contains(name); });
+        const bool all = std::ranges::all_of(wanted, supported);
         std::string names;
         for (const std::string& name : wanted) {
             if (all) {
