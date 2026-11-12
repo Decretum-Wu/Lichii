@@ -320,7 +320,7 @@ bool DmaPusher::Step() {
         // EDEN_NX2_LIST_MACRO_TRACE: what a GPU-written entry held and the macro calls it fed.
         namespace ListTrace = VideoCommon::ListMacroTrace;
         const auto begin_list_trace = [&](ListTrace::Path path) {
-            if (!ListTrace::g_enabled || command_resume_offset != 0) {
+            if (!ListTrace::g_enabled) {
                 return false;
             }
             const auto type = subchannel_type[dma_state.subchannel];
@@ -332,14 +332,25 @@ bool DmaPusher::Step() {
             ListTrace::BeginEntry(wait_start != 0 ? ListTrace::Path::Waited : path,
                                   wait_start != 0 ? ListTrace::Now() - wait_start : 0, engine,
                                   subchannels[dma_state.subchannel], dma_state.method,
-                                  dma_state.method_count, static_cast<u32>(header.size));
+                                  dma_state.method_count,
+                                  static_cast<u32>(header.size - command_resume_offset));
             return true;
         };
         const auto end_list_trace = [&] {
-            const bool in_macro =
-                dma_state.method_count != 0 && dma_state.method >= MacroRegistersStart;
-            ListTrace::EndEntry(in_macro ? subchannels[dma_state.subchannel] : nullptr,
-                                dma_state.method_count);
+            // Only a call the front runs reaches ListTrace::BeginCall (see CallMethod).
+            auto* const engine = subchannels[dma_state.subchannel];
+            const auto type = subchannel_type[dma_state.subchannel];
+            const auto& split = VideoCommon::GpuSplit::Get();
+            const bool front_macro =
+                dma_state.method_count != 0 && dma_state.method >= MacroRegistersStart &&
+                split.Active() && split.FrontMacros() &&
+                (type == Engines::EngineTypes::Maxwell3D
+                     ? static_cast<Engines::Maxwell3D*>(engine)
+                           ->GetNativeMacroEngine()
+                           .native_turing
+                     : type == Engines::EngineTypes::KeplerCompute &&
+                           static_cast<Engines::KeplerCompute*>(engine)->FrontRunsMacros());
+            ListTrace::EndEntry(front_macro ? engine : nullptr, dma_state.method_count);
         };
         if (submitted) {
             const std::span<const CommandHeader> commands{

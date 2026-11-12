@@ -45,12 +45,13 @@ enum class Engine : u8 { Maxwell3D, Compute, Other, Count };
 
 u64 Now();
 
-/// GPU thread: the pusher parses an entry of `words` words on GPU-written pages; `engine` (the
-/// subchannel's object) was still due `method_count` words of `method` at its start.
+/// GPU thread: the pusher parses an entry of `words` words on GPU-written pages (the rest of one
+/// resumed after a semaphore acquire, counted again); `engine` (the subchannel's object) was
+/// still due `method_count` words of `method` at its start.
 void BeginEntry(Path path, u64 waited_ns, Engine engine, const void* engine_object, u32 method,
                 u32 method_count, u32 words);
-/// The entry ended inside the data of a macro call of `macro_engine`, still due `method_count`
-/// words, unless `macro_engine` is null: that call took words from it too.
+/// The entry ended inside the data of a macro call the front runs for `macro_engine`, still due
+/// `method_count` words, unless `macro_engine` is null: that call took words from it too.
 void EndEntry(const void* macro_engine, u32 method_count);
 
 struct Call {

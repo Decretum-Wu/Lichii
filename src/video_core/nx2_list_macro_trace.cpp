@@ -15,6 +15,7 @@
 
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "video_core/gpu_split.h"
 #include "video_core/macro_turing.h"
 #include "video_core/nx2_list_macro_trace.h"
 
@@ -72,6 +73,7 @@ struct EntryState {
 
 /// A macro call that GPU-written entries fed and that has not run yet.
 struct PendingCall {
+    u32 split_starts{}; ///< GpuSplit::Starts then; one from an earlier start ran elsewhere
     std::vector<GpuRange> ranges;
     u64 entries{}; ///< Entries not yet counted for a macro, and their waits
     u64 waited{};
@@ -358,6 +360,9 @@ void EndEntry(const void* macro_engine, u32 method_count) {
     EntryState& entry = state.current;
     if (macro_engine != nullptr && entry.active) {
         PendingCall& call = state.pending[macro_engine];
+        if (const u32 starts = GpuSplit::Get().Starts(); call.split_starts != starts) {
+            call = {.split_starts = starts};
+        }
         call.ranges.push_back({entry.engine == macro_engine ? entry.before : GpuRange::Whole,
                                method_count});
         if (!entry.attributed) {
@@ -381,7 +386,9 @@ Call* BeginCall(Engine engine, const void* engine_object, u32 method, std::span<
     const auto pending_it = state.pending.find(engine_object);
     std::optional<PendingCall> pending;
     if (pending_it != state.pending.end()) {
-        pending = std::move(pending_it->second);
+        if (pending_it->second.split_starts == GpuSplit::Get().Starts()) {
+            pending = std::move(pending_it->second);
+        }
         state.pending.erase(pending_it);
     }
     if (!entry.active && !pending) {
