@@ -2565,8 +2565,17 @@ void RasterizerVulkan::VerifyBackReads(const BackSlot& slot) {
 }
 
 void RasterizerVulkan::ConsumeBackSlot(u32 index) {
-    std::scoped_lock lock{buffer_cache.mutex};
-    RecordBackDraw(back_slots[index]);
+    namespace Profile = VideoCommon::Nx2Profile;
+    {
+        Profile::Scope packet{Profile::Zone::BackPacket};
+        std::unique_lock lock{buffer_cache.mutex, std::defer_lock};
+        {
+            Profile::Scope wait{Profile::Zone::BackLock};
+            lock.lock();
+        }
+        RecordBackDraw(back_slots[index]);
+    }
+    Profile::Report("Stage B thread");
 }
 
 void RasterizerVulkan::RecordBackDraw(BackSlot& slot) {
