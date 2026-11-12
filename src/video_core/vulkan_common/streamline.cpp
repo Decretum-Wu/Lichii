@@ -466,22 +466,34 @@ DlssFiles FindDlssFiles() {
     files.interposer_version = VersionText(files.interposer);
     files.model_version = VersionText(files.model);
     files.app_model_version = VersionText(files.app_model);
+    // A Streamline module loads only with the sl.common.dll and loader of its own release.
+    std::string streamline_version = files.interposer_version;
     for (const char* const name : FRAME_GEN_FILES) {
-        if (!std::filesystem::is_regular_file(files.folder / name, ec)) {
+        const std::filesystem::path path = files.folder / name;
+        if (!std::filesystem::is_regular_file(path, ec)) {
             files.frame_gen_missing.emplace_back(name);
+            continue;
+        }
+        if (!std::string_view{name}.starts_with("sl.")) {
+            continue;
+        }
+        const std::string version = VersionText(path);
+        if (streamline_version.empty()) {
+            streamline_version = version;
+        } else if (!version.empty() && version != streamline_version) {
+            files.streamline_mixed = true;
         }
     }
     return files;
 }
 
+std::span<const char* const> FrameGenFiles() {
+    return FRAME_GEN_FILES;
+}
+
 bool FrameGenRequested() {
-    if (!Settings::values.nvidia_dlss.GetValue()) {
-        return false;
-    }
-    if (const char* const value = std::getenv("EDEN_NX2_DLSS_FG"); value && *value) {
-        return *value != '0';
-    }
-    return Settings::values.nvidia_dlss_frame_gen.GetValue();
+    return Settings::values.nvidia_dlss.GetValue() &&
+           Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::NvidiaDlssG;
 }
 
 bool Start() {

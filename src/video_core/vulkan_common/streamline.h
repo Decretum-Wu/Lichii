@@ -8,6 +8,7 @@
 #pragma once
 
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,7 +30,12 @@ struct DlssFiles {
     /// File names of the Streamline plugins and NVIDIA files DLSS Frame Generation needs that
     /// are not in the loader's folder.
     std::vector<std::string> frame_gen_missing;
+    /// The Streamline modules in the loader's folder (sl.*) are not all from one release.
+    bool streamline_mixed{};
 };
+
+/// Everything DLSS Frame Generation loads from the loader's folder besides the loader itself.
+[[nodiscard]] std::span<const char* const> FrameGenFiles();
 
 [[nodiscard]] DlssFiles FindDlssFiles();
 
@@ -54,8 +60,7 @@ bool Start();
 [[nodiscard]] std::vector<std::string> InstanceExtensions();
 [[nodiscard]] std::vector<std::string> DeviceExtensions();
 
-/// The NVIDIA DLSS Frame Generation setting with NVIDIA DLSS on. EDEN_NX2_DLSS_FG=0/1 overrides
-/// the setting.
+/// NVIDIA DLSS Frame Generation is the frame generation type, with NVIDIA DLSS on.
 [[nodiscard]] bool FrameGenRequested();
 
 /// Whether frame generation is still possible on the device being created: Streamline loaded

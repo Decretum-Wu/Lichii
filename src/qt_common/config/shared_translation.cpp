@@ -236,13 +236,6 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            "L/M require DLSS 310.5 or newer; the download button provides 310.9.16. "
            "If Fire Emblem shows horizontal lines with L/M at 2x, try K. "
            "NVIDIA app overrides may supersede this choice. Apply/OK updates it while playing."));
-    INSERT(Settings, nvidia_dlss_frame_gen, tr("NVIDIA DLSS Frame Generation"),
-           tr("Generates frames between the game's own with NVIDIA DLSS Frame Generation.\nNeeds "
-              "\"Use NVIDIA DLSS\" on, a GeForce RTX 40 series or newer GPU, and Hardware-"
-              "accelerated GPU scheduling on in Windows' graphics settings.\nVSync is not "
-              "available with it: Lichii presents without VSync while it runs.\nWith HDR output it "
-              "needs HDR format HDR10; it stays off with scRGB.\nTakes effect when a game "
-              "starts."));
     INSERT(Settings, anti_aliasing, tr("Anti-Aliasing Method:"),
            tr("The anti-aliasing method to use.\nSMAA offers the best quality.\nFXAA "
               "can produce a more stable picture in lower resolutions.\nOff while HDR output "
@@ -311,7 +304,15 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
 
     INSERT(Settings, frame_gen, tr("Enable Frame Generation"),
            tr("Paused while HDR output is active."));
-    INSERT(Settings, frame_gen_type, tr("Frame Generation Type"), QString());
+    INSERT(Settings, frame_gen_type, tr("Frame Generation Type"),
+           tr("Optical Flow Interpolation is built in and runs on any GPU.\nNVIDIA DLSS Frame "
+              "Generation (Windows only) needs a GeForce RTX 40 series or newer GPU (3x and 4x need "
+              "an RTX 50 series), Hardware-accelerated GPU scheduling on in Windows' graphics "
+              "settings, \"Use NVIDIA DLSS\" on and NVIDIA's files from the NVIDIA DLSS panel. "
+              "It takes the game's depth and motion vectors from the DLSS evaluation, so it runs "
+              "in The Legend of Zelda: Ocarina of Time only, docked, with DLSS as its upscaler. "
+              "Other games, and scRGB HDR output, use Optical Flow Interpolation instead.\nVSync "
+              "is off while it runs. Choosing it takes effect when a game starts."));
     INSERT(Settings, frame_gen_multiplier, tr("Frame Generation Multiplier"), QString());
     INSERT(Settings, frame_gen_target_rate, tr("Target Frame Rate"), QString());
     INSERT(Settings, frame_gen_flow_scale_auto, tr("Auto Flow Scale"), QString());
@@ -658,6 +659,7 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(FrameGenType, Lsfg, tr("Lossless Scaling (LSFG)")),
                               PAIR(FrameGenType, Fsr3, tr("Optical Flow Interpolation (built-in)")),
+                              PAIR(FrameGenType, NvidiaDlssG, tr("NVIDIA DLSS Frame Generation")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::ScalingFilter>::Index(),
                           {
