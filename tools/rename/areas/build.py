@@ -34,6 +34,7 @@ TEXT = [
     (r"\bsrc/yuzu(_cmd|_room_standalone)?\b", r"src/lichii\1"),
     (r"\btests/yuzu_cmd\b", "tests/lichii_cmd"),
     (r"(?<=[\"<])yuzu(_cmd)?/", r"lichii\1/"),
+    (r"(?<=<header>)yuzu/", "lichii/"),
     (r"(#include\s*[\"<][^\">]*)", lambda m: m.group(1).replace("yuzu", "lichii")),
     (r"\byuzu(_room_standalone|_room|_icon)?\.(rc|qrc|cpp|h|manifest|bmp)\b", r"lichii\1.\2"),
     # CMake option and definition names, wherever they appear (C++ #ifdef, docs, CI).
