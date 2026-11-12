@@ -3790,6 +3790,8 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
             nx2_expected_words.erase(word);
         }
         if (!patches.empty()) {
+            // Invalidations deferred before this write must not land after its patches.
+            gpu_memory->FlushCaching();
             InlineKeptWords(*cpu_addr, data, patches);
             return;
         }

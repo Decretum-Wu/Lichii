@@ -362,8 +362,7 @@ private:
     vk::Buffer null_buffer;
 
     /// Kept list words: a host-readable slot per keep id (modulo the slot count) holding the
-    /// three words at 0 and the dispatch arguments at LIST_KEEP_GRID (zero above y's and z's
-    /// 16 bits, written once).
+    /// three words at 0 and the dispatch arguments at LIST_KEEP_GRID (ListGridArgumentsPass).
     static constexpr u32 LIST_KEEP_SLOTS = 1024;
     static constexpr u32 LIST_KEEP_SLOT_BYTES = 32;
     static constexpr VkDeviceSize LIST_KEEP_GRID = 16;
@@ -372,6 +371,9 @@ private:
         return VkDeviceSize{keep_id % LIST_KEEP_SLOTS} * LIST_KEEP_SLOT_BYTES;
     }
     vk::Buffer list_keep_buffer;
+    std::unique_ptr<ListGridArgumentsPass> list_grid_arguments_pass;
+    DescriptorPool* list_pass_descriptor_pool{};
+    ComputePassDescriptorQueue* list_pass_descriptor_queue{};
     std::array<ListKeep, LIST_KEEP_SLOTS> list_keeps{};
 
     std::unique_ptr<Uint8Pass> uint8_pass;

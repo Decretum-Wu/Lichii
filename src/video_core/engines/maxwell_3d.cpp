@@ -1693,7 +1693,7 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             : nullptr;
     // List-fed grid markers (nx2_list_grid.h) in the data RAM: a 3D macro that can read it gets
     // the real words first.
-    if (grid_marker.set && grid_marker.In(native_data_ram)) [[unlikely]] {
+    if (grid_marker.set && grid_marker.In(native_data_ram)) {
         if (fs.data_ram_generation != engine.native_code_generation) {
             fs.data_ram_macros.assign(engine.native_code.size() / 3, 0);
             fs.data_ram_generation = engine.native_code_generation;

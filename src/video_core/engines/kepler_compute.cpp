@@ -583,7 +583,7 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     // (qmd_grid_lists): a list's three, in order, dispatch from its kept words; any other mix
     // gets them read back.
     if (const auto source = Nx2ListGrid::QmdGridSource(grid[0], grid[1], grid[2]);
-        source.kind != Nx2ListGrid::GridKind::Direct) [[unlikely]] {
+        source.kind != Nx2ListGrid::GridKind::Direct) {
         const auto& lists = qmd_grid_lists;
         if (source.kind == Nx2ListGrid::GridKind::Indirect && lists[0] != 0 &&
             lists[0] == lists[1] && lists[1] == lists[2]) {
@@ -1592,7 +1592,7 @@ KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
         front = std::make_unique<FrontState>();
         front->registers = native_registers;
         // Data the upload took before is unknown here: a marker into it isn't patched.
-        for (const u32 method : {0x60U, 0x61U, 0x62U, 0x63U, 0x64U, 0x6cU}) {
+        for (const u32 method : {0x60U, 0x61U, 0x62U, 0x63U, 0x6cU}) {
             front->upload.Apply(method, native_registers[method]);
         }
         front->upload.offset = front->upload.Size();
@@ -2056,7 +2056,7 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
     if (native_data_ram) {
         macro.native_interpreter.active_dram = native_data_ram;
     }
-    if (grid_marker != nullptr && grid_marker->set) [[unlikely]] {
+    if (grid_marker != nullptr && grid_marker->set) {
         FrontGuardListGrid(split, fs, macro, start);
     }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};

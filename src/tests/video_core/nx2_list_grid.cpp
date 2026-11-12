@@ -280,18 +280,17 @@ TEST_CASE("List grid guard admits only unchanged moves to their places", "[list_
     // Into a linear upload's data, not a block-linear one.
     CHECK(admit(to_upload, Upload()) == Admission::Moves);
     CHECK(admit(to_upload, Upload(0x10000, 0)) == Admission::Resolve);
-    // Only where the back can patch it: 4-byte aligned in memory, inside one line, before the
-    // upload's end.
+    // Only where the back can patch it: 4-byte aligned in memory, in an upload of one line (one
+    // of more lines is written whole on every data word), before its end.
     CHECK(admit(to_upload, Upload(0x10002)) == Admission::Resolve);
     auto line_end = Upload();
     line_end.line_length = 6;
-    line_end.line_count = 2;
-    line_end.pitch = 0x100;
     CHECK(admit(to_upload, line_end) == Admission::Moves);
     line_end.offset = 4;
     CHECK(admit(to_upload, line_end) == Admission::Resolve);
-    line_end.offset = 6; // The second line's first word, at 0x10100
-    CHECK(admit(to_upload, line_end) == Admission::Moves);
+    auto two_lines = Upload();
+    two_lines.line_count = 2;
+    CHECK(admit(to_upload, two_lines) == Admission::Resolve);
     auto full = Upload();
     full.offset = full.Size();
     CHECK(admit(to_upload, full) == Admission::Resolve);
@@ -315,6 +314,17 @@ TEST_CASE("List grid guard admits only unchanged moves to their places", "[list_
                 Upload(), registers) == Admission::Moves);
     CHECK(admit(ReadThen(ReadRegister, ListGrid::QmdGridRegister, MoveTo(0x200)), Upload(),
                 registers) == Admission::Resolve);
+    // A register the call moved a marker into holds it when the call reads it back.
+    std::vector<u32> read_back;
+    Append(read_back, {.lane0 = {.op = DataRead, .dst = 0, .a = Imm, .imm = x}});
+    Append(read_back, {.lane0 = MoveTo(ListGrid::QmdGridRegister)});
+    Append(read_back,
+           {.lane0 = {.op = ReadRegister, .dst = 1, .a = Imm, .imm = ListGrid::QmdGridRegister}});
+    Lane elsewhere = MoveTo(0x200);
+    elsewhere.a = 1;
+    Append(read_back, {.lane0 = elsewhere, .end = true});
+    Append(read_back, {});
+    CHECK(admit(read_back, {}) == Admission::Resolve);
 }
 
 TEST_CASE("List grid never leaves a marker when a list can't be read", "[list_grid]") {

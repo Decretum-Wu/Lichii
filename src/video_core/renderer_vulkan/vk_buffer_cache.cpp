@@ -406,6 +406,8 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
         uint8_pass = std::make_unique<Uint8Pass>(device, scheduler, descriptor_pool, staging_pool,
                                                  compute_pass_descriptor_queue);
     }
+    list_pass_descriptor_pool = &descriptor_pool;
+    list_pass_descriptor_queue = &compute_pass_descriptor_queue;
     quad_array_index_buffer = std::make_shared<QuadArrayIndexBuffer>(device_, memory_allocator_,
                                                                      scheduler_, staging_pool_);
     quad_strip_index_buffer = std::make_shared<QuadStripIndexBuffer>(device_, memory_allocator_,
@@ -633,7 +635,7 @@ void BufferCacheRuntime::EnsureListKeepBuffer() {
         .flags = 0,
         .size = VkDeviceSize{LIST_KEEP_SLOTS} * LIST_KEEP_SLOT_BYTES,
         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                 VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = 0,
         .pQueueFamilyIndices = nullptr,
@@ -642,9 +644,10 @@ void BufferCacheRuntime::EnsureListKeepBuffer() {
     if (device.HasDebuggingToolAttached()) {
         list_keep_buffer.SetObjectNameEXT("Kept list words");
     }
-    // The host GPU only copies the low 16 bits of y and z into the dispatch arguments.
     std::ranges::fill(list_keep_buffer.Mapped(), u8{0});
     list_keep_buffer.Flush();
+    list_grid_arguments_pass = std::make_unique<ListGridArgumentsPass>(
+        device, scheduler, *list_pass_descriptor_pool, *list_pass_descriptor_queue);
 }
 
 void BufferCacheRuntime::KeepListWords(u64 keep_id, VkBuffer source, VkDeviceSize offset, u64 hash,
@@ -668,24 +671,20 @@ void BufferCacheRuntime::KeepListWords(u64 keep_id, VkBuffer source, VkDeviceSiz
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
             .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
-                             VK_ACCESS_HOST_READ_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_READ_BIT,
         };
-        // The three words, and x, y and z as the dispatch takes them (16-bit y and z, as #805).
-        const std::array<VkBufferCopy, 4> copies{{
-            {.srcOffset = offset, .dstOffset = slot, .size = 3 * sizeof(u32)},
-            {.srcOffset = offset, .dstOffset = slot + LIST_KEEP_GRID, .size = sizeof(u32)},
-            {.srcOffset = offset + 4, .dstOffset = slot + LIST_KEEP_GRID + 4, .size = 2},
-            {.srcOffset = offset + 8, .dstOffset = slot + LIST_KEEP_GRID + 8, .size = 2},
-        }};
         cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
                                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, READ_BARRIER);
-        cmdbuf.CopyBuffer(source, destination, copies);
+        cmdbuf.CopyBuffer(source, destination,
+                          VkBufferCopy{.srcOffset = offset, .dstOffset = slot, .size = 3 * sizeof(u32)});
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                               VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                   VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_HOST_BIT,
-                               0, WRITE_BARRIER);
+                               VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
+                               WRITE_BARRIER);
     });
+    // x, y and z as the dispatch takes them: 31-bit x, 16-bit y and z (as #805).
+    list_grid_arguments_pass->Convert(*list_keep_buffer, VkDeviceSize{LIST_KEEP_SLOTS} * LIST_KEEP_SLOT_BYTES,
+                                      static_cast<u32>(slot / sizeof(u32)),
+                                      static_cast<u32>((slot + LIST_KEEP_GRID) / sizeof(u32)));
 }
 
 std::optional<u64> BufferCacheRuntime::FindKeptList(u32 keep_bits) const {

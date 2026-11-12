@@ -468,13 +468,12 @@ u32 EvictFromRam(GridMarker& state, Ram& ram, u64 keep_id) {
     return state.keep_id == keep_id ? ResolveCells(state, ram) : 0;
 }
 
-/// The compute engine's inline upload as the front follows it: its registers (0x60 to 0x64,
+/// The compute engine's inline upload as the front follows it: its registers (0x60 to 0x63,
 /// 0x6c) and how many data bytes it took since its exec.
 struct UploadState {
     u32 line_length{};
     u32 line_count{};
     u64 address{};
-    u32 pitch{};
     u32 exec{};
     u64 offset{};
 
@@ -491,9 +490,6 @@ struct UploadState {
             break;
         case 0x63:
             address = (address & ~u64{0xffffffff}) | value;
-            break;
-        case 0x64:
-            pitch = value;
             break;
         case ExecUploadMethod:
             exec = value;
@@ -513,18 +509,17 @@ struct UploadState {
     [[nodiscard]] bool InFlight() const {
         return offset < Size();
     }
-    /// Where the next data word lands in memory (a linear upload).
+    /// Where the next data word lands in memory (a linear upload of one line).
     [[nodiscard]] u64 NextWordAddress() const {
-        return address + offset / line_length * pitch + offset % line_length;
+        return address + offset;
     }
     /// Whether the next data word, a marker, lands where the back patches it: in a linear
-    /// upload, inside one line, 4-byte aligned in memory (RasterizerVulkan::
-    /// AccelerateInlineToMemory finds aligned words only).
+    /// upload of one line, which Upload::State writes word by word, never twice (a larger one
+    /// is written whole on each call); before its end and 4-byte aligned in memory
+    /// (RasterizerVulkan::AccelerateInlineToMemory finds aligned words only).
     [[nodiscard]] bool NextWordPatchable() const {
-        if ((exec & 1) == 0 || line_length == 0 || offset + 4 > Size()) {
-            return false;
-        }
-        return offset % line_length + 4 <= line_length && (NextWordAddress() & 3) == 0;
+        return (exec & 1) != 0 && line_count == 1 && offset + 4 <= line_length &&
+               (NextWordAddress() & 3) == 0;
     }
 };
 
@@ -781,12 +776,19 @@ template <typename Read, typename IsMarkerRegister>
                     value = condition(op) ? ~0U : 0;
                     break;
                 case 22: {
+                    // A register this call wrote holds what it emitted there (FrontApply).
                     const Word address = (x + y) & 0xffff;
-                    value = read(address);
-                    if (is_marker_register(address, value)) {
-                        value_grid = true;
-                        result.read_grid = true;
+                    const auto emitted = std::find_if(
+                        result.emits.rbegin(), result.emits.rend(),
+                        [address](const Emit& emit) { return emit.method == address; });
+                    if (emitted != result.emits.rend() && address < 0xe00) {
+                        value = emitted->value;
+                        value_grid = emitted->grid;
+                    } else {
+                        value = read(address);
+                        value_grid = is_marker_register(address, value);
                     }
+                    result.read_grid = result.read_grid || value_grid;
                     break;
                 }
                 case 23:
