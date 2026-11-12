@@ -124,7 +124,8 @@ def rewrite_line(line, path, rules, keep):
 
 
 def apply(areas):
-    path_rules, text_rules, keep = collect(areas)
+    path_rules, text_rules, _ = collect(areas)
+    _, _, keep = collect(load_areas(None))
     moved = 0
     for path in tracked():
         if fnmatch.fnmatchcase(path, EXTERNALS):
