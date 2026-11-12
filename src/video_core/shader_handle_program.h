@@ -176,7 +176,7 @@ private:
 template <typename Descriptor>
 [[nodiscard]] bool HandleIsStoragePointer(const Shader::Info& info, const Descriptor& desc,
                                           u32 index) {
-    if (desc.handle_program != ~0U || desc.has_secondary) {
+    if (desc.handle_program != ~0U) {
         return false;
     }
     if constexpr (requires { desc.handle_is_pointer_word; }) {
@@ -185,6 +185,9 @@ template <typename Descriptor>
         if (desc.handle_is_pointer_word) {
             return true;
         }
+    }
+    if (desc.has_secondary) {
+        return false;
     }
     const u32 offset = desc.cbuf_offset + (index << desc.size_shift);
     return std::ranges::any_of(info.storage_buffers_descriptors, [&](const auto& storage) {

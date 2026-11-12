@@ -988,6 +988,8 @@ TEST_CASE("A handle word the translation saw dereferenced is not a handle withou
     CHECK_FALSE(VideoCommon::HandleIsStoragePointer(info, desc, 0));
     desc.handle_is_pointer_word = true;
     CHECK(VideoCommon::HandleIsStoragePointer(info, desc, 0));
+    desc.has_secondary = true; // an address built from two words
+    CHECK(VideoCommon::HandleIsStoragePointer(info, desc, 0));
     desc.handle_program = 0;
     CHECK_FALSE(VideoCommon::HandleIsStoragePointer(info, desc, 0));
 }
