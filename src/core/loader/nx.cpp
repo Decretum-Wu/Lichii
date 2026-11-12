@@ -786,11 +786,25 @@ std::optional<AppLoader_NX::ProgramPlatform> AppLoader_NX::ReadProgramPlatform(
     if (!catalog) {
         return std::nullopt;
     }
+    // The same application and program Impl::Open boots.
     const auto& a = catalog->archive;
-    for (const auto& program : a.programs()) {
-        const auto& owner = a.applications()[program.application_index];
-        if (program_id == 0 || program.id == program_id || owner.id == program_id) {
-            return ProgramPlatform{program.id, owner.platform};
+    for (const auto& owner : a.applications()) {
+        if (owner.platform != 1 && owner.platform != 2) {
+            continue;
+        }
+        const bool by_program = program_id != 0 && program_id != owner.id;
+        bool matches = !by_program;
+        std::optional<ProgramPlatform> found;
+        for (u32 p = owner.first_program;
+             p != Absent && p < owner.first_program + owner.program_count; ++p) {
+            const auto& program = a.programs()[p];
+            matches |= program.id == program_id;
+            if (!found && (by_program ? program.id == program_id : program.kind == 0)) {
+                found = ProgramPlatform{program.id, owner.platform};
+            }
+        }
+        if (matches) {
+            return found;
         }
     }
     return std::nullopt;
