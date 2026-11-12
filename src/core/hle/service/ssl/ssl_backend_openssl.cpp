@@ -121,21 +121,21 @@ inline void LoadCaCertStore(SSL_CTX* ctx, const char* ca_cert, std::size_t size)
 /// The roots a connection verifies against while the custom servers' CA (EDEN_NX2_ONLINE_CA) is
 /// trusted: the usual ones plus that CA. Built once, the first time it is wanted. Connections
 /// get it through SSL_set1_verify_cert_store, so the CA follows the setting each time a game
-/// starts and is never added to the context's own store (which bundled builds replace on every
-/// Init()). Null when it can't be built.
+/// starts and is never added to the context's own store. Null when it can't be built.
 X509_STORE* TestCaStore() {
     static std::once_flag once;
     static X509_STORE* store = nullptr;
     std::call_once(once, [] {
+        // The same roots as the context's store (OneTimeInit).
 #ifdef YUZU_BUNDLED_OPENSSL
         X509_STORE* roots = CreateCaCertStore(kCert, sizeof(kCert));
 #else
         X509_STORE* roots = X509_STORE_new();
+#endif
         if (roots != nullptr && X509_STORE_set_default_paths(roots) != 1) {
             X509_STORE_free(roots);
             roots = nullptr;
         }
-#endif
         const auto der_data = Network::LocalRedirect::TestCa();
         const unsigned char* der = der_data.data();
         X509* const ca = d2i_X509(nullptr, &der, static_cast<long>(der_data.size()));
@@ -157,10 +157,6 @@ X509_STORE* TestCaStore() {
 class SSLConnectionBackendOpenSSL final : public SSLConnectionBackend {
 public:
     Result Init() {
-        // on bundled OpenSSL, load ca cert store
-#ifdef YUZU_BUNDLED_OPENSSL
-        LoadCaCertStore(ssl_ctx, kCert, sizeof(kCert));
-#endif
         std::call_once(one_time_init_flag, OneTimeInit);
 
         if (!one_time_init_success) {
@@ -514,6 +510,12 @@ void OneTimeInit() {
         CheckOpenSSLErrors();
         return;
     }
+
+    // Bundled OpenSSL: the bundled CA certificates, before the default verify paths are added
+    // to the same store.
+#ifdef YUZU_BUNDLED_OPENSSL
+    LoadCaCertStore(ssl_ctx, kCert, sizeof(kCert));
+#endif
 
     SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, nullptr);
 
