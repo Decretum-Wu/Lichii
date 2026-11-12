@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <list>
 #include <memory>
 #include <utility>
@@ -34,6 +35,7 @@
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/pending_maps.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/gpu_timestamp.h"
@@ -158,8 +160,9 @@ struct GPU::Impl {
     template <typename Func>
     [[nodiscard]] u64 RequestSyncOperation(Func&& action) {
         std::unique_lock lck{sync_request_mutex};
-        const u64 fence = ++last_sync_fence;
+        const u64 fence = last_sync_fence.load(std::memory_order_relaxed) + 1;
         sync_requests.emplace_back(std::forward<Func>(action));
+        last_sync_fence.store(fence, std::memory_order_release);
         return fence;
     }
 
@@ -185,6 +188,13 @@ struct GPU::Impl {
 
     /// Tick pending requests within the GPU.
     void TickWork() {
+        // Most ticks follow a draw with no requests pending. A request queued meanwhile is
+        // served by a later draw or by the tick its caller queues after publishing the fence.
+        if (VideoCommon::g_t150_readback &&
+            current_sync_fence.load(std::memory_order_acquire) ==
+                last_sync_fence.load(std::memory_order_acquire)) {
+            return;
+        }
         std::unique_lock lck{sync_request_mutex};
         while (!sync_requests.empty()) {
             auto request = std::move(sync_requests.front());
@@ -217,11 +227,26 @@ struct GPU::Impl {
     /// core timing events.
     void Start() {
         Settings::UpdateGPUAccuracy();
+        // TEST ONLY (EGLA-150 round 2 A/B, never merges).
+        static const bool t150_readback = [] {
+            const char* value = std::getenv("EDEN_NX2_T150_READBACK");
+            const bool enabled = value != nullptr && value[0] == '1';
+            LOG_INFO(HW_GPU, "EGLA-150 test switch EDEN_NX2_T150_READBACK: {}",
+                     enabled ? "on (the split's back serves read flushes at its next entry)"
+                             : "off (read flushes wait for the front's queued tick, as nx2)");
+            return enabled;
+        }();
+        VideoCommon::g_t150_readback = t150_readback;
+        if (t150_readback) {
+            VideoCommon::GpuSplit::Get().SetTickHook(
+                [](void* argument) { static_cast<Impl*>(argument)->TickWork(); }, this);
+        }
         gpu_thread.StartThread(*renderer, renderer->Context(), scheduler);
     }
 
     void NotifyShutdown() {
         gpu_thread.NotifyShutdown();
+        VideoCommon::GpuSplit::Get().SetTickHook(nullptr, nullptr);
         {
             // The GPU threads stopped: no sync operation runs anymore. Guest threads still run
             // until the kernel suspends them, and one waiting for a read's flush (OnCPURead)
@@ -306,6 +331,12 @@ struct GPU::Impl {
                 AsyncReadback::Add(AsyncReadback::g_counters.flush_ns,
                                    AsyncReadback::Now() - start);
             });
+            // The guest synchronized with the GPU work it reads before reading it. Ask the
+            // back to submit the downloads at its next entry boundary, even if the front is busy.
+            // Keep the queued tick for a disabled, stopped or restarting split.
+            if (VideoCommon::g_t150_readback) {
+                VideoCommon::GpuSplit::Get().RequestTick();
+            }
             gpu_thread.TickGPU(is_async);
             WaitForSyncOperation(fence);
         }
@@ -439,7 +470,7 @@ struct GPU::Impl {
     std::list<std::function<void()>> sync_requests;
     std::atomic<u64> current_sync_fence{};
     std::atomic<AmpereAnchor> ampere_anchor{};
-    u64 last_sync_fence{};
+    std::atomic<u64> last_sync_fence{}; ///< Last request published, written under the mutex
 
     VideoCommon::PendingMaps pending_maps;
     std::mutex sync_request_mutex;
