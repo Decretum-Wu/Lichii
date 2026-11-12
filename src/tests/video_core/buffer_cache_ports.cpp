@@ -1011,6 +1011,18 @@ TEST_CASE("Uniform keep verify counts guest writes the delta did not report",
     REQUIRE(f.Counts().kept == 0);
 }
 
+TEST_CASE("Uniform keep verify checks only the ranges a keep would bind", "[buffer_ports]") {
+    KeepFixture f{"EDEN_NX2_UBO_KEEP_VERIFY"};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    f.Draw(nullptr);
+    // A new command buffer: the draw streams the range again instead of keeping it.
+    ++f.runtime.tick;
+    f.UboBytes()[3] = 9;
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().verified == 0);
+    REQUIRE(f.Counts().mismatches == 0);
+}
+
 TEST_CASE("Uniform keep binds unwritten uniform buffers streamed by earlier draws",
           "[buffer_ports]") {
     KeepFixture f{nullptr};
@@ -1070,6 +1082,62 @@ TEST_CASE("Uniform keep ends where the CPU may have synchronised and at memory m
     REQUIRE(f.Counts().kept == 3);
     f.Draw(&unchanged);
     REQUIRE(f.Counts().kept == 4);
+}
+
+TEST_CASE("Uniform keep ends at DMA copies, DMA clears and inline uploads over the range",
+          "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    f.Draw(nullptr);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+
+    // From memory no GPU wrote: the copy lands in guest memory only.
+    std::memset(f.bytes + 0x8000, 8, 0x10);
+    REQUIRE(f.cache->DMACopy(0x108000, KeepFixture::UboGpu + 0x20, 0x10));
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 2);
+
+    // The engine writes guest memory after the cache cleared the buffer.
+    REQUIRE(f.cache->DMAClear(KeepFixture::UboGpu + 0x40, 4, 0x09090909));
+    std::memset(f.UboBytes() + 0x40, 9, 0x10);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 2);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 3);
+
+    // An inline upload in place, allowed by GPU data on the next page.
+    Access::GpuWrite(*f.cache, f.id, 0x11000, 4);
+    constexpr DAddr inline_begin = KeepFixture::Ubo + 0xf0;
+    std::vector<u8> data(0x11010 - inline_begin, 10);
+    REQUIRE(f.cache->InlineMemory(inline_begin, data.size(), data));
+    std::memcpy(f.UboBytes() + 0xf0, data.data(), 0x10);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 3);
+}
+
+TEST_CASE("Uniform keep ends when the draw's GPU memory is another one", "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    Tegra::MemoryManager other{f.system, f.device, 32, 1ULL << 31, 16};
+    other.BindRasterizer(&f.rasterizer);
+    other.Map(0x100000, 0x10000, 0x10000, Tegra::PTEKind::PITCH, true);
+    REQUIRE(other.HostPointerSerial() == f.memory->HostPointerSerial());
+    Tegra::Control::ChannelState state{1};
+    state.memory_manager = &other;
+    state.payload.emplace(f.system, other, state);
+    VideoCommon::BufferCacheChannelInfo channel{state};
+    channel.uniform_buffer_sizes = &f.sizes;
+
+    f.Draw(nullptr);
+    // Its serial being the same number says nothing about the device memory behind the range.
+    f.UboBytes()[0x30] = 11;
+    Access::KeepDraw(*f.cache, channel, &unchanged, f.id, KeepFixture::Ubo, KeepFixture::UboSize);
+    REQUIRE(f.Counts().kept == 0);
+    const auto& data = f.runtime.allocations.at(f.runtime.bound.allocation);
+    REQUIRE(std::memcmp(data.data(), f.UboBytes(), KeepFixture::UboSize) == 0);
 }
 
 TEST_CASE("Constant buffer data skips WriteMemory only on pages no other buffer use reached",

@@ -828,6 +828,8 @@ private:
         u64 draw_deletions{}; ///< buffer_deletions when the previous draw began
         u64 sync_serial{};    ///< Nx2FastDraw::SyncSerial then
         u64 host_serial{};    ///< MemoryManager::HostPointerSerial then
+        /// gpu_memory then: another one's HostPointerSerial can be the same number
+        const Tegra::MemoryManager* gpu_memory{};
         u64 kept{};
         u64 streamed_binds{};
         u64 verified{};
