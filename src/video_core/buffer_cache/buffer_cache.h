@@ -1694,43 +1694,73 @@ void BufferCache<P>::SetUniformBuffersState(const std::array<u32, NUM_STAGES>& m
 template <class P>
 void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
     UniformKeep& keep = uniform_keep;
-    const bool unwritten = !keep.memory_writes_lost && keep.draw_deletions == buffer_deletions;
+    const u64 sync_serial = Nx2FastDraw::SyncSerial();
+    const u64 host_serial = gpu_memory != nullptr ? gpu_memory->HostPointerSerial() : 0;
+    const bool known = delta != nullptr && !delta->overflow && !keep.memory_writes_lost &&
+                       keep.draw_deletions == buffer_deletions &&
+                       keep.sync_serial == sync_serial && keep.host_serial == host_serial;
     keep.draw_deletions = buffer_deletions;
-    keep.candidates = {};
-    keep.writes.clear();
-    const std::array<u32, NUM_STAGES> streamed = std::exchange(keep.streamed, {});
-    const bool usable = delta != nullptr && unwritten;
-    if (usable) {
-        keep.writes.insert(keep.writes.end(), keep.memory_writes.begin(),
-                           keep.memory_writes.end());
+    keep.sync_serial = sync_serial;
+    keep.host_serial = host_serial;
+    if (!known) {
+        keep.clean = {};
+    }
+    for (size_t stage = 0; stage < NUM_STAGES && known; ++stage) {
+        u32 clean = keep.clean[stage] & ~delta->binds[stage];
+        for (u32 mask = clean; mask != 0; mask &= mask - 1) {
+            const u32 index = static_cast<u32>(std::countr_zero(mask));
+            const auto [begin, size] = keep.ranges[stage][index];
+            const auto overlaps = [begin, end = begin + size](DAddr write_begin, DAddr write_end) {
+                return write_begin < end && begin < write_end;
+            };
+            bool written = std::ranges::any_of(keep.memory_writes, [&](const auto& write) {
+                return overlaps(write.first, write.second);
+            });
+            // The device memory inline constant data landed on (writes to unmapped addresses
+            // land nowhere).
+            for (u32 write = 0; write < delta->num_device_writes && !written; ++write) {
+                written = overlaps(delta->device_begin[write], delta->device_end[write]);
+            }
+            if (written) {
+                clean &= ~(1u << index);
+            }
+        }
+        keep.clean[stage] = clean;
     }
     keep.memory_writes.clear();
     keep.memory_writes_lost = false;
-    if (!usable) {
-        return;
-    }
-    // The device memory inline constant data landed on (writes to unmapped addresses land
-    // nowhere).
-    for (u32 write = 0; write < delta->num_device_writes; ++write) {
-        keep.writes.emplace_back(delta->device_begin[write], delta->device_end[write]);
-    }
-    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
-        keep.candidates[stage] = streamed[stage] & ~delta->binds[stage];
-    }
 }
 
 template <class P>
 bool BufferCache<P>::UniformRangeKept(size_t stage, u32 index, DAddr device_addr,
                                       u32 size) const noexcept {
     const UniformKeep& keep = uniform_keep;
-    if (((keep.candidates[stage] >> index) & 1) == 0) {
-        return false;
+    return ((keep.clean[stage] >> index) & 1) != 0 &&
+           keep.ranges[stage][index] == std::pair<DAddr, u32>{device_addr, size};
+}
+
+template <class P>
+bool BufferCache<P>::ConstantDataReachesBuffers(DAddr device_addr, u64 size) const {
+    if (memory_tracker.IsRegionEverSynchronized(device_addr, size) ||
+        Tegra::Nx2MayBeGpuWritten(device_addr, size)) {
+        return true;
     }
-    const auto overlaps = [&](const std::pair<DAddr, DAddr>& write) {
-        return write.first < device_addr + size && device_addr < write.second;
-    };
-    return !keep.memory_writes_lost && std::ranges::none_of(keep.writes, overlaps) &&
-           std::ranges::none_of(keep.memory_writes, overlaps);
+    // Guest memory newer than a command list copy of the page (Nx2NoteListHostWrite).
+    if (Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
+        for (DAddr page = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
+             page < device_addr + size; page += DEVICE_PAGESIZE) {
+            if (Tegra::Nx2IsCommandListPage(page)) {
+                return true;
+            }
+        }
+    }
+    // Repacked vertex buffers read guest memory again only when marked stale.
+    if constexpr (requires { runtime.AnyVertexRepacked(); }) {
+        if (runtime.AnyVertexRepacked()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 template <class P>
@@ -2490,9 +2520,17 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);
     Buffer& buffer = slot_buffers[binding.buffer_id];
     TouchBuffer(buffer, binding.buffer_id);
+    const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
+    // Native programs keep tables next to their code in a 64 KiB bank read with indirect offsets
+    // (Splatoon Raiders: the dialogue box corners in c1). Writes to that memory can go unnoticed by
+    // the memory tracker, leaving stale host contents, so upload such a bank again once per frame.
+    const bool native_bank = has_host_buffer &&
+                             (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000 &&
+                             size != 0 && gpu_memory != nullptr && gpu_memory->UsesNativeTiling();
     bool verify_kept = false;
     if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
-        if (UniformRangeKept(stage, index, device_addr, size)) {
+        // Unnoticed writes would reach a kept bank too: those stream as before.
+        if (!native_bank && UniformRangeKept(stage, index, device_addr, size)) {
             if (ubo_keep_verify) {
                 ++uniform_keep.verified;
                 verify_kept = true;
@@ -2508,13 +2546,12 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             } else if (VideoCommon::RebindKeptUniform(runtime, stage, index, device_addr, size)) {
                 channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
                 channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
-                uniform_keep.streamed[stage] |= 1u << index;
                 ++uniform_keep.kept;
                 return;
             }
         }
+        uniform_keep.clean[stage] &= ~(1u << index);
     }
-    const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
     const u32 offset = has_host_buffer ? buffer.Offset(device_addr) : 0;
     const bool needs_alignment_stream = [&]() {
         if constexpr (IS_OPENGL) {
@@ -2527,11 +2564,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             return alignment > 1 && (offset % alignment) != 0;
         }
     }();
-    // Native programs keep tables next to their code in a 64 KiB bank read with indirect offsets
-    // (Splatoon Raiders: the dialogue box corners in c1). Writes to that memory can go unnoticed by
-    // the memory tracker, leaving stale host contents, so upload such a bank again once per frame.
-    if (has_host_buffer && (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000 &&
-        size != 0 && gpu_memory != nullptr && gpu_memory->UsesNativeTiling() &&
+    if (native_bank &&
         (Nx2Perf::Verify() || !native_indirect_uniforms_this_frame.contains(device_addr)) &&
         !memory_tracker.IsRegionGpuModified(device_addr, size) &&
         native_indirect_uniforms_this_frame.insert(device_addr).second) {
@@ -2584,7 +2617,8 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                 streamed = VideoCommon::BindSmallUniformReusing(
                     runtime, device_memory, stage, index, binding_index, device_addr, size);
                 if (streamed) {
-                    uniform_keep.streamed[stage] |= 1u << index;
+                    uniform_keep.clean[stage] |= 1u << index;
+                    uniform_keep.ranges[stage][index] = {device_addr, size};
                     ++uniform_keep.streamed_binds;
                 }
             }

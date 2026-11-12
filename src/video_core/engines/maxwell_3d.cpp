@@ -676,10 +676,12 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods,
     for (u32 i = 0; i < count; ++i) {
         ProcessDirtyRegisters(methods[i], ProcessShadowRam(methods[i], arguments[i]));
     }
-    if (VideoCommon::Nx2FastDraw::Enabled()) {
-        NoteFastDrawConstantData(address + offset, address + offset + bytes);
+    if (!WriteBoundConstantBuffer(offset, values.data(), static_cast<u32>(bytes))) {
+        if (VideoCommon::Nx2FastDraw::Enabled()) {
+            NoteFastDrawConstantData(address + offset, address + offset + bytes);
+        }
+        memory_manager.WriteWordsCached(address + offset, values.data(), count);
     }
-    memory_manager.WriteWordsCached(address + offset, values.data(), count);
     regs.const_buffer.offset += static_cast<u32>(bytes);
 }
 
@@ -1008,19 +1010,78 @@ void Maxwell3D::ProcessCBBind(size_t stage_index) {
     rasterizer->BindGraphicsUniformBuffer(stage_index, bind_data.shader_slot, gpu_addr, size);
 }
 
+namespace {
+// Texture and sampler headers are read when image views are resolved, which delta draws skip.
+constexpr u64 FastDrawHeaderSize = 0x20;
+
+u64 FastDrawHeadersSize(const Maxwell3D::Regs& regs) {
+    return (u64{regs.tex_header.limit} + 1) * FastDrawHeaderSize;
+}
+
+// As TextureCache::SynchronizeDescriptors sizes the sampler table.
+u64 FastDrawSamplersSize(const Maxwell3D::Regs& regs) {
+    return (u64{regs.sampler_binding == Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding
+                    ? regs.tex_header.limit
+                    : regs.tex_sampler.limit} +
+            1) *
+           FastDrawHeaderSize;
+}
+} // Anonymous namespace
+
+bool Maxwell3D::WriteBoundConstantBuffer(u32 offset, const void* data, u32 bytes) {
+    namespace FastDraw = VideoCommon::Nx2FastDraw;
+    if (!FastDraw::Enabled()) {
+        return false;
+    }
+    const GPUVAddr address = regs.const_buffer.Address();
+    const u32 size = regs.const_buffer.size;
+    const u64 map_serial = memory_manager.MapSerial();
+    const GPUVAddr tic = regs.tex_header.Address();
+    const u64 tic_size = FastDrawHeadersSize(regs);
+    const GPUVAddr tsc = regs.tex_sampler.Address();
+    const u64 tsc_size = FastDrawSamplersSize(regs);
+    BoundConstantBuffer& bound = bound_constant_buffer;
+    if (bound.address != address || bound.size != size || bound.map_serial != map_serial ||
+        bound.tic != tic || bound.tic_size != tic_size || bound.tsc != tsc ||
+        bound.tsc_size != tsc_size) {
+        bound = {address, size, map_serial, tic, tic_size, tsc, tsc_size, 0};
+        const GPUVAddr end = address + size;
+        const std::optional<DAddr> device =
+            address != 0 && size != 0 && memory_manager.IsContinuousRange(address, size)
+                ? memory_manager.GpuToCpuAddress(address)
+                : std::nullopt;
+        // Data anywhere in a buffer over the headers, at its GPU addresses or through another
+        // mapping of their device memory, takes the general path, which checks each write.
+        if (device && !(address < tic + tic_size && tic < end) &&
+            !(address < tsc + tsc_size && tsc < end)) {
+            fast_draw_header_spans.Update(memory_manager, tic, tic_size);
+            fast_draw_sampler_spans.Update(memory_manager, tsc, tsc_size);
+            if (!fast_draw_header_spans.Intersects(*device, *device + size) &&
+                !fast_draw_sampler_spans.Intersects(*device, *device + size)) {
+                bound.device = *device;
+            }
+        }
+    }
+    const GPUVAddr begin = address + offset;
+    // Words on Switch 2 sparse memory go one at a time, as Nx2BackSparseWrite saw them.
+    if (bound.device == 0 ||
+        (begin + bytes > Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) &&
+         begin < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed))) {
+        return false;
+    }
+    const DAddr device = bound.device + offset;
+    FastDraw::NoteConstantData(begin, begin + bytes);
+    FastDraw::NoteDeviceData(device, device + bytes);
+    memory_manager.WriteConstantBufferData(device, data, bytes);
+    return true;
+}
+
 void Maxwell3D::NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end) {
     namespace FastDraw = VideoCommon::Nx2FastDraw;
-    // Texture and sampler headers are read when image views are resolved, which delta draws skip.
-    constexpr u64 HeaderSize = 0x20;
     const GPUVAddr tic = regs.tex_header.Address();
-    const u64 tic_size = (u64{regs.tex_header.limit} + 1) * HeaderSize;
-    // As TextureCache::SynchronizeDescriptors sizes the sampler table.
+    const u64 tic_size = FastDrawHeadersSize(regs);
     const GPUVAddr tsc = regs.tex_sampler.Address();
-    const u64 tsc_size = (u64{regs.sampler_binding == Regs::SamplerBinding::ViaHeaderBinding
-                                  ? regs.tex_header.limit
-                                  : regs.tex_sampler.limit} +
-                          1) *
-                         HeaderSize;
+    const u64 tsc_size = FastDrawSamplersSize(regs);
     if ((begin < tic + tic_size && tic < end) || (begin < tsc + tsc_size && tsc < end)) {
         FastDraw::Break(FastDraw::Reason::TextureHeaders);
         return;
@@ -1058,10 +1119,13 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
     const size_t write_size = std::min(copy_size, room / sizeof(u32) * sizeof(u32));
     if (write_size != 0) {
         const GPUVAddr address{buffer_address + regs.const_buffer.offset};
-        if (VideoCommon::Nx2FastDraw::Enabled()) {
-            NoteFastDrawConstantData(address, address + write_size);
+        if (!WriteBoundConstantBuffer(regs.const_buffer.offset, start_base,
+                                      static_cast<u32>(write_size))) {
+            if (VideoCommon::Nx2FastDraw::Enabled()) {
+                NoteFastDrawConstantData(address, address + write_size);
+            }
+            memory_manager.WriteBlockCached(address, start_base, write_size);
         }
-        memory_manager.WriteBlockCached(address, start_base, write_size);
     }
     if (write_size != copy_size) {
         static std::atomic<bool> warned{};

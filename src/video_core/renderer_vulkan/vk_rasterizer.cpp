@@ -470,6 +470,8 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
     namespace FastDraw = VideoCommon::Nx2FastDraw;
     const ReusableDraw draw = std::exchange(reusable_draw, ReusableDraw{});
     const FastDraw::Delta delta = std::exchange(FastDraw::g_delta, FastDraw::Delta{});
+    // A draw that stopped before binding its uniforms never handed its writes to the keeps.
+    uniform_writes_lost |= std::exchange(taken_delta_unconsumed, true);
     taken_delta = delta;
     const auto full = [&](FullDraw reason) -> GraphicsPipeline* {
         ++fast_draw_stats.full[static_cast<size_t>(reason)];
@@ -918,6 +920,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         fast_draw_on = on;
         reusable_draw = {};
         FastDraw::g_delta = {};
+        uniform_writes_lost = true;
         fast_draw_stats = {};
     }
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
@@ -1156,7 +1159,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     const bool delta_holds =
         delta_pipeline != nullptr && DeltaStillHolds(draw_serial, draw_map_serial);
     const DrawPath path = delta_holds && !verify_pipeline ? DrawPath::Delta : DrawPath::Full;
-    buffer_cache.BeginGraphicsUniforms(path == DrawPath::Delta ? &taken_delta : nullptr);
+    // Every draw keeps the uniform buffers no write reached since they were streamed.
+    buffer_cache.BeginGraphicsUniforms(fast_draw_on && !uniform_writes_lost ? &taken_delta
+                                                                            : nullptr);
+    uniform_writes_lost = taken_delta_unconsumed = false;
     if (path == DrawPath::Delta) {
         if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->ConfigureDelta(is_indexed)) {
             report_failure("configure failed");
@@ -2488,6 +2494,8 @@ void RasterizerVulkan::ResetCounter(VideoCommon::QueryType type) {
 
 void RasterizerVulkan::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                              VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
+    // Reports and semaphore releases reach guest memory the CPU may wait on.
+    VideoCommon::Nx2FastDraw::NoteSync();
     query_cache.CounterReport(gpu_addr, type, flags, payload, subreport);
 }
 
@@ -2696,6 +2704,16 @@ void RasterizerVulkan::InvalidateRegion(DAddr addr, u64 size, VideoCommon::Cache
 }
 
 void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    InvalidateCachedWrites(sequences, false);
+}
+
+void RasterizerVulkan::InvalidateConstantBufferData(
+    std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    InvalidateCachedWrites(sequences, true);
+}
+
+void RasterizerVulkan::InvalidateCachedWrites(
+    std::span<const std::pair<DAddr, std::size_t>> sequences, bool constant_buffer_data) {
     // The GPU's own cached writes (constant buffer data, every draw): most land where no image,
     // query or shader was ever registered, which page_filter tells without the caches' locks.
     const auto any = [&](const VideoCommon::PageFilter& filter) {
@@ -2717,10 +2735,19 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
     if (Settings::values.skip_cpu_inner_invalidation.GetValue()) {
         return;
     }
-    {
+    // Constant buffer data only streamed uniform buffers read needs no buffer cache work: those
+    // pages stay CPU-modified, and uniform keeps learn of the write from the draw's fast draw
+    // delta (BufferCache::ConstantDataReachesBuffers).
+    const auto reaches_buffers = [&](const std::pair<DAddr, std::size_t>& range) {
+        return !constant_buffer_data ||
+               buffer_cache.ConstantDataReachesBuffers(range.first, range.second);
+    };
+    if (std::ranges::any_of(sequences, reaches_buffers)) {
         std::scoped_lock lock{buffer_cache.mutex};
-        for (const auto& [addr, size] : sequences) {
-            buffer_cache.WriteMemory(addr, size, true, true);
+        for (const auto& range : sequences) {
+            if (reaches_buffers(range)) {
+                buffer_cache.WriteMemory(range.first, range.second, true, true);
+            }
         }
     }
     if (any(query_cache.page_filter)) {
@@ -2818,18 +2845,22 @@ void RasterizerVulkan::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {
 }
 
 void RasterizerVulkan::SignalFence(std::function<void()>&& func) {
+    VideoCommon::Nx2FastDraw::NoteSync();
     fence_manager.SignalFence(std::move(func));
 }
 
 void RasterizerVulkan::SyncOperation(std::function<void()>&& func) {
+    VideoCommon::Nx2FastDraw::NoteSync();
     fence_manager.SyncOperation(std::move(func));
 }
 
 void RasterizerVulkan::SignalSyncPoint(u32 value) {
+    VideoCommon::Nx2FastDraw::NoteSync();
     fence_manager.SignalSyncPoint(value);
 }
 
 void RasterizerVulkan::SignalReference() {
+    VideoCommon::Nx2FastDraw::NoteSync();
     fence_manager.SignalReference();
 }
 
