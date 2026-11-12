@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -1027,19 +1026,7 @@ void TrimTrailingTees(std::vector<u32>& code) {
 
 // Elements of the descriptor array of a handle read from a table at an index word (see
 // g_handle_index_allowed): the table entries a draw binds, larger indices taking the last one.
-// LICHII_BINDLESS_TABLE overrides it (1 to 1024), 0 turning such arrays off (the shader then
-// gets whatever constant buffer word the earlier search finds, as before them).
-u32 HandleTableSize() {
-    static const u32 size = [] {
-        const char* const value = std::getenv("LICHII_BINDLESS_TABLE");
-        if (value == nullptr || value[0] == '\0') {
-            return 64U;
-        }
-        const long parsed = std::strtol(value, nullptr, 10);
-        return static_cast<u32>(std::clamp(parsed, 0L, 1024L));
-    }();
-    return size;
-}
+constexpr u32 HANDLE_TABLE_SIZE = 64;
 
 // The block of each instruction and the immediate dominator of each block of the program the
 // pass on this thread runs on, built when a handle program first needs them (Cooper, Harvey and
@@ -1292,8 +1279,7 @@ TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const H
             // as written.
             const bool sampled{!IsStorageImageOpcode(IndexedInstruction(inst)) &&
                                inst.Flags<IR::TextureInstInfo>().type != TextureType::Buffer};
-            if (!built && g_handle_programs && sampled && host_info.support_handle_table_arrays &&
-                HandleTableSize() > 0) {
+            if (!built && g_handle_programs && sampled && host_info.support_handle_table_arrays) {
                 // Read from a table at an index each invocation reads for itself: a descriptor
                 // array of the table's entries, which the shader indexes with that index.
                 code.clear();
@@ -1340,7 +1326,7 @@ TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const H
                     g_dominance.emplace(*g_program);
                 }
                 if (g_dominance->Dominates(index.InstRecursive(), &inst)) {
-                    count = HandleTableSize();
+                    count = HANDLE_TABLE_SIZE;
                 }
             }
             addr = ConstBufferAddr{
