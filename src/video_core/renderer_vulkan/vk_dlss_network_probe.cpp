@@ -70,6 +70,13 @@ constexpr std::array<VkDescriptorUpdateTemplateEntry, 3> TEMPLATES{{
     },
 }};
 
+/// The compared part of the input image (dlss_network_probe.comp's push constants).
+constexpr VkPushConstantRange PUSH_CONSTANT_RANGE{
+    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+    .offset = 0,
+    .size = sizeof(std::array<u32, 2>),
+};
+
 constexpr DescriptorBankInfo BANK_INFO{
     .uniform_buffers = 0,
     .storage_buffers = 1,
@@ -92,8 +99,8 @@ DlssNetworkProbe::DlssNetworkProbe(const Device& device_, Scheduler& scheduler_,
                                    DescriptorPool& descriptor_pool,
                                    ComputePassDescriptorQueue& descriptor_queue_,
                                    MemoryAllocator& memory_allocator)
-    : ComputePass(device_, scheduler_, descriptor_pool, BINDINGS, TEMPLATES, BANK_INFO, {},
-                  DLSS_NETWORK_PROBE_COMP_SPV),
+    : ComputePass(device_, scheduler_, descriptor_pool, BINDINGS, TEMPLATES, BANK_INFO,
+                  PUSH_CONSTANT_RANGE, DLSS_NETWORK_PROBE_COMP_SPV),
       scheduler{scheduler_}, descriptor_queue{descriptor_queue_} {
     sampler = device.GetLogical().CreateSampler(VkSamplerCreateInfo{
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -132,7 +139,8 @@ DlssNetworkProbe::DlssNetworkProbe(const Device& device_, Scheduler& scheduler_,
 DlssNetworkProbe::~DlssNetworkProbe() = default;
 
 std::optional<VideoCore::GameDlssProbe> DlssNetworkProbe::Probe(VkImageView input,
-                                                                VkImageView output) {
+                                                                VkImageView output,
+                                                                std::array<u32, 2> input_region) {
     std::optional<VideoCore::GameDlssProbe> result;
     if (ticks[oldest] != 0 && scheduler.IsFree(ticks[oldest])) {
         result = Read(oldest);
@@ -148,7 +156,7 @@ std::optional<VideoCore::GameDlssProbe> DlssNetworkProbe::Probe(VkImageView inpu
     descriptor_queue.AddSampledImage(output, *sampler);
     descriptor_queue.AddBuffer(*results, SLOT_SIZE * next, SLOT_SIZE);
     const void* const descriptor_data{descriptor_queue.UpdateData()};
-    scheduler.Record([this, descriptor_data](vk::CommandBuffer cmdbuf) {
+    scheduler.Record([this, descriptor_data, input_region](vk::CommandBuffer cmdbuf) {
         // The network's last pass and the game's draws wrote the images.
         const VkMemoryBarrier read_images{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -163,6 +171,8 @@ std::optional<VideoCore::GameDlssProbe> DlssNetworkProbe::Probe(VkImageView inpu
         device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptor_data);
         cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
         cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+        cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(input_region),
+                             input_region.data());
         cmdbuf.Dispatch(GRID_WIDTH, GRID_HEIGHT, 1);
         const VkMemoryBarrier read_results{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
