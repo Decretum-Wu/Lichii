@@ -122,6 +122,42 @@ TEST_CASE("Device space freed and mapped again every frame stays in place", "[me
     REQUIRE(device_memory.Allocate(size) == previous);
 }
 
+TEST_CASE("Kept device blocks go back to the allocator when it runs out", "[memory_manager]") {
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device_memory{physical};
+    // Fill the device space with a 1 GiB block between two others, free that block, then ask for
+    // 512 MiB: no kept block has that size and the allocator has no space left.
+    constexpr size_t freed_size = 1ULL << 30;
+    REQUIRE(device_memory.Allocate(0x20000) != 0);
+    const DAddr freed = device_memory.Allocate(freed_size);
+    REQUIRE(freed != 0);
+    const size_t rest =
+        (1ULL << Tegra::MaxwellDeviceMemoryManager::AS_BITS) - 1 - freed - freed_size;
+    REQUIRE(device_memory.Allocate(rest) != 0);
+    device_memory.Free(freed, freed_size);
+    REQUIRE(device_memory.Allocate(512ULL << 20) == freed);
+}
+
+TEST_CASE("An allocation fits once every kept device block is given back", "[memory_manager]") {
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device_memory{physical};
+    const DAddr first = device_memory.Allocate(1ULL << 30);
+    REQUIRE(first != 0);
+    device_memory.Free(first, 1ULL << 30);
+    REQUIRE(device_memory.Allocate(63ULL << 30) == first);
+}
+
+TEST_CASE("A device allocation larger than the space fails after kept blocks are given back",
+          "[memory_manager]") {
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device_memory{physical};
+    const DAddr first = device_memory.Allocate(1ULL << 30);
+    REQUIRE(first != 0);
+    device_memory.Free(first, 1ULL << 30);
+    REQUIRE(device_memory.Allocate(65ULL << 30) == 0);
+    REQUIRE(device_memory.Allocate(1ULL << 30) == first);
+}
+
 TEST_CASE("MaxContinuousRange from the mapping runs matches the page walk", "[memory_manager]") {
     const u64 big_page_bits = GENERATE(16ULL, 17ULL);
     CAPTURE(big_page_bits);
