@@ -721,7 +721,7 @@ bool TextureCache<P>::ResolveMemoizedTextures(SampledTextureMemo& memo,
                                               std::span<const GPUVAddr> handle_addresses,
                                               std::span<ImageViewInOut> views,
                                               std::span<SamplerId> samplers) {
-    const auto& image_table = channel_state->graphics_image_table;
+    auto& image_table = channel_state->graphics_image_table;
     const auto& sampler_table = channel_state->graphics_sampler_table;
     const bool via_header_index =
         maxwell3d->regs.sampler_binding == Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
@@ -735,13 +735,18 @@ bool TextureCache<P>::ResolveMemoizedTextures(SampledTextureMemo& memo,
         return false;
     }
     // The bytes the ids came from are what they were: the handle words, then the texture and
-    // sampler descriptors they select. Nothing else decides the views and samplers.
+    // sampler descriptors they select. Nothing else decides the views and samplers, but an image
+    // deletion clears the table entries bound to its views (DescriptorTable::Forget), so the table
+    // must still bind each view to its descriptor.
+    image_table.ApplyForgotten();
     for (size_t i = 0; i < handle_addresses.size(); ++i) {
         const SampledTextureMemo::Entry& entry = memo.entries[i];
         if (entry.handle_address != handle_addresses[i] ||
             std::memcmp(entry.handle_host, &entry.raw, sizeof(entry.raw)) != 0 ||
             std::memcmp(entry.tic_host, &entry.tic, sizeof(entry.tic)) != 0 ||
-            std::memcmp(entry.tsc_host, &entry.tsc, sizeof(entry.tsc)) != 0) {
+            std::memcmp(entry.tsc_host, &entry.tsc, sizeof(entry.tsc)) != 0 ||
+            image_table.bound_ids[entry.tic_index] != entry.view ||
+            image_table.descriptors[entry.tic_index] != entry.tic) {
             return false;
         }
     }
@@ -769,7 +774,8 @@ void TextureCache<P>::MemoizeTextures(SampledTextureMemo& memo,
     memo.entries.clear();
     auto& image_table = channel_state->graphics_image_table;
     auto& sampler_table = channel_state->graphics_sampler_table;
-    if (image_table.invalidated || sampler_table.invalidated || reads.size() != views.size() ||
+    if (image_table.invalidated || image_table.has_forgotten || sampler_table.invalidated ||
+        reads.size() != views.size() ||
         reads.size() != samplers.size()) {
         return;
     }
@@ -802,6 +808,7 @@ void TextureCache<P>::MemoizeTextures(SampledTextureMemo& memo,
             .tsc = sampler_table.descriptors[sampler_index],
             .raw = reads[i].raw,
             .view_index = view_index,
+            .tic_index = tic_index,
             .view = views[i].id,
             .sampler = samplers[i],
         };
@@ -1392,6 +1399,8 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
             }
         }
         image.dirty_layers.clear(); // all of it
+        // Entries bound to its views check again whether their address is still mapped.
+        ForgetImageViews(image.image_view_ids);
         if (True(image.flags & ImageFlagBits::Remapped)) {
             continue;
         }
@@ -2717,20 +2726,9 @@ void TextureCache<P>::InvalidateScale(Image& image) {
         sentenced_image_view.Push(std::move(slot_image_views[image_view_id]));
         slot_image_views.erase(image_view_id);
     }
+    ForgetImageViews(image_view_ids);
     image.image_view_ids.clear();
     image.image_view_infos.clear();
-    for (size_t c : active_channel_ids) {
-        auto& channel_info = channel_storage[c];
-
-#ifndef NDEBUG
-        if constexpr (ENABLE_VALIDATION) {
-            std::ranges::fill(channel_info.graphics_image_table.LiveBoundIds(), CORRUPT_ID);
-            std::ranges::fill(channel_info.compute_image_table.LiveBoundIds(), CORRUPT_ID);
-        }
-#endif
-        channel_info.graphics_image_table.Invalidate();
-        channel_info.compute_image_table.Invalidate();
-    }
     has_deleted_images = true;
 }
 
@@ -4117,6 +4115,8 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         }
         slot_image_views.erase(image_view_id);
     }
+    // Before the image goes: image_view_ids is its list.
+    ForgetImageViews(image_view_ids);
     const bool retained = RetainPendingImageDownloads(image_id, slot_images[image_id],
                                                        uncommitted_downloads, committed_downloads);
     if (retained) {
@@ -4138,18 +4138,15 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         image_allocs_table.erase(alloc_it);
         slot_image_allocs.erase(alloc_id);
     }
-    for (size_t c : active_channel_ids) {
-        auto& channel_info = channel_storage[c];
-#ifndef NDEBUG
-        if constexpr (ENABLE_VALIDATION) {
-            std::ranges::fill(channel_info.graphics_image_table.LiveBoundIds(), CORRUPT_ID);
-            std::ranges::fill(channel_info.compute_image_table.LiveBoundIds(), CORRUPT_ID);
-        }
-#endif
-        channel_info.graphics_image_table.Invalidate();
-        channel_info.compute_image_table.Invalidate();
-    }
     has_deleted_images = true;
+}
+
+template <class P>
+void TextureCache<P>::ForgetImageViews(std::span<const ImageViewId> image_view_ids) {
+    for (size_t c : active_channel_ids) {
+        channel_storage[c].graphics_image_table.Forget(image_view_ids);
+        channel_storage[c].compute_image_table.Forget(image_view_ids);
+    }
 }
 
 template <class P>

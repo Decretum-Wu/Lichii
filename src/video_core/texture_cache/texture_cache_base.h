@@ -91,6 +91,7 @@ struct SampledTextureMemo {
         TSCEntry tsc{};
         u32 raw{};        ///< The handle word
         u32 view_index{}; ///< The texture header index the handle gives
+        u32 tic_index{};  ///< Its entry in the table (TextureHeaderIndex)
         ImageViewId view{};
         SamplerId sampler{};
     };
@@ -558,6 +559,9 @@ private:
 
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);
+
+    /// Every channel's image tables read the entries bound to these views again
+    void ForgetImageViews(std::span<const ImageViewId> image_view_ids);
 
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);

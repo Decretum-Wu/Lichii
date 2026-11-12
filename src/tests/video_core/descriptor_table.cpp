@@ -146,6 +146,43 @@ TEST_CASE("Descriptor limits clear exposed slots after shrink and growth", "[des
     }
 }
 
+TEST_CASE("Forgotten view IDs clear only their entries", "[descriptor_table]") {
+    DescriptorMemory memory;
+    using Id = Common::SlotId;
+    VideoCommon::DescriptorTable<u64, Id> table;
+    for (u32 index = 0; index < 128; ++index) {
+        memory.banks[0][index] = index + 1;
+    }
+    REQUIRE(table.Synchronize(0x1000, 127));
+    const auto visit = [&](u32 index, Id id) {
+        if (table.Read(memory, index).second) {
+            table.bound_ids[index] = id;
+        }
+        return table.bound_ids[index];
+    };
+    for (u32 index = 0; index < 4; ++index) {
+        REQUIRE(visit(index, Id{10 + index}) == Id{10 + index});
+    }
+    REQUIRE(visit(70, Id{0}) == Id{0});
+    const u64 changes = table.changes;
+    const std::array deleted{Id{11}, Id{13}};
+    for (unsigned deletion = 0; deletion < 50; ++deletion) {
+        table.Forget(deleted);
+    }
+    REQUIRE(table.forgotten_ids.size() == deleted.size());
+    REQUIRE(table.changes == changes);
+    REQUIRE(table.Read(memory, 1).second);
+    REQUIRE(table.bound_ids[1] == Id{0});
+    REQUIRE(table.Read(memory, 3).second);
+    REQUIRE(table.Read(memory, 70).second);
+    REQUIRE_FALSE(table.Read(memory, 0).second);
+    REQUIRE(table.bound_ids[0] == Id{10});
+    REQUIRE_FALSE(table.Read(memory, 2).second);
+    REQUIRE(table.bound_ids[2] == Id{12});
+    REQUIRE(table.forgotten_ids.empty());
+    REQUIRE_FALSE(table.has_forgotten);
+}
+
 TEST_CASE("Descriptor invalidation CPU benchmark", "[.][cache_bench]") {
     DescriptorMemory memory;
     const auto measure = [&](bool deferred) {
