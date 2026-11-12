@@ -1222,9 +1222,10 @@ void PipelineCache::StopBackgroundJobs() {
     scheduled_prebuild.reset();
 }
 
-// Whether the last graphics translation on this thread bound a pointer word as a texture handle
-// that its capture saw unmapped (Shader::Info::binds_unmapped_pointer_word)
-static thread_local bool t_binds_unmapped_pointer_word{};
+// Set while this thread translates a cached graphics record: CreateGraphicsPipeline drops one
+// that binds a pointer word its capture saw unmapped (Shader::Info::binds_unmapped_pointer_word)
+// before it constructs the pipeline, and sets the flag
+static thread_local bool* t_dropped_unmapped_pointer_word{};
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::TranslateCachedGraphics(
     std::span<const u8> payload, const GraphicsPipelineCacheKey& key,
@@ -1247,9 +1248,13 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::TranslateCachedGraphics(
     for (auto& env : envs) {
         env_ptrs.push_back(&env);
     }
-    t_binds_unmapped_pointer_word = false;
+    bool dropped{};
+    t_dropped_unmapped_pointer_word = &dropped;
+    SCOPE_EXIT {
+        t_dropped_unmapped_pointer_word = nullptr;
+    };
     auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), statistics, false)};
-    if (pipeline && t_binds_unmapped_pointer_word) {
+    if (dropped) {
         // The record froze a storage pointer the capture saw null (graphics translations aren't
         // rebuilt when it fills, compute ones are): captured again when the game draws it.
         LOG_INFO(Render_Vulkan,
@@ -2693,7 +2698,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         Shader::IR::Program& program{programs[index]};
         const size_t stage_index{index - 1};
         infos[stage_index] = &program.info;
-        t_binds_unmapped_pointer_word |= program.info.binds_unmapped_pointer_word;
+        if (t_dropped_unmapped_pointer_word != nullptr &&
+            program.info.binds_unmapped_pointer_word) {
+            *t_dropped_unmapped_pointer_word = true;
+            return nullptr;
+        }
 
         auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
         if (mesh_emulation && (program.stage == Shader::Stage::Mesh ||
