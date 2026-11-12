@@ -16,6 +16,7 @@
 #include <fmt/format.h>
 
 #include "common/logging.h"
+#include "common/settings.h"
 #include "video_core/vulkan_common/streamline.h"
 #include "video_core/vulkan_common/streamline_api.h"
 #include "video_core/vulkan_common/streamline_frame_gen.h"
@@ -68,6 +69,7 @@ struct PresentState {
     std::optional<sl::DLSSGStatus> status;
     bool state_failed{};
     sl::DLSSGOptions options{};
+    bool clamp_logged{};
     u32 open_present{NO_FRAME};   ///< PresentStart set, PresentEnd not yet
     u32 closed_present{NO_FRAME}; ///< Last frame whose PresentEnd was set
     u64 vram{};
@@ -193,7 +195,7 @@ void KeepConstants(FrameState& frames, u32 index, const sl::Constants& constants
 bool SetMode(PresentState& state, bool on, const FrameGenPresent& present) {
     sl::DLSSGOptions options{};
     options.mode = on ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
-    options.numFramesToGenerate = 1;
+    options.numFramesToGenerate = on ? FrameGenGenerated() : 1;
     // Menus and movies turn it off and on again: keep its memory meanwhile.
     options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
     options.numBackBuffers = present.swapchain_images;
@@ -225,6 +227,13 @@ bool SetMode(PresentState& state, bool on, const FrameGenPresent& present) {
         state.vram = dlssg.estimatedVRAMUsageInBytes;
         PresentRates().max_generated.store(dlssg.numFramesToGenerateMax);
     }
+    const u32 wanted = Settings::FrameGenMultiplier() - 1;
+    if (wanted > options.numFramesToGenerate && !state.clamp_logged) {
+        state.clamp_logged = true;
+        LOG_INFO(Render_Vulkan, "DLSS-G: {}x asked, this system does up to {}x "
+                 "(numFramesToGenerateMax {})",
+                 wanted + 1, options.numFramesToGenerate + 1, FrameGenMaxGenerated());
+    }
     state.real = 0;
     state.shown = 0;
     state.report_from = std::chrono::steady_clock::now();
@@ -247,6 +256,7 @@ bool OptionsChanged(const PresentState& state, const FrameGenPresent& present) {
            state.options.colorHeight != present.swapchain_extent.height ||
            state.options.colorBufferFormat != static_cast<u32>(present.swapchain_format) ||
            state.options.numBackBuffers != present.swapchain_images ||
+           state.options.numFramesToGenerate != FrameGenGenerated() ||
            state.options.mvecDepthWidth != frames.input_width.load() ||
            state.options.mvecDepthHeight != frames.input_height.load();
 }
@@ -625,6 +635,12 @@ bool FrameGenSupportsSwapchain(VkFormat format) {
 
 u32 FrameGenMaxGenerated() {
     return PresentRates().max_generated.load(std::memory_order_relaxed);
+}
+
+u32 FrameGenGenerated() {
+    const u32 wanted = Settings::FrameGenMultiplier() - 1;
+    const u32 max = FrameGenMaxGenerated();
+    return max == 0 ? 1 : std::min(wanted, max);
 }
 
 void FrameGenSuspend() {

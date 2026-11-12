@@ -58,6 +58,10 @@ void FrameGenClosePresent(u32 index);
 /// numFramesToGenerateMax: frames this system can generate per rendered frame, 0 while unknown.
 [[nodiscard]] u32 FrameGenMaxGenerated();
 
+/// Frames DLSS-G generates per rendered frame: the frame generation multiplier less one, capped at
+/// FrameGenMaxGenerated() (1 while that is unknown).
+[[nodiscard]] u32 FrameGenGenerated();
+
 /// Turns DLSS-G off before the swapchain is recreated or destroyed (present thread).
 void FrameGenSuspend();
 

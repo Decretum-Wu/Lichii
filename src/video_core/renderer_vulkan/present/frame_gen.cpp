@@ -357,9 +357,9 @@ void FrameGen::SetState(VideoCore::FrameGenState new_state, VkFormat format) {
 #ifdef EGLANTINE_STREAMLINE
     case VideoCore::FrameGenState::NvidiaFrameGen:
         LOG_INFO(Render_Vulkan,
-                 "Frame generation on: NVIDIA DLSS-G 2x (numFramesToGenerateMax {}), presenting "
+                 "Frame generation on: NVIDIA DLSS-G {}x (numFramesToGenerateMax {}), presenting "
                  "{}",
-                 Streamline::FrameGenMaxGenerated(),
+                 Streamline::FrameGenGenerated() + 1, Streamline::FrameGenMaxGenerated(),
                  string_VkFormat(format));
         break;
 #endif
