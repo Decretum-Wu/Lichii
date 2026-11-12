@@ -205,6 +205,13 @@ public:
         }
     }
 
+    /// Whether a cache may hold an image or a query report on [addr, addr + size), where guest
+    /// memory can be older than the cache: a write repeating guest memory's bytes there must
+    /// still invalidate. True when the rasterizer can't tell.
+    virtual bool MayCacheObjectsAt([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size) {
+        return true;
+    }
+
     /// Notify rasterizer that any caches of the specified region are desync with guest
     virtual void OnCacheInvalidation(PAddr addr, u64 size) = 0;
 

@@ -2621,6 +2621,10 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
     }
 }
 
+bool RasterizerVulkan::MayCacheObjectsAt(DAddr addr, u64 size) {
+    return texture_cache.page_filter.Any(addr, size) || query_cache.page_filter.Any(addr, size);
+}
+
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     DEBUG_ASSERT(addr != 0 || size != 0);
     {

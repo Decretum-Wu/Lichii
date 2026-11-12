@@ -18,6 +18,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include "common/page_table.h"
+#include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "core/hle/kernel/k_process.h"
@@ -28,6 +29,7 @@
 #include "video_core/buffer_cache/memory_tracker_base.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2.h"
 #include "video_core/renderer_null/null_rasterizer.h"
 
 namespace {
@@ -517,7 +519,7 @@ VideoCommon::Nx2FastDraw::Delta Written(DAddr begin, DAddr end) {
 }
 
 /// Hands FinishRead to a buffer cache, as RasterizerVulkan does.
-class ReadRasterizer final : public VideoCore::RasterizerInterface {
+class ReadRasterizer : public VideoCore::RasterizerInterface {
 public:
     explicit ReadRasterizer(Cache& cache_) : cache{cache_} {}
 
@@ -567,6 +569,22 @@ public:
 
 private:
     Cache& cache;
+};
+
+/// Records what FlushCaching invalidates, and says whether a cache holds objects anywhere.
+class InvalidationRasterizer final : public ReadRasterizer {
+public:
+    using ReadRasterizer::ReadRasterizer;
+
+    void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override {
+        ranges.insert(ranges.end(), sequences.begin(), sequences.end());
+    }
+    bool MayCacheObjectsAt(DAddr, u64) override {
+        return objects;
+    }
+
+    std::vector<std::pair<DAddr, std::size_t>> ranges;
+    bool objects{};
 };
 
 } // namespace
@@ -1291,6 +1309,65 @@ TEST_CASE("Read download check leaves out newer bytes over an earlier read's dow
     REQUIRE(Access::ReadChecks(*f.cache).mismatched == 0);
     REQUIRE(Access::ReadChecks(*f.cache).rewritten == 0x30);
     REQUIRE(Access::ReadChecks(*f.cache).uncovered == 0);
+}
+
+TEST_CASE("Constant buffer writes repeating guest memory skip invalidation only where it's newest",
+          "[buffer_ports]") {
+    using Ranges = std::vector<std::pair<DAddr, std::size_t>>;
+    Fixture f;
+    InvalidationRasterizer rasterizer{*f.cache};
+    Tegra::MemoryManager gpu_memory{f.system, f.device, 32, 1ULL << 31, 16};
+    gpu_memory.BindRasterizer(&rasterizer);
+    gpu_memory.Map(0x200000, 0x20000, 0x10000, Tegra::PTEKind::PITCH, true);
+    const bool ampere = Tegra::g_nx2_ampere.exchange(true);
+    SCOPE_EXIT {
+        Tegra::g_nx2_ampere = ampere;
+        Tegra::Nx2ClearGpuWrittenPages();
+    };
+    std::array<u32, 16> words{};
+    for (u32 i = 0; i < words.size(); ++i) {
+        words[i] = 0x1000 + i;
+    }
+    const auto write = [&](bool as_words) {
+        rasterizer.ranges.clear();
+        if (as_words) {
+            gpu_memory.WriteWordsCached(0x200100, words.data(), words.size());
+        } else {
+            gpu_memory.WriteBlockCached(0x200100, words.data(), sizeof(words));
+        }
+        gpu_memory.FlushCaching();
+        return rasterizer.ranges;
+    };
+    const Ranges all{{0x20100, 0x40}};
+    const auto word_at = [&](size_t index) {
+        u32 value;
+        std::memcpy(&value, f.bytes + 0x10100 + index * sizeof(u32), sizeof(value));
+        return value;
+    };
+
+    REQUIRE(write(false) == all);
+    REQUIRE(word_at(15) == 0x100f);
+    REQUIRE(write(false).empty());
+    REQUIRE(write(true).empty());
+    // One changed word: only its 32-byte block.
+    words[12] = 0xabcd;
+    REQUIRE(write(true) == Ranges{{0x20120, 0x20}});
+    REQUIRE(word_at(12) == 0xabcd);
+    REQUIRE(write(true).empty());
+
+    // Where guest memory can be older than a cache, repeats invalidate as before.
+    rasterizer.objects = true;
+    REQUIRE(write(false) == all);
+    REQUIRE(write(true) == all);
+    rasterizer.objects = false;
+    Tegra::Nx2MarkGpuWritten(0x20100, 4);
+    REQUIRE(write(false) == all);
+    REQUIRE(write(true) == all);
+    Tegra::Nx2ClearGpuWrittenPages();
+    Tegra::g_nx2_ampere = false;
+    REQUIRE(write(false) == all);
+    Tegra::g_nx2_ampere = true;
+    REQUIRE(write(false).empty());
 }
 
 TEST_CASE("Read download check finds an earlier read's bytes the GPU changed unrecorded",
