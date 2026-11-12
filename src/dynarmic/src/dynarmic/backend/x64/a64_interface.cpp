@@ -226,6 +226,9 @@ public:
 private:
     static CodePtr GetCurrentBlockThunk(void* thisptr) {
         Jit::Impl* this_ = static_cast<Jit::Impl*>(thisptr);
+        if (this_->conf.counters) {
+            ++this_->conf.counters->block_lookups;
+        }
         return this_->GetCurrentBlock();
     }
 
@@ -260,6 +263,9 @@ private:
         ir_block.Reset(arch_descriptor);
         A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
         Optimization::Optimize(ir_block, conf, polyfill_options);
+        if (conf.counters) {
+            ++conf.counters->blocks_compiled;
+        }
         return emitter.Emit(ir_block).entrypoint;
     }
 
@@ -275,6 +281,9 @@ private:
 
             jit_state.ResetRSB();
             if (invalidate_entire_cache) {
+                if (conf.counters) {
+                    ++conf.counters->cache_clears;
+                }
                 block_of_code.ClearCache();
                 emitter.ClearCache();
             } else {
