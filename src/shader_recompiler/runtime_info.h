@@ -81,6 +81,8 @@ struct TransformFeedbackVarying {
     u32 stride{};
     u32 offset{};
     u32 components{};
+
+    bool operator==(const TransformFeedbackVarying&) const = default;
 };
 
 struct RuntimeInfo {
@@ -139,6 +141,8 @@ struct RuntimeInfo {
     u32 mesh_task_offsets_binding{~0U};
     u32 mesh_task_args_binding{~0U};
     u32 mesh_task_payload_stride{}; ///< payload buffer words per task workgroup
+
+    bool operator==(const RuntimeInfo&) const = default;
 };
 
 } // namespace Shader

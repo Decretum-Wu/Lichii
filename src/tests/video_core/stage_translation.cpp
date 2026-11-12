@@ -18,6 +18,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
+#include "common/settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
@@ -29,6 +30,7 @@
 #include "video_core/renderer_vulkan/pipeline_shader_emission.h"
 #include "video_core/shader_jobs.h"
 #include "video_core/shader_stage_translation.h"
+#include "video_core/stage_cache.h"
 
 namespace {
 
@@ -452,4 +454,87 @@ TEST_CASE("Compute SPIR-V emitted by a job matches the GPU thread's", "[stage_tr
         CHECK(Vulkan::EmitComputeShader(profile, program, 1, reference) == reference);
     }
     CHECK(compute_fixtures > 0);
+}
+
+TEST_CASE("A stage translated through a stage cache Recorder is the one its environment gives",
+          "[stage_cache]") {
+    const auto fixtures = LoadFixtures();
+    const auto host = Host();
+    const auto profile = Profile(host);
+    for (const Fixture& fixture : fixtures) {
+        INFO(fixture.name);
+        FixtureEnvironment env{fixture.environment};
+        VideoCommon::StageCache::Recorder recorder{env};
+        CHECK(recorder.IsNativeProgram() == env.IsNativeProgram());
+        CHECK(recorder.HasNativeInstructions() == env.HasNativeInstructions());
+        ShaderPools pools;
+        Shader::Maxwell::Flow::CFG cfg{recorder, pools.flow_block, env.CfgOffset()};
+        CHECK(Emit(profile, Shader::Maxwell::TranslateProgram(pools.inst, pools.block, recorder,
+                                                              cfg, host)) ==
+              TranslateHere(fixture, host, profile));
+    }
+}
+
+TEST_CASE("The stage cache reuses a stage only where its reads, settings and runtime info match",
+          "[stage_cache]") {
+    using VideoCommon::StageCache;
+    const auto fixtures = LoadFixtures();
+    const auto host = Host();
+    const auto profile = Profile(host);
+    size_t changed_fixtures = 0;
+    for (const Fixture& fixture : fixtures) {
+        INFO(fixture.name);
+        StageCache cache;
+        const u64 hash = std::hash<std::string>{}(fixture.name);
+        {
+            FixtureEnvironment env{fixture.environment};
+            StageCache::Recorder recorder{env};
+            ShaderPools pools;
+            Shader::Maxwell::Flow::CFG cfg{recorder, pools.flow_block, env.CfgOffset()};
+            auto program =
+                Shader::Maxwell::TranslateProgram(pools.inst, pools.block, recorder, cfg, host);
+            auto translation = std::make_shared<StageCache::Translation>();
+            translation->signature = StageCache::Signature(env, hash, 1);
+            translation->reads = recorder.TakeReads();
+            translation->program = StageCache::Summary(program);
+            auto emitted = std::make_shared<StageCache::Emitted>();
+            emitted->spirv = Shader::Backend::SPIRV::EmitSPIRV(profile, {}, program,
+                                                               emitted->bindings_out);
+            emitted->program = StageCache::Summary(program);
+            cache.Add(translation, std::move(emitted));
+        }
+
+        // Another environment of the program, answering the reads the same way
+        FixtureEnvironment env{fixture.environment};
+        const auto found = cache.Find(StageCache::Signature(env, hash, 1), env);
+        REQUIRE(found != nullptr);
+        const auto reused = cache.FindEmitted(*found, {}, {});
+        REQUIRE(reused != nullptr);
+        CHECK(reused->spirv == TranslateHere(fixture, host, profile).spirv);
+
+        Shader::RuntimeInfo y_negate;
+        y_negate.y_negate = true;
+        CHECK(cache.FindEmitted(*found, y_negate, {}) == nullptr);
+        CHECK(cache.FindEmitted(*found, {}, Shader::Backend::Bindings{.unified = 1}) == nullptr);
+        CHECK(cache.Find(StageCache::Signature(env, hash + 1, 1), env) == nullptr);
+        CHECK(cache.Find(StageCache::Signature(env, hash, 2), env) == nullptr);
+        auto& rescaling = Settings::values.resolution_info.active;
+        rescaling = !rescaling;
+        CHECK(cache.Find(StageCache::Signature(env, hash, 1), env) == nullptr);
+        rescaling = !rescaling;
+
+        // An environment whose constant buffer values all differ is given the cached stage only
+        // where translating it gives the same SPIR-V (not where it gives other SPIR-V or fails)
+        nlohmann::json shifted = fixture.environment;
+        for (auto& entry : shifted["cbuf_values"]) {
+            entry[1] = entry[1].get<u32>() ^ 1;
+        }
+        const Result fresh = TranslateHere({fixture.name, shifted}, host, profile);
+        changed_fixtures += fresh.spirv != reused->spirv ? 1 : 0;
+        FixtureEnvironment other{shifted};
+        if (cache.Find(StageCache::Signature(other, hash, 1), other)) {
+            CHECK(fresh.spirv == reused->spirv);
+        }
+    }
+    CHECK(changed_fixtures > 0);
 }

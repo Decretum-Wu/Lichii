@@ -43,6 +43,7 @@
 #include "video_core/shader_cache_v2/cache.h"
 #include "video_core/shader_jobs.h"
 #include "video_core/shader_stage_translation.h"
+#include "video_core/stage_cache.h"
 
 namespace Core {
 class System;
@@ -310,6 +311,7 @@ private:
 
     Shader::Profile profile;
     Shader::HostTranslateInfo host_info;
+    VideoCommon::StageCache stage_cache;
 
     std::filesystem::path pipeline_cache_filename;
 

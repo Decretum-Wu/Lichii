@@ -277,6 +277,8 @@ struct MeshInfo {
     [[nodiscard]] u32 PrimitiveVertices() const noexcept {
         return topology == 0 ? 1 : topology == 1 ? 2 : 3;
     }
+
+    bool operator==(const MeshInfo&) const = default;
 };
 
 struct Info {

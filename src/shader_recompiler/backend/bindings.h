@@ -15,6 +15,8 @@ struct Bindings {
     u32 image{};
     u32 texture_scaling_index{};
     u32 image_scaling_index{};
+
+    bool operator==(const Bindings&) const = default;
 };
 
 } // namespace Shader::Backend
