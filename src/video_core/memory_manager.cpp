@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
+#include <chrono>
+#include <cstdlib>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -649,7 +652,44 @@ const u8* MemoryManager::RepeatableWriteTarget(GPUVAddr gpu_addr, std::size_t si
     return memory.GetPointer<u8>(*dev_addr);
 }
 
+namespace {
+// EGLA-142 test branch only. EDEN_NX2_CB_SAME_COUNT=1: count cached writes that repeat guest
+// memory and drop none of them, logged every 10 s.
+const bool g_cb_same_count = std::getenv("EDEN_NX2_CB_SAME_COUNT") != nullptr;
+struct CbSameCounts {
+    u64 writes{}, eligible{}, repeated{};
+    u64 words{}, eligible_words{}, repeated_words{};
+    std::chrono::steady_clock::time_point next{};
+};
+thread_local CbSameCounts g_cb_counts;
+
+void ReportCbSame() {
+    CbSameCounts& c = g_cb_counts;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < c.next) {
+        return;
+    }
+    if (c.next != std::chrono::steady_clock::time_point{}) {
+        LOG_INFO(HW_GPU,
+                 "CB same count in 10 s: {} block writes ({} eligible, {} repeated), {} words in "
+                 "runs ({} eligible, {} repeated)",
+                 c.writes, c.eligible, c.repeated, c.words, c.eligible_words, c.repeated_words);
+    }
+    c = {.next = now + std::chrono::seconds{10}};
+}
+} // namespace
+
 void MemoryManager::WriteBlockCached(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size) {
+    if (g_cb_same_count) {
+        const u8* const target = RepeatableWriteTarget(gpu_dest_addr, size);
+        ++g_cb_counts.writes;
+        g_cb_counts.eligible += target != nullptr;
+        g_cb_counts.repeated += target != nullptr && std::memcmp(target, src_buffer, size) == 0;
+        ReportCbSame();
+        WriteBlockImpl(gpu_dest_addr, src_buffer, size, VideoCommon::CacheType::None, true);
+        accumulator.Add(gpu_dest_addr, size);
+        return;
+    }
     // Bytes guest memory already holds change nothing a cache keeps (constant buffer data
     // repeats about two thirds of the time in Donkey Kong Bananza).
     if (const u8* const target = RepeatableWriteTarget(gpu_dest_addr, size);
@@ -680,9 +720,17 @@ void MemoryManager::WriteWordsCached(GPUVAddr gpu_dest_addr, const u32* words, s
             std::memcpy(&old_word, target + i * sizeof(u32), sizeof(u32));
             changed |= u64{old_word != words[i]} << i;
         }
-        if (changed == 0) {
+        if (g_cb_same_count) {
+            g_cb_counts.eligible_words += count;
+            g_cb_counts.repeated_words += count - static_cast<u64>(std::popcount(changed));
+            changed = ~u64{0};
+        } else if (changed == 0) {
             return;
         }
+    }
+    if (g_cb_same_count) {
+        g_cb_counts.words += count;
+        ReportCbSame();
     }
     WriteBlockImpl(gpu_dest_addr, words, size, VideoCommon::CacheType::None, true);
     // The accumulator merges word by word differently from one range: keep its ranges.
