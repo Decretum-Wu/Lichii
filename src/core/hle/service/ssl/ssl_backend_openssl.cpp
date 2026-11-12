@@ -118,6 +118,40 @@ inline void LoadCaCertStore(SSL_CTX* ctx, const char* ca_cert, std::size_t size)
 }
 #endif
 
+/// The roots a connection verifies against while the custom servers' CA (EDEN_NX2_ONLINE_CA) is
+/// trusted: the usual ones plus that CA. Built once, the first time it is wanted. Connections
+/// get it through SSL_set1_verify_cert_store, so the CA follows the setting each time a game
+/// starts and is never added to the context's own store (which bundled builds replace on every
+/// Init()). Null when it can't be built.
+X509_STORE* TestCaStore() {
+    static std::once_flag once;
+    static X509_STORE* store = nullptr;
+    std::call_once(once, [] {
+#ifdef YUZU_BUNDLED_OPENSSL
+        X509_STORE* roots = CreateCaCertStore(kCert, sizeof(kCert));
+#else
+        X509_STORE* roots = X509_STORE_new();
+        if (roots != nullptr && X509_STORE_set_default_paths(roots) != 1) {
+            X509_STORE_free(roots);
+            roots = nullptr;
+        }
+#endif
+        const auto der_data = Network::LocalRedirect::TestCa();
+        const unsigned char* der = der_data.data();
+        X509* const ca = d2i_X509(nullptr, &der, static_cast<long>(der_data.size()));
+        if (roots != nullptr && ca != nullptr && X509_STORE_add_cert(roots, ca) == 1) {
+            store = roots;
+            LOG_INFO(Service_SSL, "Trusting the custom servers' CA (EDEN_NX2_ONLINE_CA)");
+        } else {
+            X509_STORE_free(roots);
+            LOG_ERROR(Service_SSL, "The custom servers' CA (EDEN_NX2_ONLINE_CA) could not be loaded");
+            CheckOpenSSLErrors();
+        }
+        X509_free(ca);
+    });
+    return store;
+}
+
 } // namespace
 
 class SSLConnectionBackendOpenSSL final : public SSLConnectionBackend {
@@ -139,6 +173,15 @@ public:
         if (!ssl) {
             LOG_ERROR(Service_SSL, "SSL_new failed");
             return CheckOpenSSLErrors();
+        }
+
+        // Empty unless "Redirect online services to custom servers" is ticked.
+        if (!Network::LocalRedirect::TestCa().empty()) {
+            X509_STORE* const store = TestCaStore();
+            if (store == nullptr || SSL_set1_verify_cert_store(ssl, store) != 1) {
+                LOG_ERROR(Service_SSL, "Can't verify with the custom servers' CA");
+                return ResultInternalError;
+            }
         }
 
         SSL_set_connect_state(ssl);
@@ -478,21 +521,6 @@ void OneTimeInit() {
         LOG_ERROR(Service_SSL, "SSL_CTX_set_default_verify_paths failed");
         CheckOpenSSLErrors();
         return;
-    }
-
-    // The launcher's test CA (EDEN_NX2_ONLINE_CA) next to the system's.
-    if (const auto test_ca = Network::LocalRedirect::TestCa(); !test_ca.empty()) {
-        const unsigned char* der = test_ca.data();
-        X509* const ca = d2i_X509(nullptr, &der, static_cast<long>(test_ca.size()));
-        const bool trusted =
-            ca != nullptr && X509_STORE_add_cert(SSL_CTX_get_cert_store(ssl_ctx), ca) == 1;
-        X509_free(ca);
-        if (trusted) {
-            LOG_INFO(Service_SSL, "Trusting the test CA (EDEN_NX2_ONLINE_CA)");
-        } else {
-            LOG_ERROR(Service_SSL, "The test CA (EDEN_NX2_ONLINE_CA) could not be loaded");
-            CheckOpenSSLErrors();
-        }
     }
 
     OneTimeInitLogFile();
