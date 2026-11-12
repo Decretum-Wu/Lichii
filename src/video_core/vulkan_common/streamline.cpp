@@ -18,6 +18,7 @@
 
 #include <fmt/format.h>
 
+#include "common/display_hdr.h"
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -631,8 +632,12 @@ bool Start() {
         Names(requirements.vkNumDeviceExtensions, requirements.vkDeviceExtensions);
     if (!state.frame_gen_requested) {
         SetFrameGenReason(state, "it was not the frame generation type when the game started");
-    } else if (Settings::values.hdr_mode.GetValue() != Settings::HdrMode::Off &&
-               Settings::values.hdr_swapchain.GetValue() == Settings::HdrSwapchain::Scrgb) {
+    } else if (Settings::values.hdr_swapchain.GetValue() == Settings::HdrSwapchain::Scrgb &&
+               Common::ResolveHdrOutput(Common::DisplayHdrMonitor::Instance().Current(),
+                                        Settings::values.hdr_mode.GetValue(),
+                                        Settings::values.hdr_peak_luminance.GetValue(),
+                                        Settings::values.hdr_reference_white.GetValue())
+                   .enabled) {
         state.frame_gen_requested = false;
         SetFrameGenReason(state, "the HDR format is scRGB; set it to HDR10 to use it");
     }
