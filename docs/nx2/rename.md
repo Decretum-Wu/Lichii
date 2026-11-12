@@ -60,3 +60,64 @@ and scripts keep their settings. The targets are `lichii` (output `lichii`), `li
 
 A branch that was opened before the rename can do the same: run `apply` on the branch, commit,
 then merge nx2.
+
+## Naming table
+
+### Paths
+
+| Old | New |
+|---|---|
+| `src/yuzu/` | `src/lichii/` (Qt frontend) |
+| `src/yuzu_cmd/` | `src/lichii_cmd/` |
+| `src/yuzu_room_standalone/yuzu_room_standalone.cpp` | `src/lichii_room_standalone/lichii_room_standalone.cpp` |
+| `src/dedicated_room/yuzu_room.{cpp,h,rc}` | `src/dedicated_room/lichii_room.{cpp,h,rc}` |
+| `src/tests/yuzu_cmd/` | `src/tests/lichii_cmd/` |
+| `dist/yuzu.manifest` | `dist/lichii.manifest` |
+| `src/android/app/src/main/java/org/yuzu/yuzu_emu/` | `src/android/app/src/main/java/io/github/zortos293/lichii/` |
+
+### CMake targets
+
+| Old | New | Output |
+|---|---|---|
+| `yuzu` | `lichii` | `lichii` (`lichii.exe`) |
+| `yuzu-cmd` | `lichii-cmd` | `eden-cli` |
+| `yuzu-room` | `lichii-room` | `eden-room` |
+| `yuzu_room_standalone` | `lichii_room_standalone` | `eden-room` |
+| `yuzu-android` | `lichii-android` | `liblichii-android.so` |
+
+### CMake options
+
+Every `YUZU_<name>` option and the compile definition it produces is `LICHII_<name>`, for
+example `YUZU_TESTS` -> `LICHII_TESTS`, `YUZU_CMD` -> `LICHII_CMD`, `YUZU_ROOM` ->
+`LICHII_ROOM`, `YUZU_USE_BUNDLED_QT` -> `LICHII_USE_BUNDLED_QT`. The full list is `OPTIONS` in
+`tools/rename/areas/build.py`.
+
+### Android
+
+| Old | New |
+|---|---|
+| package and namespace `org.yuzu.yuzu_emu` | `io.github.zortos293.lichii` |
+| JNI exports `Java_org_yuzu_yuzu_1emu_*` | `Java_io_github_zortos293_lichii_*` |
+| `YuzuApplication`, `Yuzu*` classes, `Theme.Yuzu.*` | `LichiiApplication`, `Lichii*`, `Theme.Lichii.*` |
+| `ic_yuzu`, `ic_yuzu_splash` | `ic_lichii`, `ic_lichii_splash` |
+
+The applicationId `dev.eden.eden_emulator` was never a yuzu name and is unchanged.
+
+### Identifiers and text
+
+Identifiers become `lichii`, `Lichii` and `LICHII` in the case they had, or a neutral name where
+Lichii reads wrong. In documentation and comments the project name yuzu or Yuzu becomes Lichii.
+
+## Kept names
+
+Each remaining yuzu is listed by `check -v` with its class and reason.
+
+- `YUZU_<name>`, `-DYUZU_*`: old CMake option names `LegacyOptions.cmake` still reads (compat).
+- `YuzuRoom-BanList-1`: ban list file magic of existing room ban lists (compat).
+- `yuzucach`: shader cache file magic in existing caches (compat).
+- Lineage statements naming yuzu among the projects Lichii builds on, and copyright notices
+  (attribution).
+- References to the separate yuzu emulator in the user docs: Steam ROM Manager's
+  "Nintendo Switch - Yuzu" preset, the `ikuzen/yuzu-hdr-multiplayer-dedicated` Docker image,
+  the profile bug in earlier versions of yuzu, and a link into Eden's `src/yuzu` (compat).
+- _Placeholder: the libs, qt and android areas' kept names are added here._
