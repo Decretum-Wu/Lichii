@@ -5535,7 +5535,9 @@ void MainWindow::OnCheckFirmwareDecryption(bool prompt) {
         // At startup only log it: loose ExeFS/RomFS dumps (all Switch 2 games so far) need no
         // keys, and a modal question blocked every unattended launch. Tools > Install Decryption
         // Keys still installs them.
-        LOG_WARNING(Frontend, "Decryption keys are missing: NCA, NSP and XCI games need them");
+        LOG_WARNING(Frontend, "Decryption keys are missing from {}: NCA, NSP and XCI games need them",
+                    Common::FS::PathToUTF8String(
+                        Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir)));
     } else if (!ContentManager::AreKeysPresent()) {
         const auto res = QtCommon::Frontend::Warning(
             tr("Derivation Components Missing"),
