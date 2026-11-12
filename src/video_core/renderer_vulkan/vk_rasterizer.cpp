@@ -3033,6 +3033,13 @@ void RasterizerVulkan::TraceRenderState(bool is_indexed, const char* outcome,
               viewport.scale_x, viewport.scale_y, viewport.scale_z, viewport.translate_x,
               viewport.translate_y, viewport.translate_z, scissor.enable, scissor.min_x.Value(),
               scissor.max_x.Value(), scissor.min_y.Value(), scissor.max_y.Value());
+    LOG_DEBUG(Render_Vulkan,
+              "Render trace bias: topology={} raster_topology={} offset_point={} offset_line={} "
+              "offset_fill={} units={} slope={} clamp={} control={:#x}",
+              static_cast<u32>(draw.topology), static_cast<u32>(regs.RasterTopology(draw.topology)),
+              regs.polygon_offset_point_enable, regs.polygon_offset_line_enable,
+              regs.polygon_offset_fill_enable, regs.depth_bias, regs.slope_scale_depth_bias,
+              regs.depth_bias_clamp, regs.depth_bias_control);
     for (size_t binding = 0; binding < regs.vertex_streams.size(); ++binding) {
         const auto& stream = regs.vertex_streams[binding];
         if (stream.IsEnabled()) {
@@ -3897,8 +3904,10 @@ void RasterizerVulkan::UpdateDynamicStates(const GraphicsPipeline* pipeline) {
     const auto topology = maxwell3d->draw_manager.draw_state.topology;
     const bool topology_changed = !emulated_mesh && state_tracker.ChangePrimitiveTopology(topology);
     if (topology_changed) {
-        flags[Dirty::DepthBiasEnable] = true;
         flags[Dirty::PrimitiveRestartEnable] = true;
+    }
+    if (state_tracker.ChangeRasterTopology(regs.RasterTopology(topology))) {
+        flags[Dirty::DepthBiasEnable] = true;
     }
 
     UpdateViewportsState(regs);
@@ -4474,7 +4483,7 @@ void RasterizerVulkan::UpdateDepthBiasEnable(Tegra::Engines::Maxwell3D::Regs& re
         regs.polygon_offset_line_enable,
         regs.polygon_offset_fill_enable,
     };
-    const u32 topology_index = u32(maxwell3d->draw_manager.draw_state.topology);
+    const u32 topology_index = u32(regs.RasterTopology(maxwell3d->draw_manager.draw_state.topology));
     const u32 enable = enabled_lut[POLYGON_OFFSET_ENABLE_LUT[topology_index]];
     scheduler.Record([enable](vk::CommandBuffer cmdbuf) { cmdbuf.SetDepthBiasEnableEXT(enable != 0); });
 }

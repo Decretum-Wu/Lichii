@@ -2556,6 +2556,22 @@ public:
             return (reg_array[MeshControl] & 1) != 0;
         }
 
+        // Mesh draws are issued as point draws; the rasterizer uses SET_MESH_SHADER_A's output
+        // topology instead (Mesa's NVK mesh shading notes).
+        PrimitiveTopology RasterTopology(PrimitiveTopology draw_topology) const {
+            if (!IsMeshEnabled()) {
+                return draw_topology;
+            }
+            switch (reg_array[MeshShaderA] & 0xf) {
+            case 0:
+                return PrimitiveTopology::Points;
+            case 1:
+                return PrimitiveTopology::Lines;
+            default:
+                return PrimitiveTopology::Triangles;
+            }
+        }
+
         struct ConstantBuffer {
             u32 size;
             u32 address_high;

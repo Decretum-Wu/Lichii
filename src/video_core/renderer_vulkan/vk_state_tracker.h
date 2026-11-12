@@ -86,6 +86,7 @@ public:
     void InvalidateCommandBufferState() {
         (*flags) |= invalidation_flags;
         current_topology = INVALID_TOPOLOGY;
+        current_raster_topology = INVALID_TOPOLOGY;
         stencil_reset = true;
     }
 
@@ -296,6 +297,12 @@ public:
         return has_changed;
     }
 
+    bool ChangeRasterTopology(Maxwell::PrimitiveTopology new_topology) {
+        const bool has_changed = current_raster_topology != new_topology;
+        current_raster_topology = new_topology;
+        return has_changed;
+    }
+
     void SetupTables(Tegra::Control::ChannelState& channel_state);
 
     void ChangeChannel(Tegra::Control::ChannelState& channel_state);
@@ -321,6 +328,7 @@ private:
     Tegra::Engines::Maxwell3D::DirtyState::Flags default_flags;
     Tegra::Engines::Maxwell3D::DirtyState::Flags invalidation_flags;
     Maxwell::PrimitiveTopology current_topology = INVALID_TOPOLOGY;
+    Maxwell::PrimitiveTopology current_raster_topology = INVALID_TOPOLOGY;
     bool two_sided_stencil = false;
     StencilProperties front{};
     StencilProperties back{};
