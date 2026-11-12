@@ -37,7 +37,7 @@ class MemoryManager;
 /// the bound pipeline are the ones the previous draw left. A draw of another pipeline (or after a
 /// draw that can't be followed) takes it with what that pipeline kept at its own last draw while
 /// the memory serial, the map, the command buffer, the render pass and the texture pool registers
-/// are the ones that draw left, reading every texture handle again (RevisitDraws).
+/// are the ones that draw left, reading every texture handle again (the rasterizer's RevisitDraw).
 /// EDEN_NX2_FAST_DRAW_VERIFY=1 resolves those draws in full and counts where the pipeline, views,
 /// samplers or kept buffer bindings differ.
 namespace VideoCommon::Nx2FastDraw {
@@ -251,89 +251,6 @@ inline u64 MemorySerial() {
     return g_memory_serial.load(std::memory_order_relaxed);
 }
 
-/// Whether full draws keep uniforms when only 3D register changes came since the previous draw.
-/// EDEN_NX2_TEST_FULL_KEEPS=0 (TEST): only delta draws keep them.
-[[nodiscard]] inline bool FullDrawKeeps() {
-    static const bool keeps = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_FULL_KEEPS");
-        return value == nullptr || value[0] != '0';
-    }();
-    return keeps;
-}
-
-/// Whether a draw after only 3D register changes (or another draw kind or vertex attribute
-/// types) looks its pipeline up and keeps the previous draw's views, samplers and image
-/// descriptors when that pipeline resolves them alike. EDEN_NX2_TEST_RELOOKUP=0 (TEST): such
-/// draws resolve in full.
-[[nodiscard]] inline bool RelookupDraws() {
-    static const bool relookup = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_RELOOKUP");
-        return value == nullptr || value[0] != '0';
-    }();
-    return relookup;
-}
-
-/// Whether a draw after texture handle writes or rebinds (or computed handle changes) reads the
-/// handles again and resolves only the ones that changed, keeping the rest as a delta draw does.
-/// EDEN_NX2_TEST_RETEXTURE=0 (TEST): such draws resolve in full.
-[[nodiscard]] inline bool RetextureDraws() {
-    static const bool retexture = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_RETEXTURE");
-        return value == nullptr || value[0] != '0';
-    }();
-    return retexture;
-}
-
-/// Whether a draw whose pipeline differs from the previous draw's (or follows a draw that can't
-/// be followed by delta draws) keeps what that pipeline resolved at its own last recorded draw,
-/// while no memory, mapping, texture pool register, command buffer or render pass changed since
-/// (the rasterizer's RevisitDraw). EDEN_NX2_TEST_REVISIT=0 (TEST): such draws resolve in full.
-[[nodiscard]] inline bool RevisitDraws() {
-    static const bool revisit = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_REVISIT");
-        return value == nullptr || value[0] != '0';
-    }();
-    return revisit;
-}
-
-/// Whether RetextureDraws covers pipelines with texture handles computed at draw time or read
-/// from two words (the views of the ones that changed are resolved instead of every view).
-/// EDEN_NX2_TEST_RETEXTURE_COMPUTED=0 (TEST): only pipelines whose handles are all single
-/// constant buffer words.
-[[nodiscard]] inline bool RetextureComputedDraws() {
-    static const bool computed = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_RETEXTURE_COMPUTED");
-        return value == nullptr || value[0] != '0';
-    }();
-    return computed;
-}
-
-/// Whether a delta draw after which only computed handles can have changed evaluates them once
-/// and resolves only theirs (GraphicsPipeline::RetextureComputed), instead of checking them and
-/// then reading every handle again. EDEN_NX2_TEST_RETEXTURE_ONCE=0 (TEST): the latter.
-[[nodiscard]] inline bool RetextureComputedOnce() {
-    static const bool once = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_RETEXTURE_ONCE");
-        return value == nullptr || value[0] != '0';
-    }();
-    return once;
-}
-
-/// TEST: EDEN_NX2_TEST_TOGGLE_FILE=<path> turns the switch under test off while that file exists
-/// (the drawing thread looks every 1024 draws), so one run compares both.
-inline std::atomic<bool> g_test_toggled{};
-
-/// Whether a guest write that untracks buffer cache pages changes their host protection after
-/// dropping the cache's lock (RasterizerVulkan::OnCPUWrite). EDEN_NX2_TEST_DEFER_PROTECT=0
-/// (TEST): under it. Follows the test toggle.
-[[nodiscard]] inline bool DeferPageProtection() {
-    static const bool defer = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_DEFER_PROTECT");
-        return value == nullptr || value[0] != '0';
-    }();
-    return defer && !g_test_toggled.load(std::memory_order_relaxed);
-}
-
 /// The device memory a GPU range maps to. A write through another GPU address that maps the
 /// same device memory changes the range too.
 class DeviceSpans {
@@ -522,17 +439,6 @@ inline void NoteDeviceData(DAddr begin, DAddr end) {
 /// Inline constant buffer writes left out of the delta because they wrote the words memory
 /// held (EDEN_NX2_GPU_PROFILE logs them).
 inline std::atomic<u64> g_unchanged_writes{};
-
-/// Whether inline constant buffer data written with the words memory holds is left out of the
-/// delta (memory, and so every handle and uniform read from it, stays the same).
-/// EDEN_NX2_TEST_CB_SAME=0 (TEST): it is noted as any write.
-[[nodiscard]] inline bool SkipsUnchangedWrites() {
-    static const bool skip = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_CB_SAME");
-        return value == nullptr || value[0] != '0';
-    }();
-    return skip;
-}
 
 /// Notes data about to be written to [begin, begin + bytes) in GPU memory: inline constant buffer
 /// `words`, unless memory holds those words already (on the thread that writes them, after

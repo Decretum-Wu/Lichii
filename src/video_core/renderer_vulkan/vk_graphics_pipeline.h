@@ -21,7 +21,6 @@
 #include "shader_recompiler/shader_info.h"
 #include "video_core/evicted_pointer_slots.h"
 #include "video_core/engines/maxwell_3d.h"
-#include "video_core/nx2_fast_draw.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/pipeline_build.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
@@ -405,9 +404,7 @@ public:
     /// only (no texture or image buffers or images), from constant buffer words or handles
     /// computed at draw time.
     [[nodiscard]] bool CanRetexture() const noexcept {
-        return (texture_memo_eligible ||
-                (retexture_eligible && VideoCommon::Nx2FastDraw::RetextureComputedDraws())) &&
-               TakesDeltaDraws();
+        return (texture_memo_eligible || retexture_eligible) && TakesDeltaDraws();
     }
     /// Whether a texture handle is computed at draw time (ComputedHandlesChanged).
     [[nodiscard]] bool HasComputedHandles() const noexcept {
@@ -423,11 +420,11 @@ public:
             }
         }
     }
-    /// Delta draws after texture handle writes or rebinds, or computed handle changes: reads (or
-    /// computes) every handle again and resolves the views and samplers of those that changed,
-    /// keeping the others; the next ConfigureDelta pushes their descriptors again. Returns how
-    /// many it resolved, or nothing (the draw resolves in full) when the handles can't be read or
-    /// resolving deleted or rescaled images the kept views may sample.
+    /// Delta draws after texture handle writes or rebinds, and revisits: reads (or computes) every
+    /// handle again and resolves the views and samplers of those that changed, keeping the others;
+    /// the next ConfigureDelta pushes their descriptors again. Returns how many it resolved, or
+    /// nothing (the draw resolves in full) when the handles can't be read or resolving deleted or
+    /// rescaled images the kept views may sample.
     std::optional<u32> RetextureDelta();
     /// RetextureDelta for a delta draw after which only handles computed at draw time can have
     /// changed (no constant buffer of handles was bound or written): evaluates those once and

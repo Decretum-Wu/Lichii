@@ -530,7 +530,6 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
     // What only changes the pipeline a draw resolves to leaves the views, samplers and image
     // descriptors to another pipeline that resolves them alike: such draws look the pipeline up
     // (PrepareDraw) and take the delta path with it.
-    const bool relookup_on = FastDraw::RelookupDraws();
     bool relookup = false;
     enum RelookupCause : size_t { KindChanged, RegistersChanged, AttributesChanged };
     const auto note_relookup = [&](RelookupCause cause) {
@@ -543,16 +542,13 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
         return full(FullDraw::Kind);
     }
     if (draw.is_indexed != is_indexed || draw.topology != draw_state.topology) {
-        if (!relookup_on) {
-            return full(FullDraw::Kind);
-        }
         note_relookup(KindChanged);
     }
     if (draw.serial != FastDraw::Serial()) {
         // Only 3D registers changed (the memory serial stands), and none the views and samplers
         // are resolved with besides the handles; transform feedback makes draws ineligible.
         const auto& regs = maxwell3d->regs;
-        if (!relookup_on || draw.memory_serial != FastDraw::MemorySerial() ||
+        if (draw.memory_serial != FastDraw::MemorySerial() ||
             draw.texture_registers != ReadTextureRegisters(regs) ||
             regs.transform_feedback_enabled != 0) {
             const u32 last_break = FastDraw::g_last_break.load(std::memory_order_relaxed);
@@ -585,14 +581,11 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
         (!draw.pipeline->HasDynamicVertexInput() ||
          FixedPipelineState::DynamicAttributeTypes(maxwell3d->regs) !=
              draw.pipeline->DynamicAttributeTypes())) {
-        if (!relookup_on) {
-            return full(FullDraw::VertexInput);
-        }
         note_relookup(AttributesChanged);
     }
     // Texture handle rebinds and writes: the draw reads the handles again and resolves the ones
-    // that changed (RetextureDelta), where every handle is a constant buffer word.
-    const bool retexture_on = FastDraw::RetextureDraws() && draw.pipeline->CanRetexture();
+    // that changed (RetextureDelta) when the pipeline can (CanRetexture).
+    const bool retexture_on = draw.pipeline->CanRetexture();
     bool retexture = false;
     const auto& handles = draw.pipeline->HandleConstantBuffers();
     for (size_t stage = 0; stage < handles.size() && !delta.Empty(); ++stage) {
@@ -790,14 +783,13 @@ void RasterizerVulkan::ReportFastDraws() {
              "different kind, {:.0f} state changed, {:.0f} after a submit, {:.0f} render pass or "
              "pipeline changed, {:.0f} pipeline takes no delta draws, {:.0f} handle buffer bound, "
              "{:.0f} handle data written, {:.0f} sampled image to prepare, {:.0f} computed handle "
-             "changed, {:.0f} vertex attribute types changed | constant buffer writes that "
-             "changed nothing {:.0f}",
+             "changed | constant buffer writes that changed nothing {:.0f}",
              static_cast<double>(stats.delta) / seconds, per_second(FullDraw::NoCandidate),
              per_second(FullDraw::Kind), per_second(FullDraw::StateChanged),
              per_second(FullDraw::Submitted), per_second(FullDraw::RenderPass),
              per_second(FullDraw::DeltaPipeline), per_second(FullDraw::HandleBind),
              per_second(FullDraw::HandleData), per_second(FullDraw::SampledImages),
-             per_second(FullDraw::ComputedHandles), per_second(FullDraw::VertexInput),
+             per_second(FullDraw::ComputedHandles),
              static_cast<double>(VideoCommon::Nx2FastDraw::g_unchanged_writes.exchange(
                  0, std::memory_order_relaxed)) /
                  seconds);
@@ -903,7 +895,7 @@ void RasterizerVulkan::ReportFastDraws() {
         full_names{"after an ineligible draw", "kind", "state changed", "after a submit",
                    "render pass", "pipeline without delta draws", "handle buffer bound",
                    "handle data written", "sampled image to prepare", "computed handle changed",
-                   "vertex attribute types", "other pipeline"};
+                   "other pipeline"};
     std::string full_costs;
     for (size_t reason = 0; reason < stats.full_timed.size(); ++reason) {
         if (stats.full_timed[reason] != 0) {
@@ -913,10 +905,7 @@ void RasterizerVulkan::ReportFastDraws() {
                                           static_cast<double>(stats.full_timed[reason]));
         }
     }
-    LOG_INFO(Render_Vulkan, "Fast draw full draws by reason (TEST){}{}", full_costs,
-             VideoCommon::Nx2FastDraw::g_test_toggled.load(std::memory_order_relaxed)
-                 ? " | test toggle on"
-                 : "");
+    LOG_INFO(Render_Vulkan, "Fast draw full draws by reason (TEST){}", full_costs);
     stats = FastDrawStats{.window_start = now};
 }
 
@@ -1048,12 +1037,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
     // The clock (fenced) only for runs that log the draw costs (ReportFastDraws).
     const bool fast_draw_timed = fast_draw_on && (Profile::Enabled() || fast_draw_verify);
-    // TEST (EDEN_NX2_TEST_TOGGLE_FILE): the switches under test follow that file.
-    static const char* const toggle_file = std::getenv("EDEN_NX2_TEST_TOGGLE_FILE");
-    if (toggle_file != nullptr && (++toggle_checks & 1023) == 0) {
-        FastDraw::g_test_toggled.store(std::filesystem::exists(toggle_file),
-                                       std::memory_order_relaxed);
-    }
     const u64 fast_draw_start = fast_draw_timed ? Profile::Now() : 0;
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
@@ -1099,7 +1082,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     }
     // Another pipeline than the previous draw's, or nothing to follow: the pipeline may still
     // hold what it resolved at its own last draw.
-    if (delta_pipeline == nullptr && fast_draw_on && FastDraw::RevisitDraws() &&
+    if (delta_pipeline == nullptr && fast_draw_on &&
         (last_full_reason == FullDraw::NoCandidate || last_full_reason == FullDraw::OtherPipeline ||
          last_full_reason == FullDraw::StateChanged)) {
         if (looked_up == nullptr) {
@@ -1336,29 +1319,22 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         }
         Profile::Scope scope{Profile::Zone::ReadHandles};
         if (!taken_retexture) {
-            if (!delta_pipeline->HasComputedHandles() || !delta_pipeline->CanRetexture() ||
-                !FastDraw::RetextureDraws()) {
+            if (!delta_pipeline->HasComputedHandles() || !delta_pipeline->CanRetexture()) {
                 return true;
             }
             computed_checked = true;
-            if (FastDraw::RetextureComputedOnce()) {
-                const std::optional<u32> resolved = delta_pipeline->RetextureComputed();
-                if (!resolved) {
-                    ++fast_draw_stats.retexture_failed;
-                    ++fast_draw_stats.full[static_cast<size_t>(FullDraw::HandleData)];
-                    last_full_reason = FullDraw::HandleData;
-                    return false;
-                }
-                if (*resolved != 0) {
-                    ++fast_draw_stats.retexture_computed;
-                    ++fast_draw_stats.retexture_resolved;
-                }
-                return true;
+            const std::optional<u32> resolved = delta_pipeline->RetextureComputed();
+            if (!resolved) {
+                ++fast_draw_stats.retexture_failed;
+                ++fast_draw_stats.full[static_cast<size_t>(FullDraw::HandleData)];
+                last_full_reason = FullDraw::HandleData;
+                return false;
             }
-            if (!delta_pipeline->ComputedHandlesChanged()) {
-                return true;
+            if (*resolved != 0) {
+                ++fast_draw_stats.retexture_computed;
+                ++fast_draw_stats.retexture_resolved;
             }
-            ++fast_draw_stats.retexture_computed;
+            return true;
         }
         if (taken_revisit) {
             // The draws in between may have left other texture pools synchronized.
@@ -1388,7 +1364,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     // Between the previous draw and this one only 3D registers changed besides what the delta
     // and the buffer cache note (BeginGraphicsUniforms): no memory was written behind them.
     const bool full_keeps = path == DrawPath::Full && fast_draw_on &&
-                            FastDraw::FullDrawKeeps() &&
                             draw_memory_serial == uniform_memory_serial &&
                             draw_map_serial == uniform_map_serial &&
                             gpu_memory == uniform_gpu_memory;
@@ -3102,8 +3077,7 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
         // Time's water). A write trapping on a page still protected until then finds the page
         // already untracked and changes nothing.
         static thread_local VideoCommon::DeferredPageCaching deferred;
-        const bool defer = VideoCommon::t_deferred_page_caching == nullptr &&
-                           VideoCommon::Nx2FastDraw::DeferPageProtection();
+        const bool defer = VideoCommon::t_deferred_page_caching == nullptr;
         bool gpu_modified;
         {
             std::scoped_lock lock{buffer_cache.mutex};

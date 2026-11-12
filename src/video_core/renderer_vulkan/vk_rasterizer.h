@@ -429,7 +429,6 @@ private:
         HandleData,
         SampledImages,
         ComputedHandles,
-        VertexInput,
         /// The pipeline looked up after pipeline-only changes resolves images differently.
         OtherPipeline,
         Count,
@@ -470,7 +469,7 @@ private:
         /// StateChanged draws by the reason of the last break, and by its 3D method.
         std::array<u64, static_cast<size_t>(VideoCommon::Nx2FastDraw::Reason::Count)> breaks{};
         std::array<u32, Maxwell::NUM_REGS> break_methods{};
-        /// Draws that looked their pipeline up (RelookupDraws) by what made them, and how they
+        /// Draws that looked their pipeline up (taken_relookup) by what made them, and how they
         /// went: the same pipeline, another that took the kept state, or another that resolves
         /// differently (resolved in full).
         std::array<u64, 3> relookup_causes{};
@@ -535,7 +534,6 @@ private:
                                    0x9E3779B97F4A7C15ULL >> 56);
     }
     FullDraw last_full_reason{}; ///< TEST: why the draw resolves in full (FastDrawStats::full_ns)
-    u32 toggle_checks{};         ///< TEST: draws since EDEN_NX2_TEST_TOGGLE_FILE was looked at
     /// Device memory of the constant buffers TakeReusableDraw checks for texture handle writes.
     std::array<std::array<VideoCommon::Nx2FastDraw::DeviceSpans, Maxwell::MaxConstBuffers>,
                Maxwell::MaxShaderStage>

@@ -255,12 +255,7 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
         const DAddr page_end = Common::AlignUp(device_addr + size, DEVICE_PAGESIZE);
         if (!gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) {
             if (!Nx2Perf::Verify()) {
-                // TEST (EDEN_NX2_TEST_INLINE_TRACKED=0): engine writes untrack their pages too.
-                static const bool keep_tracked = [] {
-                    const char* value = std::getenv("EDEN_NX2_TEST_INLINE_TRACKED");
-                    return value == nullptr || value[0] != '0';
-                }();
-                if (engine_write && keep_tracked) {
+                if (engine_write) {
                     // Untracking the pages and tracking them again at the upload changed their
                     // host protection twice (two VirtualProtect calls each, ~4% of the GPU
                     // thread at Ocarina of Time's water) for writes no guest CPU access saw.

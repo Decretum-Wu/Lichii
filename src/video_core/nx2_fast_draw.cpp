@@ -51,24 +51,17 @@ void NoteWrittenData(Tegra::MemoryManager& memory, GPUVAddr begin, const void* w
 }
 
 bool WriteData(Tegra::MemoryManager& memory, GPUVAddr begin, const void* words, u64 bytes) {
-    // EDEN_NX2_TEST_CB_SKIP_WRITE=0 (TEST): words memory holds are written again anyway.
-    static const bool skip_writes = [] {
-        const char* value = std::getenv("EDEN_NX2_TEST_CB_SKIP_WRITE");
-        return value == nullptr || value[0] != '0';
-    }();
     if (!Enabled() || bytes == 0) {
         return false;
     }
     constexpr u64 PageSize = 0x1000; // the smallest GPU page
     const GPUVAddr end = begin + bytes;
-    // Within one page the words are contiguous in host memory.
-    if (words != nullptr && SkipsUnchangedWrites() && (begin & (PageSize - 1)) + bytes <= PageSize) {
+    // Within one page the words are contiguous in host memory. Words memory holds already leave
+    // memory, and so every handle and uniform read from it, the same: they stay out of the delta.
+    if (words != nullptr && (begin & (PageSize - 1)) + bytes <= PageSize) {
         if (const u8* const held = memory.GetPointer<u8>(begin);
             held != nullptr && std::memcmp(held, words, bytes) == 0) {
             g_unchanged_writes.fetch_add(1, std::memory_order_relaxed);
-            if (!skip_writes) {
-                return false;
-            }
             // Writing them again changes nothing either, unless the GPU caches may hold the
             // words newer than memory, or a download for a guest read may still land over them:
             // the write must win then.
