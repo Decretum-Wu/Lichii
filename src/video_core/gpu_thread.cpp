@@ -91,6 +91,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 split.ReportAcquire();
             }
             if (scheduler.HasPendingChannels()) {
+                set_waiting_for_guest(false);
+                // Read before the poll: GPU work that lands after it may meet an acquire it missed.
+                const bool gpu_done =
+                    split.BackIdle() && !renderer.ReadRasterizer()->HasFencesInFlight();
                 // Suspended channels wait on semaphores the CPU releases: poll them meanwhile.
                 bool resumed = false;
                 {
@@ -102,7 +106,6 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 }
                 if (!state.queue.TryPop(next)) {
                     if (!scheduler.HasPendingChannels()) {
-                        set_waiting_for_guest(false);
                         continue;
                     }
                     // The CPU usually releases the semaphore soon after: poll for half a
@@ -112,7 +115,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // still waiting after 2 s (menus, loading) goes back to 1 ms sleeps.
                     Profile::Scope scope{Profile::Zone::PendingSleep};
                     split.SettleIdleBack();
-                    set_waiting_for_guest(!resumed && split.BackIdle());
+                    set_waiting_for_guest(gpu_done && !resumed && !scheduler.WaitsOnListCopy());
                     const auto waited = std::chrono::steady_clock::now() - last_progress;
                     if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();
@@ -133,7 +136,6 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 Profile::Scope scope{Profile::Zone::Idle};
                 state.queue.PopWait(next, stop_token);
             }
-            set_waiting_for_guest(false);
             if (stop_token.stop_requested()) {
                 break;
             }

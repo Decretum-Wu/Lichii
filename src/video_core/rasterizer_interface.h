@@ -158,6 +158,11 @@ public:
         return true;
     }
 
+    /// Whether host GPU work may still write guest memory once it completes (any thread).
+    [[nodiscard]] virtual bool HasFencesInFlight() const {
+        return true;
+    }
+
     /// Switch 2: the front flushed this command list page with the split drained.
     virtual void NoteGpuWrittenCommandListSynced([[maybe_unused]] DAddr page) {}
 
