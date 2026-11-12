@@ -415,7 +415,7 @@ void NoteReader(State& state, Macro& macro, const Call& call, DataRamAccesses da
                                 : steered                                  ? "steers the call"
                                                                            : nullptr;
     // Where each write puts its value: a data word of a linear inline upload the call began
-    // (Upload::State: line by line, each line at the next pitch), or a 3D constant buffer load word.
+    // (Upload::State: line by line, each at the next pitch), or a 3D constant buffer load word.
     std::vector<std::optional<u64>> lands(real.writes.size());
     const auto& r = state.call_registers;
     struct Upload {
