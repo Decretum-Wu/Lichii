@@ -178,6 +178,12 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
 
 bool ArmNce::HandleGuestIllegalInstruction(GuestContext* guest_ctx, void* raw_info,
                                            void* raw_context) {
+    // A sent SIGILL (kill, tgkill) is no guest fault: it gets the previous disposition.
+    if (static_cast<siginfo_t*>(raw_info)->si_code <= 0) {
+        HandleHostIllegalInstruction(GuestIllegalInstructionSignal, raw_info, raw_context);
+        return true;
+    }
+
     // knob2 (debug_knobs bit 2, value 4): skip undefined instructions in guest code instead of
     // halting the thread, like Dynarmic, which logs them and carries on.
     if (Settings::GetDebugKnobAt(2)) {
