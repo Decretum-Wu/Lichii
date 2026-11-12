@@ -58,6 +58,10 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 
 DmaPusher::~DmaPusher() = default;
 
+bool DmaPusher::OnlyGuestCanResume() {
+    return !pending_list_tick && puller.OnlyGuestCanRelease(*this);
+}
+
 bool DmaPusher::CanResumeAcquire() {
     if (pending_list_tick) {
         VideoCommon::Count(VideoCommon::g_acquire_stats.list_polls);

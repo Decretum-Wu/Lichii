@@ -178,10 +178,9 @@ public:
         return puller.HasPendingAcquire() || pending_list_tick.has_value();
     }
     [[nodiscard]] bool CanResumeAcquire();
-    /// Suspended on a command list copy the GPU makes, not on a semaphore.
-    [[nodiscard]] bool WaitsOnListCopy() const {
-        return pending_list_tick.has_value();
-    }
+    /// Suspended on a semaphore acquire that no GPU work can meet any more: the query cache holds
+    /// no report for the word and no cache holds GPU data over it. Not on a command list copy.
+    [[nodiscard]] bool OnlyGuestCanResume();
 
     void BindSubchannel(Engines::EngineInterface* engine, u32 subchannel_id, Engines::EngineTypes engine_type) {
         subchannels[subchannel_id] = engine;

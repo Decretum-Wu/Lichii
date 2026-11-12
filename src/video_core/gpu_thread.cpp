@@ -93,8 +93,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             if (scheduler.HasPendingChannels()) {
                 set_waiting_for_guest(false);
                 // Read before the poll: GPU work that lands after it may meet an acquire it missed.
-                const bool gpu_done =
-                    split.BackIdle() && !renderer.ReadRasterizer()->HasFencesInFlight();
+                const bool gpu_done = split.BackIdle() && scheduler.OnlyGuestCanResume();
                 // Suspended channels wait on semaphores the CPU releases: poll them meanwhile.
                 bool resumed = false;
                 {
@@ -115,7 +114,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // still waiting after 2 s (menus, loading) goes back to 1 ms sleeps.
                     Profile::Scope scope{Profile::Zone::PendingSleep};
                     split.SettleIdleBack();
-                    set_waiting_for_guest(gpu_done && !resumed && !scheduler.WaitsOnListCopy());
+                    set_waiting_for_guest(gpu_done && !resumed);
                     const auto waited = std::chrono::steady_clock::now() - last_progress;
                     if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();

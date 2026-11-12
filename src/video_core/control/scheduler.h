@@ -36,8 +36,8 @@ public:
         return any_pending.load(std::memory_order_acquire);
     }
 
-    /// Whether a suspended channel waits on a command list copy the GPU makes (GPU thread).
-    [[nodiscard]] bool WaitsOnListCopy() const;
+    /// Whether only the CPU can resume the suspended channels (GPU thread).
+    [[nodiscard]] bool OnlyGuestCanResume();
 
     void DeclareChannel(std::shared_ptr<ChannelState> new_channel);
 

@@ -92,6 +92,8 @@ public:
         return pending_acquire.has_value();
     }
     [[nodiscard]] bool CanResumeAcquire(DmaPusher& dma_pusher);
+    /// Whether no report or GPU data the caches hold can land on the pending acquire's word.
+    [[nodiscard]] bool OnlyGuestCanRelease(DmaPusher& dma_pusher) const;
     /// Clears the pending acquire once it is met; false while the channel has to keep waiting.
     bool ResumeAcquire(DmaPusher& dma_pusher);
 
