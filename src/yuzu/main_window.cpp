@@ -2031,16 +2031,11 @@ bool MainWindow::LoadROM(const QString& filename, Service::AM::FrontendAppletPar
                     tr("Error while loading ROM! %1", "%1 signifies a numeric error code.")
                         .arg(QString::fromStdString(error_code));
                 const auto status = static_cast<Loader::ResultStatus>(error_id);
-                const bool missing_keys =
-                    status == Loader::ResultStatus::ErrorMissingProductionKeyFile ||
-                    status == Loader::ResultStatus::ErrorMissingHeaderKey ||
-                    status == Loader::ResultStatus::ErrorMissingTitlekey ||
-                    status == Loader::ResultStatus::ErrorMissingTitlekek ||
-                    status == Loader::ResultStatus::ErrorMissingKeyAreaKey;
                 const auto description =
-                    (missing_keys
-                         ? tr("%1<br>Install your decryption keys with Tools > Install Decryption "
-                              "Keys, then start the game again.",
+                    (Loader::IsMissingKeyStatus(status)
+                         ? tr("%1<br>Dump current keys from your own console and install them "
+                              "with Tools > Install Decryption Keys, then start the game again. "
+                              "The log names the missing key.",
                               "%1 signifies an error string.")
                          : tr("%1<br>Please redump your files or ask on Discord/Stoat for help.",
                               "%1 signifies an error string."))

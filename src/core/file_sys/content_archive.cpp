@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <optional>
 #include <utility>
@@ -53,7 +54,14 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
     // Ensure we have the proper key area keys to continue.
     const u8 master_key_id = MasterKeyIdForKeyGeneration(reader->GetKeyGeneration());
     if (!decrypted && !keys.HasKey(Core::Crypto::S128KeyType::KeyArea, master_key_id, reader->GetKeyIndex())) {
-        LOG_ERROR(Loader, "Cannot decrypt {}: keys for gen 0x{:02X}+ required.", file->GetName(), reader->GetKeyGeneration());
+        constexpr std::array<const char*, 3> key_area_names{"application", "ocean", "system"};
+        const u8 key_index = reader->GetKeyIndex();
+        LOG_ERROR(Loader,
+                  "Cannot decrypt {}: key_area_key_{}_{:02x} is missing from prod.keys (key "
+                  "generation {}). Keys dumped from older firmware than the game lack it.",
+                  file->GetName(),
+                  key_index < key_area_names.size() ? key_area_names[key_index] : "unknown",
+                  master_key_id, reader->GetKeyGeneration());
         status = Loader::ResultStatus::ErrorMissingKeyAreaKey;
         return;
     }
@@ -75,8 +83,10 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
         }
 
         if (!keys.HasKey(Core::Crypto::S128KeyType::Titlekek, master_key_id)) {
-            LOG_ERROR(Loader, "Cannot decrypt {}: titlekek_{:02x} is missing from prod.keys",
-                      file->GetName(), master_key_id);
+            LOG_ERROR(Loader,
+                      "Cannot decrypt {}: titlekek_{:02x} is missing from prod.keys (key "
+                      "generation {}). Keys dumped from older firmware than the game lack it.",
+                      file->GetName(), master_key_id, reader->GetKeyGeneration());
             status = Loader::ResultStatus::ErrorMissingTitlekek;
             return;
         }

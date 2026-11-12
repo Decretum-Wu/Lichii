@@ -166,6 +166,15 @@ enum class ResultStatus : u16 {
 std::string GetResultStatusString(ResultStatus status);
 std::ostream& operator<<(std::ostream& os, ResultStatus status);
 
+/// Returns whether a status means that decryption keys are missing or too old for the content.
+bool IsMissingKeyStatus(ResultStatus status);
+
+/**
+ * Returns the load status of an NSP or XCI's program content, the key error when it cannot be
+ * decrypted. Returns Success for other types and for files that do not open as a container.
+ */
+ResultStatus GetContainerProgramStatus(FileSys::VirtualFile file, FileType type);
+
 /// Interface for loading an application
 class AppLoader {
 public:

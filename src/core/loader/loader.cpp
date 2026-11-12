@@ -198,6 +198,19 @@ bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 progr
     return HasApplicationProgramContent(OpenContainerAsNsp(file, type, program_id, program_index));
 }
 
+bool IsMissingKeyStatus(ResultStatus status) {
+    return status == ResultStatus::ErrorMissingProductionKeyFile ||
+           status == ResultStatus::ErrorMissingHeaderKey ||
+           status == ResultStatus::ErrorMissingTitlekey ||
+           status == ResultStatus::ErrorMissingTitlekek ||
+           status == ResultStatus::ErrorMissingKeyAreaKey;
+}
+
+ResultStatus GetContainerProgramStatus(FileSys::VirtualFile file, FileType type) {
+    const auto nsp = OpenContainerAsNsp(std::move(file), type);
+    return nsp ? nsp->GetProgramStatus() : ResultStatus::Success;
+}
+
 FileType GuessFromFilename(const std::string& name) {
     if (name == "main")
         return FileType::DeconstructedRomDirectory;
@@ -284,9 +297,11 @@ constexpr std::array<const char*, 70> RESULT_MESSAGES{
     "Support for NCA0-type NCAs is not implemented.",
     "The title key for this game is missing. Add it to title.keys, or use a dump that includes "
     "its ticket.",
-    "The titlekek for this game's key generation is missing from prod.keys.",
+    "The titlekek for this game's key generation is missing from prod.keys. Your keys are older "
+    "than this game.",
     "The Rights ID in the header is invalid.",
-    "The key area key for this game's key generation is missing from prod.keys.",
+    "The key area key for this game's key generation is missing from prod.keys. Your keys are "
+    "older than this game.",
     "The key area key is incorrect or the section header is invalid.",
     "The titlekey and/or titlekek is incorrect or the section header is invalid.",
     "The XCI file is missing a Program-type NCA.",
