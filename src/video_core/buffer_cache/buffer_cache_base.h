@@ -887,31 +887,6 @@ private:
         u64 verified{};
         u64 mismatches{};
     } uniform_keep;
-    /// TEST (EDEN_NX2_HOT_PAGES_VERIFY=1): every upload notes what each page it covers held in its
-    /// buffer, and an upload leaving out a hot page as already sent this frame compares: a page
-    /// that changed since went to the GPU stale.
-    const bool hot_pages_verify = [] {
-        const char* const value = std::getenv("EDEN_NX2_HOT_PAGES_VERIFY");
-        return value != nullptr && value[0] == '1';
-    }();
-    struct HotPageUpload {
-        DAddr begin; ///< The page's bytes in its buffer
-        DAddr end;
-        u64 hash;
-    };
-    std::unordered_map<DAddr, HotPageUpload> hot_page_uploads;
-    std::vector<std::pair<DAddr, u64>> hot_clean_skips;
-    struct HotPageChecks {
-        u64 skipped{};  ///< Pages left out as already uploaded this frame
-        u64 stale{};    ///< Of those, changed since their upload
-        u64 unknown{};  ///< Of those, with no upload noted
-        u32 logged{};
-    } hot_page_checks;
-    /// TEST (EDEN_NX2_HOT_PAGES_VERIFY): notes the bytes of the pages [begin, end) reaches.
-    void NoteHotPageUpload(const Buffer& buffer, DAddr begin, DAddr end);
-    /// TEST (EDEN_NX2_HOT_PAGES_VERIFY): compares the pages in hot_clean_skips with their uploads.
-    void CheckHotPageSkips(const Buffer& buffer);
-    [[nodiscard]] u64 HashHotPage(DAddr begin, DAddr end);
 
     /// The plan of the draw being prepared whose uniform hashes hold (BeginGraphicsUniforms).
     const VideoCommon::DrawPlan* uniform_plan{};

@@ -166,12 +166,6 @@ public:
         return ((synchronized_mask >> slot) & 1) != 0;
     }
 
-    /// Hot pages (word_manager.h) take no CPU mark when the guest writes them, and are uploaded
-    /// again once a frame: scans skipped since the last frame must look at them again.
-    void ForgetAllSynchronized() noexcept {
-        synchronized_mask = 0;
-    }
-
     /// Call 'func' for each CPU modified range and unmark those pages as CPU modified
     template <typename Func>
     void ForEachUploadRange(VAddr query_cpu_range, u64 query_size, Func&& func) {
