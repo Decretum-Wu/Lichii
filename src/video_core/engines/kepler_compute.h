@@ -23,6 +23,7 @@
 #include "video_core/game_dlss_status.h"
 #include "video_core/macro.h"
 #include "video_core/native_qmd.h"
+#include "video_core/nx2_list_grid.h"
 #include "video_core/textures/texture.h"
 
 namespace Core {
@@ -250,6 +251,10 @@ public:
     std::optional<GPUVAddr> GetIndirectComputeAddress() const {
         return indirect_compute;
     }
+    /// The dispatch takes its grid from a list's kept words (nx2_list_grid.h): their keep id.
+    std::optional<u64> GetKeptGrid() const {
+        return kept_grid;
+    }
 
     bool IsNativeMode() const { return native_mode; }
     bool ProcessGameDlss(u64 program_id, u64 native_key);
@@ -270,6 +275,18 @@ public:
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending,
                               const GPUVAddr* segment);
+    /// List-fed grid macros (nx2_list_grid.h): whether a call of macro `method`, none begun,
+    /// is one the front takes without reading its three parameters.
+    bool FrontTakesListGrid(VideoCommon::GpuSplit& split, u32 method);
+    /// Takes that call: the parameters are the GPU-written words at `address`. The data RAM gets
+    /// markers for them, and the back keeps a copy of the words. Verify mode: `real` are the
+    /// words read the old way, else empty.
+    void FrontTakeListGrid(VideoCommon::GpuSplit& split, u32 method, GPUVAddr address,
+                           const Nx2ListGrid::ListReader& reader, std::span<const u32> real);
+    /// Where the channel tracks the markers of the data RAM it shares with its 3D engine.
+    void SetGridMarker(Nx2ListGrid::GridMarker* marker) {
+        grid_marker = marker;
+    }
 
 private:
     struct FrontState;
@@ -280,6 +297,14 @@ private:
     MacroEngine& FrontMacroEngine(FrontState& state);
     std::span<u32> FrontMacroPositions(FrontState& state);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+    struct FrontMacro;
+    /// The macro at `start` of `engine`'s current code: its CodeHash and, for an HleMacros
+    /// entry, where it stores its parameters.
+    const FrontMacro& FrontMacroInfo(FrontState& state, const MacroEngine& engine, u32 start);
+    /// Before a macro runs while markers are live: runs it dry and gives it the real words
+    /// unless it only moves the markers (Nx2ListGrid::Admit).
+    void FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState& state, MacroEngine& engine,
+                            u32 start);
     std::unique_ptr<FrontState> front;
     bool front_macros{}; ///< The front owns the macro code and bindings (the back skips them)
 
@@ -394,6 +419,8 @@ private:
     };
     std::vector<UploadInfo> uploads;
     std::optional<GPUVAddr> indirect_compute{};
+    std::optional<u64> kept_grid{};
+    Nx2ListGrid::GridMarker* grid_marker{};
 };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \

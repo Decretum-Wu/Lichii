@@ -18,6 +18,7 @@
 #include "common/assert.h"
 #include "common/dkb_frame_trace.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
@@ -545,9 +546,37 @@ void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32*
 
 bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& qmd) {
     launch_description = {};
-    launch_description.grid_dim_x.Assign(qmd[12]);
-    launch_description.grid_dim_y.Assign(qmd[13] & 0xffff);
-    launch_description.grid_dim_z.Assign(qmd[14] & 0xffff);
+    std::array<u32, 3> grid{qmd[12], qmd[13], qmd[14]};
+    kept_grid.reset();
+    SCOPE_EXIT {
+        kept_grid.reset();
+    };
+    // Markers of a list-fed grid macro (nx2_list_grid.h): a list's three, in order, dispatch
+    // from its kept words; any other mix gets them read back, and 0 for a list no longer kept.
+    if (const auto source = Nx2ListGrid::QmdGridSource(grid[0], grid[1], grid[2]);
+        source.kind != Nx2ListGrid::GridKind::Direct) [[unlikely]] {
+        const auto keep_id = source.kind == Nx2ListGrid::GridKind::Indirect
+                                 ? rasterizer->Nx2FindKeptList(source.keep_bits)
+                                 : std::nullopt;
+        if (keep_id) {
+            kept_grid = keep_id;
+            grid = {1, 1, 1};
+        } else {
+            for (u32& word : grid) {
+                if (!Nx2ListGrid::IsMarker(word)) {
+                    continue;
+                }
+                std::array<u32, 3> words{};
+                const auto id = rasterizer->Nx2FindKeptList(Nx2ListGrid::MarkerKeepBits(word));
+                word = id && rasterizer->Nx2ReadKeptListWords(*id, words)
+                           ? words[Nx2ListGrid::MarkerIndex(word)]
+                           : 0;
+            }
+        }
+    }
+    launch_description.grid_dim_x.Assign(grid[0]);
+    launch_description.grid_dim_y.Assign(grid[1] & 0xffff);
+    launch_description.grid_dim_z.Assign(grid[2] & 0xffff);
     launch_description.shared_alloc.Assign(qmd[17] & 0x3ffff);
     launch_description.block_dim_x.Assign(qmd[18] >> 16);
     launch_description.block_dim_y.Assign(qmd[19] & 0xffff);
@@ -1502,6 +1531,14 @@ Texture::TSCEntry KeplerCompute::GetTSCEntry(u32 tsc_index) const {
 // Split GPU thread with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2): the front
 // runs compute macros against its own copy of the native registers (which hold the last value
 // written to each, on the back too) and loads and binds the compute macro code itself.
+struct KeplerCompute::FrontMacro {
+    const MacroEngine* engine{};
+    u64 generation{};
+    u32 start{};
+    u64 hash{};
+    std::optional<Nx2ListGrid::GridCells> cells; ///< An HleMacros entry's store words
+};
+
 struct KeplerCompute::FrontState {
     std::array<u32, 0x1000> registers{};
     std::optional<u32> executing_macro;
@@ -1509,6 +1546,7 @@ struct KeplerCompute::FrontState {
     bool compute_uploaded{};
     u32 bind_pointer{};
     MacroEngine* macro{}; ///< Without a native context: the one macro engine
+    std::vector<FrontMacro> macros; ///< FrontMacroInfo's, by engine, code generation and start
 };
 
 KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
@@ -1531,6 +1569,18 @@ KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
 
 // As Maxwell3D::ReleaseFront: the split stopped, the engine runs its macros again.
 void KeplerCompute::ReleaseFront() {
+    // The engine's macros run unguarded from now on: markers get their real words.
+    if (grid_marker != nullptr && grid_marker->set) {
+        if (native_data_ram) {
+            Nx2ListGrid::ResolveCells(*grid_marker, *native_data_ram);
+        }
+        for (u32 i = 0; i < 3; ++i) {
+            u32& value = native_registers[Nx2ListGrid::QmdGridRegister + i];
+            if (Nx2ListGrid::IsMarker(value) && grid_marker->Find(value) != nullptr) {
+                value = Nx2ListGrid::ResolveWord(*grid_marker, value).value_or(0);
+            }
+        }
+    }
     native_executing_macro = front->executing_macro;
     native_parameters = std::move(front->parameters);
     native_compute_uploaded = front->compute_uploaded;
@@ -1643,6 +1693,198 @@ void KeplerCompute::FrontNoteReport(VideoCommon::GpuSplit& split, const FrontSta
     }
 }
 
+const KeplerCompute::FrontMacro& KeplerCompute::FrontMacroInfo(FrontState& fs,
+                                                               const MacroEngine& engine,
+                                                               u32 start) {
+    const auto known = std::ranges::find_if(fs.macros, [&](const FrontMacro& entry) {
+        return entry.engine == &engine && entry.generation == engine.native_code_generation &&
+               entry.start == start;
+    });
+    if (known != fs.macros.end()) {
+        return *known;
+    }
+    if (fs.macros.size() >= 256) {
+        fs.macros.clear();
+    }
+    const std::span<const u32> code{engine.native_code};
+    const u64 hash = TuringMacroInterpreter::CodeHash(
+        code, start, TuringMacroInterpreter::AnalyzeEffects(code, start));
+    const auto cells = Nx2ListGrid::RecognizeHleMacro(code, start, hash);
+    if (cells) {
+        LOG_INFO(HW_GPU,
+                 "List-fed grid: compute macro {:016x} at {:#x} stores its parameters in data RAM "
+                 "words {:#x}, {:#x}, {:#x}; its lists are taken unread",
+                 hash, start, (*cells)[0], (*cells)[1], (*cells)[2]);
+    } else if (Nx2ListGrid::FindHleMacro(hash) != nullptr) {
+        LOG_WARNING(HW_GPU,
+                    "List-fed grid: compute macro {:016x} at {:#x} does not store its parameters "
+                    "as its entry says; its lists are read",
+                    hash, start);
+    }
+    fs.macros.push_back({&engine, engine.native_code_generation, start, hash, cells});
+    return fs.macros.back();
+}
+
+bool KeplerCompute::FrontTakesListGrid(VideoCommon::GpuSplit& split, u32 method) {
+    auto& fs = Front(split);
+    // The three words must be the whole call.
+    if (fs.executing_macro || !fs.parameters.empty() || method < 0xe00 ||
+        method >= fs.registers.size() || (method & 1) != 0 || grid_marker == nullptr ||
+        rasterizer == nullptr || !rasterizer->Nx2ListGridSupported()) {
+        return false;
+    }
+    const auto positions = FrontMacroPositions(fs);
+    if (positions.empty()) {
+        return false;
+    }
+    const u32 start = positions[((method - 0xe00) / 2) % positions.size()];
+    return FrontMacroInfo(fs, FrontMacroEngine(fs), start).cells.has_value();
+}
+
+void KeplerCompute::FrontTakeListGrid(VideoCommon::GpuSplit& split, u32 method, GPUVAddr address,
+                                      const Nx2ListGrid::ListReader& reader,
+                                      std::span<const u32> real) {
+    namespace ListGrid = Nx2ListGrid;
+    auto& fs = Front(split);
+    const auto positions = FrontMacroPositions(fs);
+    const u32 start = positions[((method - 0xe00) / 2) % positions.size()];
+    auto& macro = FrontMacroEngine(fs);
+    const FrontMacro& info = FrontMacroInfo(fs, macro, start);
+    if (native_data_ram) {
+        macro.native_interpreter.active_dram = native_data_ram;
+    }
+    auto& data_ram = *macro.native_interpreter.active_dram;
+    // As the macro, with a marker for each word.
+    const u64 keep_id = ListGrid::NextKeepId();
+    ListGrid::KeptList list{.keep_id = keep_id, .address = address, .reader = reader};
+    if (real.size() == list.real.size()) {
+        list.verified = true;
+        std::ranges::copy(real, list.real.begin());
+    }
+    for (u32 i = 0; i < 3; ++i) {
+        data_ram[(*info.cells)[i]] = ListGrid::Marker(keep_id, i);
+    }
+    grid_marker->cells = *info.cells;
+    grid_marker->keep_id = keep_id;
+    grid_marker->set = true;
+    grid_marker->Remember(list);
+    // At the list's place in the stream, the back keeps a copy of the words. It writes no guest
+    // memory.
+    const u64 hash = info.hash;
+    if (list.verified) {
+        split.DeferWords(
+            [this, keep_id, address, hash](std::span<const u32> words) {
+                rasterizer->Nx2KeepListWords(keep_id, address, hash, words);
+            },
+            real, VideoCommon::GpuSplit::Writes::Noted);
+    } else {
+        split.Defer(
+            [this, keep_id, address, hash] {
+                rasterizer->Nx2KeepListWords(keep_id, address, hash, {});
+            },
+            0, VideoCommon::GpuSplit::Writes::Noted);
+    }
+}
+
+void KeplerCompute::FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState& fs,
+                                       MacroEngine& macro, u32 start) {
+    namespace ListGrid = Nx2ListGrid;
+    auto& data_ram = *macro.native_interpreter.active_dram;
+    // Markers reach registers only as moves into the QMD grid registers (Admit).
+    const auto marker_register = [this](u32 address, u32 value) {
+        return address - ListGrid::QmdGridRegister < 3 && ListGrid::IsMarker(value) &&
+               grid_marker->Find(value) != nullptr;
+    };
+    const auto marked = grid_marker->Marked(data_ram);
+    bool live = marked[0] || marked[1] || marked[2];
+    for (u32 i = 0; i < 3 && !live; ++i) {
+        live = marker_register(ListGrid::QmdGridRegister + i,
+                               fs.registers[ListGrid::QmdGridRegister + i]);
+    }
+    if (!live) {
+        return;
+    }
+    const auto read = [&fs](u32 address) {
+        return address < fs.registers.size() ? fs.registers[address] : 0U;
+    };
+    const std::span<const u32> code{macro.native_code};
+    const auto result = ListGrid::DryRun(code, start, fs.parameters, data_ram, grid_marker->cells,
+                                         marked, read, marker_register);
+    const auto admission = ListGrid::Admit(result, fs.registers[ListGrid::ExecUploadMethod]);
+    if (admission == ListGrid::Admission::Unaffected) {
+        return;
+    }
+    if (admission == ListGrid::Admission::Moves) {
+        if (ListGrid::g_verify) {
+            // The same call on the real words, where every list's were read the old way.
+            const auto real_word = [this](u32 marker) -> std::optional<u32> {
+                const ListGrid::KeptList* const list = grid_marker->Find(marker);
+                if (list == nullptr || !list->verified) {
+                    return std::nullopt;
+                }
+                return list->real[ListGrid::MarkerIndex(marker)];
+            };
+            bool known = true;
+            auto real_ram = std::make_unique<ListGrid::DataRam>(data_ram);
+            for (u32 i = 0; i < 3; ++i) {
+                if (marked[i]) {
+                    const auto word = real_word(data_ram[grid_marker->cells[i]]);
+                    known = known && word.has_value();
+                    (*real_ram)[grid_marker->cells[i]] = word.value_or(0);
+                }
+            }
+            const auto real_read = [&](u32 address) {
+                const u32 value = read(address);
+                if (!marker_register(address, value)) {
+                    return value;
+                }
+                const auto word = real_word(value);
+                known = known && word.has_value();
+                return word.value_or(0);
+            };
+            const auto real = ListGrid::DryRun(code, start, fs.parameters, *real_ram,
+                                               grid_marker->cells, {}, real_read,
+                                               [](u32, u32) { return false; });
+            if (known) {
+                std::vector<std::pair<u32, u32>> emits, real_emits;
+                for (const auto& emit : result.emits) {
+                    emits.emplace_back(emit.method, emit.value);
+                }
+                for (const auto& emit : real.emits) {
+                    real_emits.emplace_back(emit.method, emit.value);
+                }
+                const bool match =
+                    real.completed && ListGrid::MatchesRealRun(emits, real_emits, real_word) &&
+                    ListGrid::MatchesRealRun(result.data_ram_writes, real.data_ram_writes,
+                                             real_word);
+                ListGrid::NoteVerify(ListGrid::Check::Reader,
+                                     FrontMacroInfo(fs, macro, start).hash, match,
+                                     fmt::format("compute macro at {:#x}: {} writes on the markers, "
+                                                 "{} on the real words",
+                                                 start, emits.size(), real_emits.size()));
+            }
+        }
+        return;
+    }
+    if (static u32 logged{}; logged < 16) {
+        ++logged;
+        LOG_INFO(HW_GPU,
+                 "List-fed grid: compute macro {:016x} at {:#x} gets the real words: {}",
+                 FrontMacroInfo(fs, macro, start).hash, start,
+                 result.reason.empty() ? std::string_view{"a marker goes elsewhere"}
+                                       : result.reason);
+    }
+    ListGrid::ResolveCells(*grid_marker, data_ram);
+    for (u32 i = 0; i < 3; ++i) {
+        const u32 address = ListGrid::QmdGridRegister + i;
+        if (marker_register(address, fs.registers[address])) {
+            const u32 value = ListGrid::ResolveWord(*grid_marker, fs.registers[address]).value_or(0);
+            FrontApply(fs, address, value);
+            split.MacroWrite(this, address, value);
+        }
+    }
+}
+
 void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split,
                                          u32 method, const u32* base_start, u32 amount,
                                          u32 methods_pending, const GPUVAddr* segment) {
@@ -1675,6 +1917,9 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
     auto& macro = FrontMacroEngine(fs);
     if (native_data_ram) {
         macro.native_interpreter.active_dram = native_data_ram;
+    }
+    if (grid_marker != nullptr && grid_marker->set) [[unlikely]] {
+        FrontGuardListGrid(split, fs, macro, start);
     }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
     namespace ListTrace = VideoCommon::ListMacroTrace;

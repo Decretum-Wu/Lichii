@@ -1231,6 +1231,10 @@ struct Maxwell3D::FrontState {
     u64 back_last{};                 ///< The position after the last macro sent to the back
     std::atomic<u32> back_escapes{}; ///< Back macros that wrote outside their write set
     u32 back_escapes_seen{};
+    /// By start in the macro code of data_ram_generation: 0 unknown, 1 the macro can't use the
+    /// data RAM, 2 it can.
+    std::vector<u8> data_ram_macros;
+    u64 data_ram_generation{~u64{0}};
 };
 
 namespace {
@@ -1418,6 +1422,10 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
 // split stopped (accuracy settings changed mid-game). Hand the macros back: the front's copy
 // goes stale from now on, and a restart copies the registers again (Front).
 void Maxwell3D::ReleaseFront() {
+    // The engine's macros run unguarded from now on.
+    if (grid_marker.set) {
+        Nx2ListGrid::ResolveCells(grid_marker, native_data_ram);
+    }
     executing_macro = front->executing_macro;
     macro_params = std::move(front->parameters);
     // Entries macros the back ran may have written are the engine's already.
@@ -1678,6 +1686,25 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                                    method, engine.native_code, engine.native_code_generation, start,
                                    fs.parameters, native_data_ram)
             : nullptr;
+    // List-fed grid markers (nx2_list_grid.h) in the data RAM: a 3D macro that can read it gets
+    // the real words first.
+    if (grid_marker.set && grid_marker.In(native_data_ram)) [[unlikely]] {
+        if (fs.data_ram_generation != engine.native_code_generation) {
+            fs.data_ram_macros.assign(engine.native_code.size() / 3, 0);
+            fs.data_ram_generation = engine.native_code_generation;
+        }
+        if (start < fs.data_ram_macros.size()) {
+            u8& uses = fs.data_ram_macros[start];
+            if (uses == 0) {
+                uses = TuringMacroInterpreter::AnalyzeEffects(engine.native_code, start).data_ram
+                           ? 2
+                           : 1;
+            }
+            if (uses == 2) {
+                Nx2ListGrid::ResolveCells(grid_marker, native_data_ram);
+            }
+        }
+    }
     const bool on_back = FrontRunOnBack(system, split, fs, engine, start);
     if (!on_back) {
         VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};

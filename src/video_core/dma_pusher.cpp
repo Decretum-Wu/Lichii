@@ -5,10 +5,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <span>
 #include <utility>
 #include <vector>
@@ -30,6 +32,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_cmdpage_diag.h"
+#include "video_core/nx2_list_grid.h"
 #include "video_core/nx2_list_macro_trace.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -372,6 +375,8 @@ bool DmaPusher::Step() {
             Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Safe);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        } else if (gpu_written && TakeListGrid(dma_state.dma_get, static_cast<u32>(header.size))) {
+            // Nothing to parse: the words stay on the host GPU (nx2_list_grid.h).
         } else if (bool pending = false;
                    ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size),
                                           &pending) ||
@@ -801,6 +806,64 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
         }
     }
     return false;
+}
+
+bool DmaPusher::TakeListGrid(GPUVAddr address, u32 count) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    // The three words are all the parameters of a compute macro call begun in the entry before,
+    // on one mapped page.
+    if (count != 3 || dma_state.method_count != 3 || command_resume_offset != 0 ||
+        rasterizer == nullptr || !split.Active() || !split.FrontMacros() ||
+        dma_state.method < MacroRegistersStart || (dma_state.method & 1) != 0 ||
+        (address & 0xfff) > 0x1000 - 3 * sizeof(u32) ||
+        subchannels[dma_state.subchannel] == nullptr ||
+        subchannel_type[dma_state.subchannel] != Engines::EngineTypes::KeplerCompute ||
+        !memory_manager.GpuToCpuAddress(address)) {
+        return false;
+    }
+    auto* const compute = static_cast<Engines::KeplerCompute*>(subchannels[dma_state.subchannel]);
+    if (!compute->FrontRunsMacros() || !compute->FrontTakesListGrid(split, dma_state.method)) {
+        return false;
+    }
+    // Verify mode: the words the old way too, for the checks to compare against.
+    std::array<u32, 3> real{};
+    if (Nx2ListGrid::g_verify) {
+        if (ReadGpuWrittenCommands(address, count)) {
+            std::memcpy(real.data(), command_headers.data(), sizeof(real));
+        } else {
+            FlushGpuWrittenCommands(address, sizeof(real));
+            memory_manager.ReadBlockUnsafe(address, real.data(), sizeof(real));
+        }
+    }
+    const Nx2ListGrid::ListReader reader{
+        [](void* self, GPUVAddr list, u64 keep_id, std::span<u32> words) {
+            return static_cast<DmaPusher*>(self)->ReadListWords(list, keep_id, words);
+        },
+        this};
+    compute->FrontTakeListGrid(split, dma_state.method, address, reader,
+                               Nx2ListGrid::g_verify ? std::span<const u32>{real}
+                                                     : std::span<const u32>{});
+    dma_state.method_count = 0;
+    dma_state.is_last_call = true;
+    return true;
+}
+
+bool DmaPusher::ReadListWords(GPUVAddr address, u64 keep_id, std::span<u32> words) {
+    if (rasterizer == nullptr || words.size() != 3) {
+        return false;
+    }
+    // The copy the back kept at the list's place in the stream: the words as the list had them,
+    // whatever later work wrote there. Without it (its slot was reused) the list can't be read:
+    // later work may have rewritten it.
+    bool kept = false;
+    VideoCommon::GpuSplit::Get().Run(
+        [&] { kept = rasterizer->Nx2ReadKeptListWords(keep_id, words); },
+        VideoCommon::DrainSite::ListFlush);
+    if (!kept) {
+        LOG_WARNING(HW_GPU, "List-fed grid: the words of list {} at {:#x} are no longer kept",
+                    keep_id, address);
+    }
+    return kept;
 }
 
 bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pending) {

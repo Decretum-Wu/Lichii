@@ -167,6 +167,29 @@ public:
         }
     }
 
+    /// Switch 2, list-fed grid macros (nx2_list_grid.h): whether the back keeps list words and
+    /// dispatches from them, so the front may take such lists without reading them.
+    [[nodiscard]] virtual bool Nx2ListGridSupported() const {
+        return false;
+    }
+    /// On the split's back, at the list's place in the stream: copies the three words at
+    /// `address` into a kept-words slot as `keep_id`. Verify mode: `real` are the words as the
+    /// front read them the old way for the macro `hash`, else empty.
+    virtual void Nx2KeepListWords([[maybe_unused]] u64 keep_id, [[maybe_unused]] GPUVAddr address,
+                                  [[maybe_unused]] u64 hash,
+                                  [[maybe_unused]] std::span<const u32> real) {}
+    /// On the split's back: the words kept as `keep_id`, after waiting for the host GPU's copy.
+    /// False if none are kept, or a later list took the slot.
+    [[nodiscard]] virtual bool Nx2ReadKeptListWords([[maybe_unused]] u64 keep_id,
+                                                    [[maybe_unused]] std::span<u32> words) {
+        return false;
+    }
+    /// On the split's back: the keep id of the kept list whose id ends in `keep_bits` (a
+    /// marker's), if its slot still holds it.
+    [[nodiscard]] virtual std::optional<u64> Nx2FindKeptList([[maybe_unused]] u32 keep_bits) {
+        return std::nullopt;
+    }
+
     /// Check if the the specified memory area requires flushing to CPU Memory.
     virtual bool MustFlushRegion(DAddr addr, u64 size,
                                  VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
