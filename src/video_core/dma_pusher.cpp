@@ -338,7 +338,8 @@ bool DmaPusher::Step() {
         const auto end_list_trace = [&] {
             const bool in_macro =
                 dma_state.method_count != 0 && dma_state.method >= MacroRegistersStart;
-            ListTrace::EndEntry(in_macro ? subchannels[dma_state.subchannel] : nullptr);
+            ListTrace::EndEntry(in_macro ? subchannels[dma_state.subchannel] : nullptr,
+                                dma_state.method_count);
         };
         if (submitted) {
             const std::span<const CommandHeader> commands{

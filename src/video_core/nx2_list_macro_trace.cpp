@@ -51,15 +51,31 @@ struct PathCounts {
     }
 };
 
-/// A GPU-written entry whose words macro calls may take.
+/// Words a macro call still had due when a GPU-written entry began and when it ended: the call's
+/// parameters [total - before, total - after) came from the entry (all from its start if before
+/// is Whole).
+struct GpuRange {
+    static constexpr u32 Whole = ~0U;
+    u32 before;
+    u32 after;
+};
+
+/// The GPU-written entry being parsed.
 struct EntryState {
     bool active{};
     Path path{};
     u64 waited_ns{};
-    const void* engine{}; ///< The engine whose pending macro call takes words of the entry
-    u32 gpu_words{};      ///< That call's words in the entry, if known
-    bool continued{};     ///< That call began before the entry
+    const void* engine{}; ///< The engine whose call, begun before the entry, it continues
+    u32 before{};         ///< That call's words due at the entry's start
     bool attributed{};    ///< A call took the entry's wait
+};
+
+/// A macro call that GPU-written entries fed and that has not run yet.
+struct PendingCall {
+    std::vector<GpuRange> ranges;
+    u64 entries{}; ///< Entries not yet counted for a macro, and their waits
+    u64 waited{};
+    u64 waited_ns{};
 };
 
 struct MacroWindow {
@@ -98,7 +114,7 @@ struct State {
     std::map<std::pair<Engine, u64>, Macro> macros;
     std::map<std::tuple<const u32*, u64, u32>, CodeInfo> code;
     EntryState current;
-    EntryState carried;
+    std::map<const void*, PendingCall> pending; ///< By engine
     size_t dumps{};
     u64 window_start{};
     Call call;
@@ -107,8 +123,7 @@ struct State {
     std::span<const u32> call_code;
     std::vector<u32> call_parameters;
     std::vector<u32> call_data_ram;
-    u32 call_gpu_words{};
-    Path call_path{};
+    std::vector<u32> call_gpu_words; ///< Indices of the parameters GPU-written entries held
 };
 
 State& Get() {
@@ -125,19 +140,6 @@ std::filesystem::path DumpDirectory() {
         return std::filesystem::path{directory};
     }
     return Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "list-macros";
-}
-
-const char* PathName(Path path) {
-    switch (path) {
-    case Path::Copied:
-        return "from a copy at once";
-    case Path::Waited:
-        return "after waiting for the host GPU's copy";
-    case Path::Flushed:
-        return "after a drain and flush";
-    default:
-        return "?";
-    }
 }
 
 std::string DumpCode(Engine engine, u64 hash, u32 method, u32 start, u64 generation,
@@ -215,10 +217,11 @@ void Verify(State& state, Macro& macro, const Call& call) {
     if (mismatch && macro.mismatches_logged < 16) {
         ++macro.mismatches_logged;
         LOG_WARNING(HW_GPU,
-                    "List macro verify: {} macro {:016x} at {:#x} does not only forward its {} "
-                    "GPU-written words ({}{}): parameters {:08x}, writes {}",
+                    "List macro verify: {} macro {:016x} at {:#x} does not only forward its "
+                    "GPU-written words {} ({}{}): parameters {:08x}, writes {}",
                     engine_names[static_cast<size_t>(macro.engine)], macro.hash, macro.start,
-                    state.call_gpu_words, forwarding_names[static_cast<size_t>(check.result)],
+                    fmt::join(state.call_gpu_words, ","),
+                    forwarding_names[static_cast<size_t>(check.result)],
                     check.result == Forwarding::Forwards
                         ? fmt::format(", {} instead of {}", MapText(check.map), MapText(*macro.map))
                         : std::string{},
@@ -340,32 +343,33 @@ void BeginEntry(Path path, u64 waited_ns, Engine engine, const void* engine_obje
         state.methods[{content, engine, method}].Add(path, waited_ns, words);
     }
     const bool macro_data = content == Content::MacroData;
-    if (macro_data && state.carried.engine == engine_object) {
-        state.carried.active = false;
-    }
     state.current = {
         .active = true,
         .path = path,
         .waited_ns = waited_ns,
         .engine = macro_data ? engine_object : nullptr,
-        .gpu_words = macro_data ? std::min(method_count, words) : 0,
-        .continued = macro_data,
+        .before = macro_data ? method_count : 0,
         .attributed = false,
     };
 }
 
-void EndEntry(const void* macro_engine) {
+void EndEntry(const void* macro_engine, u32 method_count) {
     State& state = Get();
-    if (macro_engine != nullptr && state.current.active) {
-        state.carried = state.current;
-        if (state.carried.engine != macro_engine) {
-            // A call begun inside the entry: how many of its words it holds is not known.
-            state.carried.engine = macro_engine;
-            state.carried.gpu_words = 0;
-            state.carried.continued = false;
+    EntryState& entry = state.current;
+    if (macro_engine != nullptr && entry.active) {
+        PendingCall& call = state.pending[macro_engine];
+        call.ranges.push_back({entry.engine == macro_engine ? entry.before : GpuRange::Whole,
+                               method_count});
+        if (!entry.attributed) {
+            entry.attributed = true;
+            ++call.entries;
+            if (entry.path == Path::Waited) {
+                ++call.waited;
+                call.waited_ns += entry.waited_ns;
+            }
         }
     }
-    state.current.active = false;
+    entry.active = false;
     MaybeLog(state);
 }
 
@@ -373,17 +377,40 @@ Call* BeginCall(Engine engine, const void* engine_object, u32 method, std::span<
                 u64 code_generation, u32 start, std::span<const u32> parameters,
                 std::span<const u32> data_ram) {
     State& state = Get();
-    EntryState* entry = nullptr;
-    if (state.current.active) {
-        entry = &state.current;
-    } else if (state.carried.active && state.carried.engine == engine_object) {
-        entry = &state.carried;
-    } else {
+    EntryState& entry = state.current;
+    const auto pending_it = state.pending.find(engine_object);
+    std::optional<PendingCall> pending;
+    if (pending_it != state.pending.end()) {
+        pending = std::move(pending_it->second);
+        state.pending.erase(pending_it);
+    }
+    if (!entry.active && !pending) {
         return nullptr;
     }
     if (static_cast<size_t>(start) * 3 + 2 >= code.size()) {
         return nullptr;
     }
+    // The parameters GPU-written entries held: those due when one began and not yet when it
+    // ended; all of a call that began and ran inside the current one.
+    std::vector<GpuRange> ranges = pending ? pending->ranges : std::vector<GpuRange>{};
+    if (entry.active) {
+        ranges.push_back({entry.engine == engine_object ? entry.before : GpuRange::Whole, 0});
+        if (entry.engine == engine_object) {
+            entry.engine = nullptr;
+        }
+    }
+    const u32 total = static_cast<u32>(parameters.size());
+    std::vector<u32> gpu_words;
+    bool continued = false;
+    for (const GpuRange& range : ranges) {
+        continued |= range.before != GpuRange::Whole;
+        const u32 before = std::min(range.before, total);
+        for (u32 index = total - before; index < total - std::min(range.after, before); ++index) {
+            gpu_words.push_back(index);
+        }
+    }
+    std::ranges::sort(gpu_words);
+    gpu_words.erase(std::unique(gpu_words.begin(), gpu_words.end()), gpu_words.end());
     if (state.code.size() > 4096) {
         state.code.clear();
     }
@@ -405,38 +432,32 @@ Call* BeginCall(Engine engine, const void* engine_object, u32 method, std::span<
     }
     MacroWindow& w = macro.window;
     ++w.calls;
-    w.parameters += parameters.size();
-    const bool pending = entry->engine == engine_object;
-    const u32 gpu_words = std::min(pending ? entry->gpu_words : static_cast<u32>(parameters.size()),
-                                   static_cast<u32>(parameters.size()));
-    w.gpu_words += gpu_words;
+    w.parameters += total;
+    w.gpu_words += gpu_words.size();
+    w.continued += continued ? 1 : 0;
     if (pending) {
-        w.continued += entry->continued ? 1 : 0;
-        entry->engine = nullptr;
+        w.entries += pending->entries;
+        w.waited += pending->waited;
+        w.waited_ns += pending->waited_ns;
     }
-    if (!entry->attributed) {
-        entry->attributed = true;
+    if (entry.active && !entry.attributed) {
+        entry.attributed = true;
         ++w.entries;
-        if (entry->path == Path::Waited) {
+        if (entry.path == Path::Waited) {
             ++w.waited;
-            w.waited_ns += entry->waited_ns;
+            w.waited_ns += entry.waited_ns;
         }
-    }
-    const Path path = entry->path;
-    if (entry == &state.carried) {
-        state.carried.active = false;
     }
     state.call_macro = &macro;
     state.call_sampled = !macro.dump.empty() && macro.samples < SamplesPerMacro;
     Call& call = state.call;
-    call.capture = state.call_sampled || (g_verify && gpu_words != 0);
+    call.capture = state.call_sampled || (g_verify && !gpu_words.empty());
     call.reads.clear();
     call.writes.clear();
+    state.call_gpu_words = std::move(gpu_words);
     if (call.capture) {
         state.call_code = code;
         state.call_parameters.assign(parameters.begin(), parameters.end());
-        state.call_gpu_words = gpu_words;
-        state.call_path = path;
         if (g_verify) {
             state.call_data_ram.assign(data_ram.begin(), data_ram.end());
         }
@@ -453,7 +474,7 @@ void EndCall(Call& call, bool on_back) {
     }
     if (on_back) {
         ++macro->window.on_back;
-    } else if (g_verify && state.call_gpu_words != 0) {
+    } else if (g_verify && call.capture && !state.call_gpu_words.empty()) {
         Verify(state, *macro, call);
     }
     if (!state.call_sampled) {
@@ -462,15 +483,16 @@ void EndCall(Call& call, bool on_back) {
     ++macro->samples;
     std::ofstream file{macro->dump, std::ios::app};
     file << fmt::format(
-        "call {}: method {:#x}, {} parameters, the last {} from a GPU-written entry read {}: "
-        "{:08x}\n  registers read: {}\n  methods written: {}\n",
-        macro->samples, macro->method, state.call_parameters.size(), state.call_gpu_words,
-        PathName(state.call_path), fmt::join(state.call_parameters, " "), Pairs(call.reads),
-        on_back ? std::string{"(ran on the back)"} : Pairs(call.writes));
+        "call {}: method {:#x}, {} parameters {:08x}, GPU-written: {}\n  registers read: {}\n  "
+        "methods written: {}\n",
+        macro->samples, macro->method, state.call_parameters.size(),
+        fmt::join(state.call_parameters, " "), fmt::join(state.call_gpu_words, ","),
+        Pairs(call.reads), on_back ? std::string{"(ran on the back)"} : Pairs(call.writes));
 }
 
 ForwardCheck CheckForwarding(std::span<const u32> code, u32 start, std::span<const u32> parameters,
-                             u32 gpu_words, std::span<const std::pair<u32, u32>> reads,
+                             std::span<const u32> gpu_words,
+                             std::span<const std::pair<u32, u32>> reads,
                              std::span<const std::pair<u32, u32>> writes,
                              std::span<const u32> data_ram) {
     struct Run {
@@ -481,7 +503,7 @@ ForwardCheck CheckForwarding(std::span<const u32> code, u32 start, std::span<con
     static Tegra::TuringMacroInterpreter interpreter;
     // A tag the macro loops on would otherwise run a million instructions.
     interpreter.step_limit = 1U << 16;
-    const auto run = [&](std::span<const u32> words) {
+    const auto run = [&](std::span<const u32> words, bool tagged) {
         Run result;
         interpreter.dram.fill(0);
         std::copy_n(data_ram.begin(), std::min(data_ram.size(), interpreter.dram.size()),
@@ -493,11 +515,23 @@ ForwardCheck CheckForwarding(std::span<const u32> code, u32 start, std::span<con
         const auto executed = interpreter.Execute(
             code, start, fifo,
             [&](u32 address) {
-                if (next_read < reads.size() && reads[next_read].first == address) {
+                if (next_read >= reads.size() || reads[next_read].first != address) {
+                    reads_match = false;
+                    return 0U;
+                }
+                // The engines apply a macro's writes before its next read: a register the call
+                // wrote reads back what this run wrote (which must be what the call read).
+                const auto written = std::ranges::find(result.writes.rbegin(),
+                                                       result.writes.rend(), address,
+                                                       &std::pair<u32, u32>::first);
+                if (written == result.writes.rend()) {
                     return reads[next_read++].second;
                 }
-                reads_match = false;
-                return 0U;
+                if (!tagged && written->second != reads[next_read].second) {
+                    reads_match = false;
+                }
+                ++next_read;
+                return written->second;
             },
             [&](u32 method, u32 value) {
                 if (method >= MacroMethods) {
@@ -510,19 +544,21 @@ ForwardCheck CheckForwarding(std::span<const u32> code, u32 start, std::span<con
         result.data_ram_writes = interpreter.data_ram_writes;
         return result;
     };
-    const Run real = run(parameters);
+    const Run real = run(parameters, false);
     if (!real.success || !std::ranges::equal(real.writes, writes)) {
         return {Forwarding::Unreproduced, {}};
     }
-    const size_t first = parameters.size() - std::min<size_t>(gpu_words, parameters.size());
     std::vector<u32> tags_a(parameters.begin(), parameters.end());
     std::vector<u32> tags_b = tags_a;
-    for (size_t k = first; k < parameters.size(); ++k) {
-        tags_a[k] = 0x5a001357U | (static_cast<u32>(k) << 16);
-        tags_b[k] = 0x25002468U | (static_cast<u32>(k) << 16);
+    for (const u32 k : gpu_words) {
+        if (k >= parameters.size()) {
+            return {Forwarding::Unreproduced, {}};
+        }
+        tags_a[k] = 0x5a001357U | (k << 16);
+        tags_b[k] = 0x25002468U | (k << 16);
     }
-    const Run a = run(tags_a);
-    const Run b = run(tags_b);
+    const Run a = run(tags_a, true);
+    const Run b = run(tags_b, true);
     const auto same_methods = [&real](const Run& tagged) {
         return tagged.success && tagged.writes.size() == real.writes.size() &&
                std::ranges::equal(tagged.writes, real.writes,
@@ -537,18 +573,14 @@ ForwardCheck CheckForwarding(std::span<const u32> code, u32 start, std::span<con
         if (a.writes[i].second == value && b.writes[i].second == value) {
             continue;
         }
-        bool forwarded = false;
-        for (size_t k = first; k < parameters.size() && !forwarded; ++k) {
-            forwarded = a.writes[i].second == tags_a[k] && b.writes[i].second == tags_b[k] &&
-                        value == parameters[k];
-            if (forwarded) {
-                check.map.push_back({static_cast<u32>(k), static_cast<u32>(i),
-                                     real.writes[i].first});
-            }
-        }
-        if (!forwarded) {
+        const auto forwarded = std::ranges::find_if(gpu_words, [&](u32 k) {
+            return a.writes[i].second == tags_a[k] && b.writes[i].second == tags_b[k] &&
+                   value == parameters[k];
+        });
+        if (forwarded == gpu_words.end()) {
             return {Forwarding::Transforms, {}};
         }
+        check.map.push_back({*forwarded, static_cast<u32>(i), real.writes[i].first});
     }
     if (a.data_ram_writes != real.data_ram_writes || b.data_ram_writes != real.data_ram_writes) {
         return {Forwarding::DataRam, {}};

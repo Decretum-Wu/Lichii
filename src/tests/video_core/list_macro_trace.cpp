@@ -55,23 +55,35 @@ TEST_CASE("ListMacroTrace: a macro call is noted only when a GPU-written entry f
     Trace::NoteRead(call, 0x35e, 5);
     Trace::NoteWrite(call, 0x5f8, 8);
     Trace::EndCall(*call, false);
-    Trace::EndEntry(nullptr);
+    Trace::EndEntry(nullptr, 0);
     const std::string dump = ReadDump(directory);
     CHECK(dump.find("3D macro") == 0);
-    CHECK(dump.find("call 1: method 0xe62, 3 parameters, the last 2 from a GPU-written entry read "
-                    "after waiting for the host GPU's copy: 00000007 00000008 00000009") !=
-          std::string::npos);
+    CHECK(dump.find("call 1: method 0xe62, 3 parameters 00000007 00000008 00000009, GPU-written: "
+                    "1,2\n") != std::string::npos);
     CHECK(dump.find("registers read: 0x35e=0x5") != std::string::npos);
     CHECK(dump.find("methods written: 0x5f8=0x8") != std::string::npos);
     CHECK(begin_call(&engine) == nullptr);
 
-    // An entry that ends inside a call: the call takes it when it runs later, on its engine only.
+    // A call begun inside an entry that ended with two of its words due: it takes the entry when
+    // it runs later, on its engine only.
     Trace::BeginEntry(Trace::Path::Copied, 0, Trace::Engine::Maxwell3D, &engine, 0, 0, 4);
-    Trace::EndEntry(&engine);
+    Trace::EndEntry(&engine, 2);
     CHECK(begin_call(&other_engine) == nullptr);
     Trace::Call* const carried = begin_call(&engine);
     REQUIRE(carried != nullptr);
     Trace::EndCall(*carried, true);
     CHECK(begin_call(&engine) == nullptr);
+
+    // Only the middle word from a GPU-written entry: due 2 at its start, 1 at its end.
+    Trace::BeginEntry(Trace::Path::Copied, 0, Trace::Engine::Maxwell3D, &engine, 0xe62, 2, 1);
+    Trace::EndEntry(&engine, 1);
+    Trace::Call* const middle = begin_call(&engine);
+    REQUIRE(middle != nullptr);
+    Trace::EndCall(*middle, false);
+    const std::string samples = ReadDump(directory);
+    CHECK(samples.find("call 2: method 0xe62, 3 parameters 00000007 00000008 00000009, "
+                       "GPU-written: 0\n") != std::string::npos);
+    CHECK(samples.find("call 3: method 0xe62, 3 parameters 00000007 00000008 00000009, "
+                       "GPU-written: 1\n") != std::string::npos);
     std::filesystem::remove_all(directory);
 }

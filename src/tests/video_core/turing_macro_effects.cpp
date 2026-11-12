@@ -151,13 +151,15 @@ TEST_CASE("List macro verify: which calls only forward their GPU-written words",
     const auto forwarder = Code(std::vector<Mme>{Fifo(0x5f8), Fifo(0x5f9, true), Fifo(0x5fa)});
     const std::vector<u32> parameters{1, 100, 7};
     const Writes written{{0x5f8, 1}, {0x5f9, 100}, {0x5fa, 7}};
-    const auto forwards = CheckForwarding(forwarder, 0, parameters, 2, {}, written, data_ram);
+    const auto forwards = CheckForwarding(forwarder, 0, parameters, std::vector<u32>{1, 2}, {}, written,
+                                          data_ram);
     CHECK(forwards.result == Forwarding::Forwards);
     using Word = VideoCommon::ListMacroTrace::ForwardedWord;
     CHECK(forwards.map == std::vector<Word>{{1, 1, 0x5f9}, {2, 2, 0x5fa}});
     // Writes the call did not make: the run cannot stand for it.
-    CHECK(CheckForwarding(forwarder, 0, parameters, 2, {}, Writes{{0x5f8, 1}}, data_ram).result ==
-          Forwarding::Unreproduced);
+    CHECK(CheckForwarding(forwarder, 0, parameters, std::vector<u32>{1, 2}, {}, Writes{{0x5f8, 1}},
+                          data_ram)
+              .result == Forwarding::Unreproduced);
 
     // r1 = parameter + 1, written to 0x5f8.
     const Mme load{.dst = {0, 24}, .src_a = {28, 24}};
@@ -165,14 +167,24 @@ TEST_CASE("List macro verify: which calls only forward their GPU-written words",
     const Mme write_r1{.end = true, .src_a = {1, 24}, .imm = {0x5f8, 0}, .out_method = {5, 0},
                        .out_emit = {1, 0}};
     const auto adder = Code(std::vector<Mme>{load, add_one, write_r1, Mme{}});
-    CHECK(CheckForwarding(adder, 0, std::vector<u32>{41}, 1, {}, Writes{{0x5f8, 42}}, data_ram)
+    CHECK(CheckForwarding(adder, 0, std::vector<u32>{41}, std::vector<u32>{0}, {},
+                          Writes{{0x5f8, 42}}, data_ram)
+              .result == Forwarding::Transforms);
+    // The same through a register: the word to 0x100, read back (MME_READ), plus 1 to 0x101.
+    const Mme read_back{.op = {22, 0}, .dst = {0, 24}, .src_a = {25, 24}, .imm = {0x100, 0}};
+    const Mme write_r1_to_101{.end = true, .src_a = {1, 24}, .imm = {0x101, 0},
+                              .out_method = {5, 0}, .out_emit = {1, 0}};
+    const auto feedback =
+        Code(std::vector<Mme>{Fifo(0x100), read_back, add_one, write_r1_to_101, Mme{}});
+    CHECK(CheckForwarding(feedback, 0, std::vector<u32>{5}, std::vector<u32>{0},
+                          Writes{{0x100, 5}}, Writes{{0x100, 5}, {0x101, 6}}, data_ram)
               .result == Forwarding::Transforms);
 
     // A branch on the first parameter skips the write of 0x300.
     const Mme skip{.op = {29, 0}, .src_a = {0, 24}, .imm = {0x8000 | 2, 0}};
     const auto brancher = Code(
         std::vector<Mme>{load, skip, Fifo(0x300), Fifo(0x301, true), Fifo(0x302)});
-    CHECK(CheckForwarding(brancher, 0, std::vector<u32>{0, 5, 6}, 3, {},
+    CHECK(CheckForwarding(brancher, 0, std::vector<u32>{0, 5, 6}, std::vector<u32>{0, 1, 2}, {},
                           Writes{{0x301, 5}, {0x302, 6}}, data_ram)
               .result == Forwarding::Steers);
 }

@@ -49,9 +49,9 @@ u64 Now();
 /// subchannel's object) was still due `method_count` words of `method` at its start.
 void BeginEntry(Path path, u64 waited_ns, Engine engine, const void* engine_object, u32 method,
                 u32 method_count, u32 words);
-/// The entry ended, inside the data of a macro call of `macro_engine` unless it is null: that
-/// call took words from it too.
-void EndEntry(const void* macro_engine);
+/// The entry ended inside the data of a macro call of `macro_engine`, still due `method_count`
+/// words, unless `macro_engine` is null: that call took words from it too.
+void EndEntry(const void* macro_engine, u32 method_count);
 
 struct Call {
     bool capture{}; ///< Note the call's register reads and method writes
@@ -102,10 +102,11 @@ struct ForwardCheck {
 };
 
 /// Runs a call that read `reads` and wrote `writes` again, with its parameters, then twice with
-/// the last `gpu_words` of them replaced by two sets of tags; registers read are answered as the
-/// call read them and the data RAM starts as `data_ram` was before the call.
+/// those at the indices `gpu_words` replaced by two sets of tags. A register is read back as the
+/// run last wrote it, else as the call read it; the data RAM starts as `data_ram` was before it.
 ForwardCheck CheckForwarding(std::span<const u32> code, u32 start, std::span<const u32> parameters,
-                             u32 gpu_words, std::span<const std::pair<u32, u32>> reads,
+                             std::span<const u32> gpu_words,
+                             std::span<const std::pair<u32, u32>> reads,
                              std::span<const std::pair<u32, u32>> writes,
                              std::span<const u32> data_ram);
 
