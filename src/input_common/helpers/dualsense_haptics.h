@@ -39,6 +39,11 @@ public:
         return stream != nullptr;
     }
 
+    // True when the stream plays on the given physical audio device
+    bool UsesDevice(SDL_AudioDeviceID device_id) const {
+        return stream != nullptr && device == device_id;
+    }
+
     // Amplitudes are in the range [0, 1], frequencies in Hz.
     void SetVibration(const Common::Input::VibrationStatus& vibration);
 
@@ -72,6 +77,7 @@ private:
     void UpdateTargets();
 
     SDL_AudioStream* stream{};
+    SDL_AudioDeviceID device{};
 
     std::array<Target, 2> targets;
     std::atomic<u64> last_update_ms{};
