@@ -5496,8 +5496,8 @@ void MainWindow::UpdateFrameGenButton() {
         unavailable = tr("This build was compiled without frame generation.");
         break;
     case VideoCore::FrameGenState::UnsupportedGpu:
-        unavailable = tr("This GPU lacks Vulkan features LSFG needs (Vulkan memory model, null "
-                         "descriptors and 16-bit floats). The Optical Flow type may still work.");
+        unavailable = tr("This GPU lacks Vulkan features LSFG needs (Vulkan memory model and null "
+                         "descriptors). The Optical Flow type may still work.");
         break;
     case VideoCore::FrameGenState::UnsupportedSurface:
         unavailable = tr("This GPU can't write to the window's swapchain format from a shader, so "
