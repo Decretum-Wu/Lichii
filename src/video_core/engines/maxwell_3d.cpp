@@ -1498,6 +1498,15 @@ bool FrontHandledOutsideDrawManager(u32 method) {
     }
 }
 
+// EDEN_NX2_TEST_REG_BLOCKS=0 (test builds only): every state write gets its own entry again.
+bool RegBlocksTestOn() {
+    static const bool on = [] {
+        const char* value = std::getenv("EDEN_NX2_TEST_REG_BLOCKS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return on;
+}
+
 // EDEN_NX2_SPLIT_SKIP=0: send state writes that keep the register's value too.
 bool FrontSkipSame() {
     static const bool skip = [] {
@@ -1578,7 +1587,7 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
         front->control = shadow_state.shadow_ram_control;
         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
-        front->state_blocks = front->skip_same && fast_maxwell3d && !perf_verify;
+        front->state_blocks = front->skip_same && fast_maxwell3d && !perf_verify && RegBlocksTestOn();
         front->split_start = split.Starts();
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
