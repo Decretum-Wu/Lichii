@@ -236,8 +236,8 @@ def build(bundle, out):
     except (OSError, zipfile.BadZipFile) as error:
         raise BundleError(f"can't open the zip: {error}") from None
     with archive:
-        manifest = read_manifest(archive)
         check_members(archive.infolist())
+        manifest = read_manifest(archive)
         unpack(archive, out)
     frame_index = None
     if (out / "frame" / "manifest.jsonl").is_file():

@@ -19,7 +19,14 @@ BugReportDialog::BugReportDialog(Core::System& system, QWidget* parent)
     setWindowTitle(tr("Report a Bug"));
     setMinimumWidth(520);
 
-    capture = QtConcurrent::run([bundle = bundle, stop = stop] { bundle->Capture(*stop); });
+    capture = QtConcurrent::run([bundle = bundle, stop = stop] {
+        try {
+            bundle->Capture(*stop);
+            return QString{};
+        } catch (const std::exception& failure) {
+            return QString::fromStdString(failure.what());
+        }
+    });
 
     auto* const layout = new QVBoxLayout(this);
     auto* const intro = new QLabel(
@@ -83,9 +90,12 @@ void BugReportDialog::Save() {
     status->show();
     writer.setFuture(QtConcurrent::run([bundle = bundle, capture = capture,
                                         text = description->toPlainText().toStdString()] {
-        QFuture<void> pending = capture;
-        pending.waitForFinished();
         Written written;
+        QFuture<QString> pending = capture;
+        written.error = pending.result();
+        if (!written.error.isEmpty()) {
+            return written;
+        }
         try {
             written.result = bundle->Write(text);
         } catch (const std::exception& failure) {

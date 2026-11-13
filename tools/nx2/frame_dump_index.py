@@ -42,6 +42,8 @@ def card(entry):
     else:
         title = f"present · after draw {entry.get('after_draws', '?')}"
     png = entry.get("png") or entry.get("preview")
+    if not isinstance(png, str) or ":" in png or png.startswith(("/", "\\")):
+        png = None
     image = (f'<a href="{html.escape(png)}"><img loading="lazy" src="{html.escape(png)}"></a>'
              if png else '<div class="noimg">no preview</div>')
     rows = [
@@ -59,7 +61,7 @@ def card(entry):
         rows.append(("nan/inf", f"{fmt_list(entry.get('nan'))} / {fmt_list(entry.get('inf'))}"))
     table = "".join(f"<tr><th>{k}</th><td>{html.escape(str(v))}</td></tr>" for k, v in rows)
     tags = "".join(f'<span class="b {c}">{html.escape(t)}</span>' for c, t in badges(entry))
-    return (f'<div class="card {kind}" id="{html.escape(entry["name"])}"><div class="t">{html.escape(title)}</div>'
+    return (f'<div class="card {html.escape(str(kind))}" id="{html.escape(entry["name"])}"><div class="t">{html.escape(title)}</div>'
             f"{tags}{image}<table>{table}</table><div class=\"n\">{html.escape(entry['name'])}</div></div>")
 
 

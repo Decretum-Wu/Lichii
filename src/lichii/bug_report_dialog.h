@@ -45,7 +45,8 @@ private:
 
     std::shared_ptr<std::atomic<bool>> stop;
     std::shared_ptr<Core::Nx2Debug::BugBundle> bundle;
-    QFuture<void> capture;
+    /// The capture's error, empty when it ran.
+    QFuture<QString> capture;
     QFutureWatcher<Written> writer;
     bool writing = false;
 

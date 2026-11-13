@@ -276,10 +276,9 @@ void BugBundle::Capture(const std::atomic<bool>& stop) {
                       {"switch2", Settings::CurrentProgramIsSwitch2()}};
 
     Common::Log::Flush();
-    const auto log_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir);
     std::string head(64 * 1024, '\0');
     {
-        std::ifstream log{log_dir / "eden_log.txt", std::ios::binary};
+        std::ifstream log{Common::Log::FilePath(), std::ios::binary};
         log.read(head.data(), static_cast<std::streamsize>(head.size()));
         head.resize(static_cast<size_t>(log.gcount()));
     }
@@ -441,19 +440,25 @@ BugBundle::Result BugBundle::Write(std::string_view description) {
     }
     result.frame_error = frame["error"].get<std::string>();
 
-    const auto log_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir);
     Common::Log::Flush();
-    const auto add_log = [&](const char* name) {
-        const auto path = log_dir / name;
-        if (!std::filesystem::exists(path)) {
+    const auto log_path = Common::Log::FilePath();
+    auto old_log_path = log_path;
+    old_log_path += ".old.txt";
+    const auto add_log = [&](const char* name, const std::filesystem::path& path) {
+        if (path.empty() || !std::filesystem::exists(path)) {
             return;
         }
-        auto [log, note] = TrimmedLog(ReadFile(path));
+        const std::vector<u8> raw = ReadFile(path);
+        const std::string text = Redact(std::string{raw.begin(), raw.end()});
+        auto [log, note] = TrimmedLog({text.begin(), text.end()});
+        if (path.filename() != "eden_log.txt" && path.filename() != "eden_log.txt.old.txt") {
+            note += fmt::format("{}from {}", note.empty() ? "" : "; ", path.filename().string());
+        }
         if (!add(fmt::format("logs/{}", name), log, true, std::move(note))) {
             drop(fmt::format("logs/{}", name), 1, log.size());
         }
     };
-    add_log("eden_log.txt");
+    add_log("eden_log.txt", log_path);
 
     const auto shader_files = [&](std::string_view folder) {
         std::vector<std::pair<std::string, std::filesystem::path>> files;
@@ -474,7 +479,7 @@ BugBundle::Result BugBundle::Write(std::string_view description) {
     add_group("frame pass colour targets", images["pass"], false);
     add_group("frame compute storage images", images["dispatch"], false);
     add_group("frame sampled textures", images["sampled"], false);
-    add_log("eden_log.txt.old");
+    add_log("eden_log.txt.old", old_log_path);
 
     if (!screenshot_error.empty()) {
         report["screenshot_error"] = screenshot_error;

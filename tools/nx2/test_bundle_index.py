@@ -150,7 +150,30 @@ class BundleIndexTest(unittest.TestCase):
         self.assertFalse((self.dir / "logs").exists())
 
 
+    def test_checks_sizes_before_reading_bundle_json(self):
+        bundle = self.dir / "big.zip"
+        write_zip(bundle, {"bundle.json": "not json " * 100})
+        limit = bundle_index.MAX_UNPACKED
+        bundle_index.MAX_UNPACKED = 100
+        try:
+            with self.assertRaises(bundle_index.BundleError) as caught:
+                bundle_index.build(bundle, self.dir / "out")
+        finally:
+            bundle_index.MAX_UNPACKED = limit
+        self.assertNotIn("JSON", str(caught.exception))
+
+
 class FrameDumpIndexTest(unittest.TestCase):
+    def test_untrusted_kind_and_preview_stay_inert(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "manifest.jsonl").write_text(json.dumps(
+                {"kind": '"><script>alert(1)</script>', "name": "x", "preview": "javascript:alert(1)"}) + "\n")
+            with redirect_stdout(io.StringIO()):
+                page = frame_dump_index.build_index(root).read_text(encoding="utf-8")
+            self.assertNotIn("<script>", page)
+            self.assertNotIn("javascript:", page)
+
     def test_plain_dump_with_png(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

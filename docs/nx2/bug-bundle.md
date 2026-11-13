@@ -14,8 +14,9 @@ The log gets a `Bug report written: <path>` line.
 The zip stays under a size limit: 19 MiB by default, under Discord's 20 MB upload limit for free
 accounts and GitHub's 25 MB attachment limit. Optional parts that don't fit are left out and listed
 in `bundle.json` under `dropped`. The zip holds game textures and shaders, so it goes privately to
-the maintainers, never into a public channel or issue. User names are replaced the way the file log
-replaces them, and the Web Service and Multiplayer settings are left out.
+the maintainers, never into a public channel or issue. User names are replaced in the logs and
+settings even when the file log keeps them, and the Web Service and Multiplayer settings are left
+out.
 
 Browse a bundle with `python3 -I tools/nx2/bundle_index.py <zip> [--out DIR]`. It unpacks the zip
 (refusing absolute paths, `..`, symlinks, more than 20000 entries or more than 2 GiB), writes
@@ -37,12 +38,12 @@ Parts are added in this order while they fit; the first five are always there.
 | `screenshot.png` | The presented frame, at most 1080 lines. |
 | `frame/manifest.jsonl` | The frame dump manifest (`EDEN_NX2_FRAME_DUMP` with `_SAMPLED`, see the AGENTS.md debugging table). Previews are JPEGs (`"png": null, "preview": "<name>.jpg"`) of at most 512 pixels a side; stats come from the full-precision data. `.raw.zst` files are not written (`"raw": null`). |
 | `frame/shaders/shaders.jsonl` | One line per pipeline the frame used, schema below. |
-| `logs/eden_log.txt` | The current log. Over 8 MiB it keeps the first 1 MiB and the last 6 MiB, with a marker line between. |
+| `logs/eden_log.txt` | This session's log, read from the file the logger writes (`eden_log_2.txt` when `eden_log.txt` was busy; the part's `note` says so). Over 8 MiB it keeps the first 1 MiB and the last 6 MiB, with a marker line between. |
 | `frame/shaders/native/` | Native programs as `EDEN_NX2_SHADER_DUMP` names them: `<key>-gfx-<addr>.bin` with `.header.bin`, `<key>-cs-<addr>.bin`; a program without a native key is `<hash>-maxwell-<addr>.bin`. |
 | `frame/shaders/pipelines/` | Graphics pipeline cache keys (`<hash>.key.bin`) and compute QMDs (`<hash>.qmd.bin`). |
-| `frame/shaders/spirv/` | The SPIR-V each stage was built from: `<pipeline>-<stage>.spv`, `<shader>-cs.spv`. Graphics SPIR-V is there only for pipelines already built. |
+| `frame/shaders/spirv/` | The SPIR-V each stage was built from: `<pipeline>-<stage>.spv`, `<shader>-cs.spv`. SPIR-V is there only for pipelines already built (`built` in `shaders.jsonl`). |
 | `frame/*.jpg` | The present source, pass colour targets, compute storage images, then sampled textures. |
-| `logs/eden_log.txt.old` | The previous log, trimmed the same way. |
+| `logs/eden_log.txt.old` | The previous session's log (`<log>.old.txt` on disk), trimmed the same way. |
 
 ## bundle.json
 
@@ -81,7 +82,7 @@ Parts are added in this order while they fit; the first five are always there.
 ```json
 {"kind":"graphics","pipeline":"<key hash>","key":"pipelines/<hash>.key.bin","key_bytes":1056,"built":true,
  "hashes":["<stage shader hash>", ...],"programs":[<program>, ...],"spirv":[{"stage":1,"file":"spirv/<hash>-1.spv"}]}
-{"kind":"compute","shader":"<hash>","qmd":"pipelines/<hash>.qmd.bin","program":<program>,"spirv":"spirv/<hash>-cs.spv"}
+{"kind":"compute","shader":"<hash>","qmd":"pipelines/<hash>.qmd.bin","built":true,"program":<program>,"spirv":"spirv/<hash>-cs.spv"}
 ```
 
 A program is `{"slot":N,"hash":"...","native_key":"...","address":"0x...","code":"native/<name>.bin","header":"native/<name>.header.bin"}`

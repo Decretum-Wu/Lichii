@@ -956,14 +956,15 @@ void FrameDump::NoteComputeShaders(const ComputePipeline& pipeline,
     const std::string qmd_file = fmt::format("pipelines/{:016x}.qmd.bin", hash);
     Enqueue({.data = {qmd.begin(), qmd.end()}, .file = qmd_file});
     std::string spirv{"null"};
-    if (!pipeline.KeptSpirv().empty()) {
+    const bool built = pipeline.IsBuilt();
+    if (built && !pipeline.KeptSpirv().empty()) {
         const std::string file = fmt::format("spirv/{:016x}-cs.spv", hash);
         Enqueue({.data = pipeline.KeptSpirv(), .file = file, .zstd = true});
         spirv = fmt::format("\"{}\"", file);
     }
     Enqueue({.tags = fmt::format(
-                 R"({{"kind":"compute","shader":"{:016x}","qmd":"{}","program":{},"spirv":{}}})",
-                 hash, qmd_file, program ? NoteProgram(*program) : std::string{"null"}, spirv),
+                 R"({{"kind":"compute","shader":"{:016x}","qmd":"{}","built":{},"program":{},"spirv":{}}})",
+                 hash, qmd_file, built, program ? NoteProgram(*program) : std::string{"null"}, spirv),
              .shader_line = true});
 }
 

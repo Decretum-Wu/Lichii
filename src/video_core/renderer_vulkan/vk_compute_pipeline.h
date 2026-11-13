@@ -87,7 +87,12 @@ public:
         return shader_hash;
     }
 
-    /// The SPIR-V (zstd) the pipeline was built from, once it is built.
+    /// The build finished or failed, so KeptSpirv() is no longer written.
+    [[nodiscard]] bool IsBuilt() const noexcept {
+        return is_built.load(std::memory_order_acquire);
+    }
+
+    /// The SPIR-V (zstd) the pipeline was built from; read it only once IsBuilt().
     [[nodiscard]] const std::vector<u8>& KeptSpirv() const noexcept {
         return kept_spirv;
     }
