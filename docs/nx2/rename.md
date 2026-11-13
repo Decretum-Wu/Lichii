@@ -38,6 +38,9 @@ there are renamed).
   them would break the GPL.
 - **compat**: on-disk names, file magics, protocol strings and old option names that existing
   installs depend on. Lichii keeps reading them.
+- **removed**: text that was deleted rather than renamed. A KEEP pattern stops `apply` from
+  rewriting it if an upstream sync brings it back, and `check --strict` fails on it, with the
+  reason saying what to delete.
 - **pending**: anything else; `check --strict` fails while any remain.
 
 ## Build options
@@ -120,4 +123,28 @@ Each remaining yuzu is listed by `check -v` with its class and reason.
 - References to the separate yuzu emulator in the user docs: Steam ROM Manager's
   "Nintendo Switch - Yuzu" preset, the `ikuzen/yuzu-hdr-multiplayer-dedicated` Docker image,
   the profile bug in earlier versions of yuzu, and a link into Eden's `src/yuzu` (compat).
-- _Placeholder: the libs, qt and android areas' kept names are added here._
+- `yuzu_meta` (NAND directory of installed raw CNMTs) and `.yuzu_save_size` (save-data size
+  file) (compat).
+- `YuzuFakeSsidForLdn`: the LDN SSID that other yuzu-based emulators match (compat).
+- `"yuzu Emulator"` as the Vulkan application and engine name: AMD's driver applies a
+  per-application profile to it (Eden #144 and #145) (compat).
+- `YUZU_DIR`, `LEGACY_PATH(Yuzu, YUZU)`, `YuzuDir`, `YuzuConfigDir`, `YuzuCacheDir` and the
+  "Yuzu" entry in `migration_worker.h`: the yuzu emulator's data directories that users import
+  from (compat).
+- `github.com/eden-emulator/yuzu-mod-archive`: the external mods URL (compat).
+- Comments about amiibo data and input mappings the yuzu emulator wrote (compat), "upstream
+  yuzu" and the yuzu PR #3173 link in the libraries, and Eden's old about text in the
+  translations (attribution).
+
+## Removed names
+
+- The Android help links to `yuzu-mirror.github.io/help/quickstart` (and `yuzu-emu.org` in
+  Arabic), a key and firmware dumping guide on another project's site. The five strings that
+  only held a link (`add_games_warning_help`, `install_prod_keys_warning_help`,
+  `install_firmware_warning_help`, `install_game_content_help_link`, `keys_missing_help`) are
+  gone with their `helpLinkId`/`warningHelpLinkId` uses. `applets_error_description` and
+  `loader_error_encrypted_keys_description` keep their text without the links, and
+  `loader_error_encrypted_roms_description` reads "Please redump your game cartridges or
+  installed titles." in English only, because its translations pointed at the guides. If an
+  upstream sync brings such a link back, `check --strict` lists it as removed: delete it the
+  same way. Don't point these strings at another site.

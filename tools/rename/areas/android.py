@@ -35,7 +35,7 @@ TEXT = [
 ]
 
 KEEP = [
-    (r"https://yuzu-(mirror\.github\.io|emu\.org)/help/quickstart", "compat",
-     "help links to the yuzu project's quickstart guide, another project's site",
+    (r"https://yuzu-(mirror\.github\.io|emu\.org)/help/quickstart[^\s\"<\\]*", "removed",
+     "link to the yuzu quickstart guide: delete the string and its helpLinkId use (docs/nx2/rename.md)",
      "src/android/app/src/main/res/values*/strings.xml"),
 ]

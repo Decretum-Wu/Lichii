@@ -4,7 +4,7 @@
 """Rename inherited yuzu naming to Lichii; see docs/nx2/rename.md.
 
 apply  rewrites tracked paths and text with every area under tools/rename/areas.
-check  lists what still says yuzu, by class: attribution, compat or pending.
+check  lists what still says yuzu, by class: attribution, compat, removed or pending.
 
 Both are idempotent, so a branch or an upstream merge can run apply again.
 """
@@ -178,8 +178,8 @@ def check(areas, verbose, strict):
             for m in (GLUE_TOKEN if external else WORD).finditer(line):
                 cls, reason = classify(line, path, m.start(), m.end(), keep)
                 counts[cls] += 1
-                if cls == "pending":
-                    pending.append(f"{path}:{no}: {line.strip()[:160]}")
+                if cls in ("pending", "removed"):
+                    pending.append(f"{path}:{no}: {line.strip()[:160]}" + (f"  [{reason}]" if reason else ""))
                 else:
                     reasons[(cls, reason)] += 1
     print(f"paths with yuzu: {len(paths)}")
