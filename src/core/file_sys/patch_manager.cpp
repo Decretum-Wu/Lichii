@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <optional>
 #include <span>
 
 #include "common/assert.h"
@@ -62,12 +63,34 @@ struct BuiltinPatch {
     size_t state_size = 0;
     // Another built-in this one contains; it is skipped once this one is applied.
     std::string_view replaces{};
+    // Applies only with NVIDIA DLSS on at this quality in docked mode, and is not listed in
+    // Add-Ons.
+    std::optional<Settings::NvidiaDlssQuality> dlss_quality{};
 };
+
+constexpr std::string_view MAX_RESOLUTION_NAME = "Max Resolution (built-in)";
 
 constexpr std::array<u8, 4> MAX_RESOLUTION_ORIGINAL{0xE8, 0x41, 0x00, 0x36};
 constexpr std::array<u8, 4> MAX_RESOLUTION_BRANCH{0x0F, 0x02, 0x00, 0x14};
 constexpr std::array MAX_RESOLUTION_RECORDS{
     BuiltinPatchRecord{0x805BD0, MAX_RESOLUTION_BRANCH, MAX_RESOLUTION_ORIGINAL},
+};
+
+// ProfessorTee's render scales (#903): Max Resolution's fixed-scale path returns 1.0 of 2560x1440
+// (main+0x806420: mov w9, #0x3f800000), which DLSS takes to 4K as Quality. The lower scales give
+// the other modes' render sizes.
+constexpr std::array<u8, 4> RENDER_SCALE_ONE{0x09, 0xF0, 0xA7, 0x52};         // 1.0
+constexpr std::array<u8, 4> RENDER_SCALE_BALANCED{0xE9, 0xEB, 0xA7, 0x52};    // 0.871, 2276x1280
+constexpr std::array<u8, 4> RENDER_SCALE_PERFORMANCE{0x09, 0xE8, 0xA7, 0x52}; // 0.75, 1920x1080
+constexpr std::array<u8, 4> RENDER_SCALE_ULTRA{0x09, 0xE0, 0xA7, 0x52};       // 0.5, 1280x720
+constexpr std::array RENDER_BALANCED_RECORDS{
+    BuiltinPatchRecord{0x806420, RENDER_SCALE_BALANCED, RENDER_SCALE_ONE},
+};
+constexpr std::array RENDER_PERFORMANCE_RECORDS{
+    BuiltinPatchRecord{0x806420, RENDER_SCALE_PERFORMANCE, RENDER_SCALE_ONE},
+};
+constexpr std::array RENDER_ULTRA_RECORDS{
+    BuiltinPatchRecord{0x806420, RENDER_SCALE_ULTRA, RENDER_SCALE_ONE},
 };
 
 // RsMan-Dev's texture pool patch: stp x8, x9, [sp, #0x10] stores the graphics allocator's
@@ -119,7 +142,7 @@ constexpr std::array BUILTIN_PATCHES{
     // Ocarina of Time takes its "dynamic resolution disabled" path, so the 3D renders at full scale
     // instead of following the GPU-time controller down to its 480p floor.
     BuiltinPatch{
-        .name = "Max Resolution (built-in)",
+        .name = MAX_RESOLUTION_NAME,
         .title_id = 0x0400486024DEC000,
         .module = "main",
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
@@ -154,6 +177,32 @@ constexpr std::array BUILTIN_PATCHES{
         .records = DYNAMIC_FPS_RECORDS,
         .state_offset = 0x4E9FE00,
         .state_size = 16,
+    },
+    // The NVIDIA DLSS quality lowers Ocarina's render resolution under Max Resolution, since DLSS
+    // replaces the game's own 1440p -> 4K upscale and takes whatever the game renders.
+    BuiltinPatch{
+        .name = "DLSS Balanced render scale (built-in)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .records = RENDER_BALANCED_RECORDS,
+        .dlss_quality = Settings::NvidiaDlssQuality::Balanced,
+    },
+    BuiltinPatch{
+        .name = "DLSS Performance render scale (built-in)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .records = RENDER_PERFORMANCE_RECORDS,
+        .dlss_quality = Settings::NvidiaDlssQuality::Performance,
+    },
+    BuiltinPatch{
+        .name = "DLSS Ultra Performance render scale (built-in)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .records = RENDER_ULTRA_RECORDS,
+        .dlss_quality = Settings::NvidiaDlssQuality::UltraPerformance,
     },
 };
 
@@ -599,6 +648,20 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
             LOG_INFO(Loader, "    - Skipping \"{}\": included in an applied built-in patch",
                      patch.name);
             continue;
+        }
+        if (patch.dlss_quality) {
+#ifdef EGLANTINE_STREAMLINE
+            const bool wanted =
+                Settings::values.nvidia_dlss.GetValue() && Settings::IsDockedMode() &&
+                Settings::values.nvidia_dlss_quality.GetValue() == *patch.dlss_quality &&
+                std::find(disabled.cbegin(), disabled.cend(), MAX_RESOLUTION_NAME) ==
+                    disabled.cend();
+#else
+            constexpr bool wanted = false;
+#endif
+            if (!wanted) {
+                continue;
+            }
         }
         if (patch.build_id != build_id) {
             LOG_INFO(Loader, "    - Skipping \"{}\": build id {} is not {}", patch.name, build_id,
@@ -1244,7 +1307,7 @@ std::vector<Patch> PatchManager::GetPatches(VirtualFile update_raw) const {
     }
 
     for (const auto& patch : BUILTIN_PATCHES) {
-        if (patch.title_id != title_id) {
+        if (patch.title_id != title_id || patch.dlss_quality) {
             continue;
         }
         const auto is_disabled = [&](std::string_view name) {

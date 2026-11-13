@@ -931,7 +931,7 @@ bool OcarinaUpscaler::Record(VkImageView color, VkImageView depth, VkImageView t
                             VkExtent2D output_extent, VkExtent2D target_extent,
                             const Matrix& current, const Matrix& previous,
                             const OcarinaActorMesh& mesh, VkImage depth_image, u64 frame,
-                            std::array<f32, 2> jitter) {
+                            std::array<f32, 2> jitter, [[maybe_unused]] VkExtent2D depth_extent) {
     auto& state = *impl;
     if (state.last_frame == frame || state.Failed()) {
         return false;
@@ -1015,6 +1015,7 @@ bool OcarinaUpscaler::Record(VkImageView color, VkImageView depth, VkImageView t
             .reset = reset,
             .depth_inverted = false,
             .hdr = false,
+            .depth_size = depth_extent,
             .camera = StreamlineDlssUpscaler::Inputs::Camera{current, *transform},
         })) {
         state.scheduler.InvalidateState();
