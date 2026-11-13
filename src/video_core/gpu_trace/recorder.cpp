@@ -72,9 +72,6 @@ struct Recorder {
     /// Per physical page, the written byte range [low, high) as low | high << 16; 0 for none.
     std::vector<u32> dirty;
     std::vector<u64> dirty_pages;
-    /// Ranges noted before their store, recorded at the next command and again at the one after.
-    std::vector<std::pair<u64, u32>> late;
-    std::vector<std::pair<u64, u32>> late_again;
 };
 
 u32 MergeExtent(u32 extent, u32 low, u32 high) {
@@ -190,23 +187,15 @@ void FlushDirty(Recorder& r) {
     std::vector<std::pair<u64, u32>> ranges;
     {
         std::scoped_lock lock{r.dirty_mutex};
-        ranges.reserve(r.dirty_pages.size() + r.late_again.size());
+        ranges.reserve(r.dirty_pages.size());
         for (const u64 page : r.dirty_pages) {
             ranges.emplace_back(page, r.dirty[page]);
             r.dirty[page] = 0;
         }
         r.dirty_pages.clear();
-        ranges.insert(ranges.end(), r.late_again.begin(), r.late_again.end());
-        r.late_again = std::move(r.late);
-        r.late.clear();
     }
     std::ranges::sort(ranges);
-    for (size_t i = 0; i < ranges.size();) {
-        const u64 page = ranges[i].first;
-        u32 extent = 0;
-        for (; i < ranges.size() && ranges[i].first == page; ++i) {
-            extent = MergeExtent(extent, ranges[i].second & 0xffff, ranges[i].second >> 16);
-        }
+    for (const auto& [page, extent] : ranges) {
         const u64 physical = (page << PageBits) + (extent & 0xffff);
         r.writer->WriteMemory(physical, {r.backing + physical, (extent >> 16) - (extent & 0xffff)});
     }
@@ -274,8 +263,6 @@ void Release(Recorder& r) {
         r.tracked = {};
         r.dirty = {};
         r.dirty_pages = {};
-        r.late = {};
-        r.late_again = {};
         r.backing = nullptr;
         r.backing_size = 0;
     }
@@ -305,6 +292,10 @@ void Finish(Recorder& r) {
 
 /// On the GPU thread at a command boundary with no suspended channel.
 bool Snapshot(Recorder& r, Core::System& system) {
+    if (Settings::IsNceEnabled()) {
+        r.last_error = "GPU traces need the JIT CPU backend: NCE notes CPU writes before their store";
+        return false;
+    }
     auto& gpu = system.GPU();
     const auto channels = gpu.Channels();
     auto& split = GpuSplit::Get();
@@ -464,7 +455,7 @@ RecorderStatus GetRecorderStatus() {
     };
 }
 
-void NoteCpuWrite(const u8* pointer, size_t size, bool before_store) {
+void NoteCpuWrite(const u8* pointer, size_t size) {
     if (!g_recording.load(std::memory_order_relaxed) || size == 0) {
         return;
     }
@@ -485,9 +476,6 @@ void NoteCpuWrite(const u8* pointer, size_t size, bool before_store) {
             r.dirty_pages.push_back(page);
         }
         r.dirty[page] = MergeExtent(r.dirty[page], low, high);
-        if (before_store) {
-            r.late.emplace_back(page, low | (high << 16));
-        }
     }
 }
 
@@ -509,7 +497,7 @@ void NoteDeviceWrite(DAddr address, u64 size) {
         }
         const u64 begin = std::max<u64>(address, page);
         const u64 stop = std::min(end, page + PageSize);
-        NoteCpuWrite(r.backing + physical + (begin - page), stop - begin, true);
+        NoteCpuWrite(r.backing + physical + (begin - page), stop - begin);
     }
 }
 
