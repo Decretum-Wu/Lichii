@@ -26,7 +26,6 @@
 #include "video_core/gpu.h"
 #include "video_core/macro.h"
 #include "video_core/nx2_fast_draw.h"
-#include "video_core/nx2_list_grid.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/textures/texture.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -3226,9 +3225,6 @@ public:
                          u32 argument, bool is_last_call);
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending);
-    /// List-fed grid macros (nx2_list_grid.h): the markers of the data RAM, which the compute
-    /// engine shares and stores them in (KeplerCompute::FrontTakeListGrid).
-    Nx2ListGrid::GridMarker grid_marker;
 
     bool ShouldExecute() const {
         return execute_on;

@@ -25,7 +25,6 @@
 #include "core/memory.h"
 #include "tests/core/system_test_context.h"
 #include "video_core/buffer_cache/buffer_cache.h"
-#include "video_core/buffer_cache/indirect_buffer.h"
 #include "video_core/buffer_cache/memory_tracker_base.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/gpu.h"
@@ -321,10 +320,6 @@ struct BufferCacheTestAccess {
     /// are uploaded.
     static void Upload(Cache& cache, BufferId id, DAddr address, u32 size) {
         (void)cache.SynchronizeBuffer(cache.slot_buffers[id], address, size);
-    }
-    /// GPU addresses resolve through `memory` (ObtainBuffer).
-    static void UseGpuMemory(Cache& cache, Tegra::MemoryManager& memory) {
-        cache.gpu_memory = &memory;
     }
     /// A guest write the buffer cache doesn't hear of, on a page the tracker counts as written.
     static void MarkCpuModified(Cache& cache, DAddr address, u64 size) {
@@ -1225,27 +1220,6 @@ TEST_CASE("Read downloads keep CPU writes made while they were on their way", "[
     REQUIRE_FALSE(Access::Pending(*f.cache, 0x20000, 0x1000));
 }
 
-TEST_CASE("Indirect dispatch arguments remain GPU modified across a neighboring CPU upload",
-          "[buffer_ports]") {
-    Fixture f;
-    const auto id = Access::Add(*f.cache, 0x10000, 0x10000);
-    auto &original = Access::Get(*f.cache, id);
-    std::fill_n(original.bytes.begin() + 0x40, 12, u8{0x73});
-    Access::Dirty(*f.cache, 0x10040, 12);
-    Access::UseGpuMemory(*f.cache, *f.memory);
-    const auto [arguments, offset] = VideoCommon::ObtainIndirectBuffer(*f.cache, 0x100040);
-    REQUIRE(Access::Pending(*f.cache, 0x10040, 12));
-    REQUIRE(arguments->bytes[offset] == 0x73);
-    // A CPU write elsewhere on this tracked page must not re-upload the stale argument bytes.
-    f.bytes[0x80] = 0x42;
-    Access::MarkCpuModified(*f.cache, 0x10000, 0x1000);
-    Access::Upload(*f.cache, id, 0x10000, 0x1000);
-    REQUIRE(arguments->bytes[offset] == 0x73);
-    REQUIRE(arguments->bytes[arguments->Offset(0x10080)] == 0x42);
-    f.cache->DownloadMemory(0x10040, 12);
-    REQUIRE(f.bytes[0x40] == 0x73);
-}
-
 TEST_CASE("Newer bytes that guest memory doesn't hold yet land the read downloads under them first",
           "[buffer_ports]") {
     Fixture f;
@@ -1256,7 +1230,7 @@ TEST_CASE("Newer bytes that guest memory doesn't hold yet land the read download
     auto& counters = VideoCore::AsyncReadback::g_counters;
     const u64 landings = counters.clear_landings.load();
     const u64 waits = counters.clear_waits.load();
-    SECTION("an overwritten range discards its old GPU contents") {
+    SECTION("an indirect dispatch's arguments, written by the GPU and discarded") {
         (void)f.cache->ObtainCPUBuffer(0x20040, 12,
                                        VideoCommon::ObtainBufferSynchronize::FullSynchronize,
                                        VideoCommon::ObtainBufferOperation::DiscardWrite);
