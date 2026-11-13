@@ -52,6 +52,7 @@ struct Recorder {
     u32 presents = 0;
     std::vector<PendingPresent> pending_presents;
     std::unordered_set<size_t> address_spaces;
+    std::unordered_set<s32> channels;
     /// Device pages whose SMMU mapping and content are in the trace.
     std::unordered_set<u64> device_pages;
     /// Physical pages whose content is in the trace.
@@ -66,9 +67,22 @@ struct Recorder {
     std::mutex dirty_mutex;
     const u8* backing = nullptr;
     size_t backing_size = 0;
-    std::vector<u8> dirty_bits;
+    /// Physical pages in the trace: only their CPU writes are recorded.
+    std::vector<u8> tracked;
+    /// Per physical page, the written byte range [low, high) as low | high << 16; 0 for none.
+    std::vector<u32> dirty;
     std::vector<u64> dirty_pages;
+    /// Ranges noted before their store, recorded at the next command and again at the one after.
+    std::vector<std::pair<u64, u32>> late;
+    std::vector<std::pair<u64, u32>> late_again;
 };
+
+u32 MergeExtent(u32 extent, u32 low, u32 high) {
+    if (extent == 0) {
+        return low | (high << 16);
+    }
+    return std::min(extent & 0xffff, low) | (std::max(extent >> 16, high) << 16);
+}
 
 Recorder& Get() {
     static Recorder recorder;
@@ -149,6 +163,10 @@ void CaptureRuns(Recorder& r, std::span<const SmmuMapRecord> runs) {
                 continue;
             }
             r.physical_pages[page] = true;
+            {
+                std::scoped_lock lock{r.dirty_mutex};
+                r.tracked[page] = 1;
+            }
             const std::span<const u8> bytes{r.backing + physical, PageSize};
             if (!IsZero(bytes)) {
                 r.writer->WriteMemory(physical, bytes);
@@ -166,21 +184,31 @@ void WriteGmmuMap(Recorder& r, const Tegra::MemoryManager& manager, const MapLog
                                      static_cast<u8>(entry.sparse ? 1 : 0)});
 }
 
-/// The CPU writes since the last command, as they are now.
+/// The CPU writes since the last command, as they are now: only the bytes written, so GPU
+/// results elsewhere on the page stay the replay's own.
 void FlushDirty(Recorder& r) {
-    std::vector<u64> pages;
+    std::vector<std::pair<u64, u32>> ranges;
     {
         std::scoped_lock lock{r.dirty_mutex};
-        pages.swap(r.dirty_pages);
-        for (const u64 page : pages) {
-            r.dirty_bits[page] = 0;
+        ranges.reserve(r.dirty_pages.size() + r.late_again.size());
+        for (const u64 page : r.dirty_pages) {
+            ranges.emplace_back(page, r.dirty[page]);
+            r.dirty[page] = 0;
         }
+        r.dirty_pages.clear();
+        ranges.insert(ranges.end(), r.late_again.begin(), r.late_again.end());
+        r.late_again = std::move(r.late);
+        r.late.clear();
     }
-    std::ranges::sort(pages);
-    for (const u64 page : pages) {
-        const u64 physical = page << PageBits;
-        r.physical_pages[page] = true;
-        r.writer->WriteMemory(physical, {r.backing + physical, PageSize});
+    std::ranges::sort(ranges);
+    for (size_t i = 0; i < ranges.size();) {
+        const u64 page = ranges[i].first;
+        u32 extent = 0;
+        for (; i < ranges.size() && ranges[i].first == page; ++i) {
+            extent = MergeExtent(extent, ranges[i].second & 0xffff, ranges[i].second >> 16);
+        }
+        const u64 physical = (page << PageBits) + (extent & 0xffff);
+        r.writer->WriteMemory(physical, {r.backing + physical, (extent >> 16) - (extent & 0xffff)});
     }
 }
 
@@ -243,14 +271,18 @@ void Release(Recorder& r) {
     r.cached.clear();
     {
         std::scoped_lock lock{r.dirty_mutex};
-        r.dirty_bits = {};
+        r.tracked = {};
+        r.dirty = {};
         r.dirty_pages = {};
+        r.late = {};
+        r.late_again = {};
         r.backing = nullptr;
         r.backing_size = 0;
     }
     r.writer.reset();
     r.pending_presents.clear();
     r.address_spaces.clear();
+    r.channels.clear();
     r.device_pages.clear();
     r.physical_pages = {};
     r.presents = 0;
@@ -338,7 +370,8 @@ bool Snapshot(Recorder& r, Core::System& system) {
         auto& memory = system.DeviceMemory().buffer;
         r.backing = memory.BackingBasePointer();
         r.backing_size = memory.BackingSize();
-        r.dirty_bits.assign(r.backing_size >> PageBits, 0);
+        r.tracked.assign(r.backing_size >> PageBits, 0);
+        r.dirty.assign(r.backing_size >> PageBits, 0);
     }
     r.physical_pages.assign(r.backing_size >> PageBits, false);
     g_recording = true;
@@ -353,6 +386,7 @@ bool Snapshot(Recorder& r, Core::System& system) {
                            ChannelRecord{channel->bind_id,
                                          static_cast<u32>(channel->memory_manager->GetID()),
                                          channel->program_id});
+        r.channels.insert(channel->bind_id);
         StateAccess::CaptureChannel(*r.writer, *channel);
         any_channel = channel.get();
     }
@@ -430,7 +464,7 @@ RecorderStatus GetRecorderStatus() {
     };
 }
 
-void NoteCpuWrite(const u8* pointer, size_t size) {
+void NoteCpuWrite(const u8* pointer, size_t size, bool before_store) {
     if (!g_recording.load(std::memory_order_relaxed) || size == 0) {
         return;
     }
@@ -439,13 +473,54 @@ void NoteCpuWrite(const u8* pointer, size_t size) {
     if (pointer < r.backing || pointer >= r.backing + r.backing_size) {
         return;
     }
-    const u64 offset = static_cast<u64>(pointer - r.backing);
-    const u64 last = std::min<u64>(offset + size, r.backing_size) - 1;
-    for (u64 page = offset >> PageBits; page <= last >> PageBits; ++page) {
-        if (r.dirty_bits[page] == 0) {
-            r.dirty_bits[page] = 1;
+    const u64 begin = static_cast<u64>(pointer - r.backing);
+    const u64 end = std::min<u64>(begin + size, r.backing_size);
+    for (u64 page = begin >> PageBits; (page << PageBits) < end; ++page) {
+        if (r.tracked[page] == 0) {
+            continue;
+        }
+        const u32 low = static_cast<u32>(std::max(begin, page << PageBits) - (page << PageBits));
+        const u32 high = static_cast<u32>(std::min(end, (page + 1) << PageBits) - (page << PageBits));
+        if (r.dirty[page] == 0) {
             r.dirty_pages.push_back(page);
         }
+        r.dirty[page] = MergeExtent(r.dirty[page], low, high);
+        if (before_store) {
+            r.late.emplace_back(page, low | (high << 16));
+        }
+    }
+}
+
+void NoteDeviceWrite(DAddr address, u64 size) {
+    if (!g_recording.load(std::memory_order_relaxed) || size == 0) {
+        return;
+    }
+    auto& r = Get();
+    Core::System* const system = r.system;
+    if (system == nullptr) {
+        return;
+    }
+    auto& smmu = system->Host1x().MemoryManager();
+    const u64 end = address + size;
+    for (u64 page = address & ~(PageSize - 1); page < end; page += PageSize) {
+        const u64 physical = smmu.GetPhysicalRawAddressFromDAddr(page);
+        if (physical == 0) {
+            continue;
+        }
+        const u64 begin = std::max<u64>(address, page);
+        const u64 stop = std::min(end, page + PageSize);
+        NoteCpuWrite(r.backing + physical + (begin - page), stop - begin, true);
+    }
+}
+
+void OnGpuShutdown() {
+    auto& r = Get();
+    std::scoped_lock lock{r.mutex};
+    if (r.writer) {
+        LOG_INFO(HW_GPU, "GPU trace: the GPU stopped, ending the recording");
+        Finish(r);
+    } else if (g_requested) {
+        Release(r);
     }
 }
 
@@ -521,6 +596,13 @@ void OnCommand(Core::System& system, bool channels_pending, const Tegra::Command
             Release(r);
             return;
         }
+    }
+    if (submit != nullptr && !r.channels.contains(channel)) {
+        LOG_WARNING(HW_GPU, "GPU trace: channel {} began after the snapshot, ending the recording",
+                    channel);
+        WritePresents(r);
+        Finish(r);
+        return;
     }
     FlushDirty(r);
     if (submit != nullptr) {
