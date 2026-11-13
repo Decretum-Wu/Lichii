@@ -46,7 +46,7 @@ TEST_CASE("Numeric name info includes terminators in capacity checks", "[nameinf
     CHECK(Text(exact.host) == "255.255.255.255");
     CHECK(Text(exact.service) == "65535");
 
-    for (const auto [host_size, service_size] :
+    for (const auto& [host_size, service_size] :
          std::array<std::pair<std::size_t, std::size_t>, 3>{{{15, 6}, {16, 5}, {1, 6}}}) {
         const auto small = ResolveNumericNameInfo(largest, 2 | 8, host_size, service_size);
         CHECK(small.error == GetAddrInfoError::OVERFLOW_);
