@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <thread>
 #include <chrono>
 #include <condition_variable>
@@ -1917,6 +1918,7 @@ public:
             {1, &INx2Vi2Session::ReturnOne, "Unknown1"},
             {3, &INx2Vi2Session::ReturnOne, "GetDisplayCount (guessed)"},
             {5, &INx2Vi2Session::GetTimestampRecorderCount, "GetTimestampRecorderCount (guessed)"},
+            {53, &INx2Vi2Session::GetRecordedTimestamps, "GetRecordedTimestamps"},
             {11, &INx2Vi2Session::ReturnEvent, "Unknown11"},
             {31, &INx2Vi2Session::AcquireNativeEvent, "AcquireNativeEvent"},
             {32, &INx2Vi2Session::DuplicateNativeEvent, "DuplicateNativeEvent"},
@@ -2080,6 +2082,9 @@ private:
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank(w[12], ctx.GetThread().GetOwnerProcess());
         const auto paced = std::chrono::steady_clock::now();
+        if (const u32 recorder = w[18] & 0xf; recorder != 0) {
+            m_recorded_ticks[recorder - 1] = system.CoreTiming().GetClockTicks();
+        }
         if (const auto* const process = system.ApplicationProcess(); process != nullptr) {
             UpdateFrameInterval(*process, entered);
         }
@@ -2898,6 +2903,30 @@ private:
         TipcReplyWords(ctx, {7});
     }
 
+    // 53(B buffer, u32 recorder, u64 checkpoint bits, u64 max count): one u64 tick per checkpoint
+    // bit, in bit order, then the u64 byte count written and a u8 "still pending". A present names
+    // its recorder in word 18 (bits 0-3, recorder + 1). nn::vi::ListFrameHistory reports a frame as
+    // shown only once its recorder has a tick, and Unreal's frame flip tracking waits for that:
+    // Orbitals froze after the Unreal logo and aborted on its 70 s render fence timeout while this
+    // replied nothing.
+    void GetRecordedTimestamps(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u32 recorder = w[5];
+        const u64 checkpoints = (u64{w[6]} | (u64{w[7]} << 32)) & 0x1f;
+        const u64 max_count = u64{w[8]} | (u64{w[9]} << 32);
+        if (recorder >= m_recorded_ticks.size() || !m_recorded_ticks[recorder]) {
+            TipcReplyWords(ctx, {0, 0, 1});
+            return;
+        }
+        std::vector<u64> ticks(std::min<u64>(std::popcount(checkpoints), max_count),
+                               *m_recorded_ticks[recorder]);
+        const size_t size = std::min(ticks.size() * sizeof(u64), ctx.GetWriteBufferSize(0));
+        if (size != 0) {
+            ctx.WriteBufferB(ticks.data(), size, 0);
+        }
+        TipcReplyWords(ctx, {static_cast<u32>(size), 0, 0});
+    }
+
     void ReturnEvent(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:vi2 TIPC {} [2]={:#x} [3]={:#x}, returning an event",
                     ctx.GetCommand(), ctx.CommandBuffer()[2], ctx.CommandBuffer()[3]);
@@ -3083,6 +3112,7 @@ private:
     std::shared_ptr<VsyncState> m_vsync = std::make_shared<VsyncState>();
     std::shared_ptr<Core::Timing::EventType> m_vsync_timer;
     u64 m_presents{};
+    std::array<std::optional<u64>, 15> m_recorded_ticks{}; ///< 53's recorders, by present word 18
     u64 m_shown_layout{}; // image and crop size last logged
     u64 m_logged_hdr_output{~u64{}}; // HDR status last logged
     u64 m_hdr_generation{};           // DisplayHdrMonitor generation NotifyHdrChange last saw
