@@ -24,6 +24,18 @@ TEST_CASE("Switch 2 RAM minimum: managed memory below 12 GiB", "[common]") {
     CHECK_FALSE(IsBelowSwitch2RamMinimum(HostRam{14_GiB + 500_MiB, false}));
 }
 
+TEST_CASE("Cold hints only when the host is short of RAM", "[common]") {
+    using Common::IsLowOnMemory;
+    CHECK_FALSE(IsLowOnMemory(0, 32_GiB)); // unknown
+    CHECK_FALSE(IsLowOnMemory(18_GiB, 32_GiB));
+    CHECK_FALSE(IsLowOnMemory(5_GiB, 32_GiB));
+    CHECK(IsLowOnMemory(3_GiB, 32_GiB));
+    CHECK_FALSE(IsLowOnMemory(5_GiB, 16_GiB));
+    CHECK(IsLowOnMemory(3_GiB, 16_GiB));
+    CHECK(IsLowOnMemory(1_GiB, 8_GiB));
+    CHECK_FALSE(IsLowOnMemory(2_GiB + 1, 8_GiB));
+}
+
 TEST_CASE("Switch 2 RAM minimum: unknown RAM gives no warning", "[common]") {
     CHECK_FALSE(IsBelowSwitch2RamMinimum(HostRam{0, true}));
     CHECK_FALSE(IsBelowSwitch2RamMinimum(HostRam{0, false}));
