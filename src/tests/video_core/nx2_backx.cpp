@@ -113,3 +113,32 @@ TEST_CASE("BackX gather: gathering only when a manager shows a write loses none"
         REQUIRE(checks > 0);
     }
 }
+
+TEST_CASE("BackX gather: a write crossing a 2 KiB page is collected whole and shows",
+          "[core][nx2_backx]") {
+    // A transform covers 2 KiB in 64-byte bits. A write past its page's 32 bits must still show
+    // (MayHavePending) and be gathered to its last byte.
+    Core::GPUDirtyMemoryManager manager;
+    std::vector<std::pair<PAddr, size_t>> gathered;
+    std::function<void(PAddr, size_t)> callback = [&](PAddr address, size_t size) {
+        gathered.emplace_back(address, size);
+    };
+    for (const auto& [offset, size] :
+         {std::pair<u64, u64>{600, 1960}, {0, 4096}, {1000, 3000}, {2047, 2}, {64, 2048}}) {
+        CAPTURE(offset, size);
+        manager.Collect(0x7000, 0x40); // Something already collected on another page
+        manager.Collect(0x10000 + offset, size);
+        REQUIRE(manager.MayHavePending());
+        gathered.clear();
+        manager.Gather(callback);
+        std::set<u64> blocks;
+        for (const auto& [address, length] : gathered) {
+            AddBlocks(blocks, address, length);
+        }
+        for (u64 block = (0x10000 + offset) >> 6; block <= (0x10000 + offset + size - 1) >> 6;
+             ++block) {
+            REQUIRE(blocks.contains(block));
+        }
+        REQUIRE_FALSE(manager.MayHavePending());
+    }
+}
