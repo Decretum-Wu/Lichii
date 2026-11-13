@@ -396,12 +396,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "files internally."));
     INSERT(Settings, precache_shaders, tr("Precache shaders before game start:"),
            tr("Builds shaders on the loading screen, on every CPU thread, so they don't stutter "
-              "the first time the game uses them: the compute shaders found in the game files, "
-              "and the shaders saved by earlier play sessions that the normal shader loading "
-              "leaves for later. The first launch reads the game files and takes a few minutes; "
-              "later launches only build what is new, until the GPU driver changes. The loading "
-              "screen has a Skip button.\nAsk asks at launch while the game has never been "
-              "precached."));
+              "the first time the game uses them: the compute shaders found in the game files. "
+              "The first launch reads the game files and takes a few minutes; later launches "
+              "only build what is new, until the GPU driver changes. The loading screen has a "
+              "Skip button.\nAsk asks at launch while the game has never been precached."));
     INSERT(Settings, build_all_cached_shaders, tr("Build all cached shaders before game start"),
            tr("Builds every shader saved by earlier play sessions on the loading screen and keeps "
               "them built, so places you visited long ago don't stutter. Without it, only the "

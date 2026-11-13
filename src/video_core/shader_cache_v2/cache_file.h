@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -29,6 +30,13 @@ struct LogFile {
 /// ignores one cut off by an append still in progress. A missing file reads as empty. See ParseLog
 /// for `for_each`.
 [[nodiscard]] LogFile ReadLogFile(const std::filesystem::path& file, const ForEach& for_each = {});
+
+/// The payload of the record of `kind` and `key` that a read of the log found at `offset`, read
+/// again from the file the same way. Empty when the file no longer holds it there intact (a
+/// compaction rewrote it).
+[[nodiscard]] std::optional<std::vector<u8>> ReadRecordPayload(const std::filesystem::path& file,
+                                                               RecordKind kind, u64 key,
+                                                               u64 offset, u64 payload_size);
 
 enum class WriteResult {
     Written,

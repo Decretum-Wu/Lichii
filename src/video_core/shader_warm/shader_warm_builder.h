@@ -9,7 +9,6 @@
 #include <optional>
 #include <stop_token>
 #include <string>
-#include <unordered_set>
 
 #include "common/common_types.h"
 #include "common/settings_enums.h"
@@ -110,30 +109,8 @@ bool TakeWarmBeforeStart();
 void RequestSkipWarm();
 bool TakeSkipWarm();
 
-/// The GPU driver, device and pipeline cache version pipelines were precached for.
-struct DriverStamp {
-    u32 driver{};
-    u32 device_id{};
-    u32 cache_version{};
-
-    bool operator==(const DriverStamp&) const = default;
-};
-
-/// The title's list of cached graphics pipelines an earlier precache built
-/// (<shader dir>/<title id>/precache-graphics.bin).
-std::filesystem::path PrecachedPipelinesPath(u64 title_id);
-
-/// The pipeline key hashes in `file`, empty when there is none or it was written for another
-/// driver, device or cache version.
-std::unordered_set<u64> ReadPrecachedPipelines(const std::filesystem::path& file,
-                                               const DriverStamp& stamp);
-
-/// Writes `hashes` for `stamp` to `file`. Returns false when it cannot be written.
-bool WritePrecachedPipelines(const std::filesystem::path& file, const DriverStamp& stamp,
-                             const std::unordered_set<u64>& hashes);
-
 /// Removes the title's precache file, its marker and count, the list of precached graphics
-/// pipelines and a leftover temporary file (rebuild or delete from the UI). Returns false when a file exists but cannot be removed, with
+/// pipelines older builds kept and a leftover temporary file (rebuild or delete from the UI). Returns false when a file exists but cannot be removed, with
 /// the reason in `error` when given.
 bool DeleteWarmFiles(u64 title_id, std::string* error = nullptr);
 
