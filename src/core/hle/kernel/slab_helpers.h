@@ -149,8 +149,10 @@ public:
     virtual void Destroy(KernelCore& kernel) override {
         const bool is_initialized = this->IsInitialized();
         uintptr_t arg = 0;
-        if (is_initialized) {
+        if (this->is_linked()) {
             kernel.ObjectListContainer().Unregister(this);
+        }
+        if (is_initialized) {
             arg = this->GetPostDestroyArgument();
             this->Finalize(kernel);
         }
