@@ -448,9 +448,8 @@ BugBundle::Result BugBundle::Write(std::string_view description) {
         if (path.empty() || !std::filesystem::exists(path)) {
             return;
         }
-        const std::vector<u8> raw = ReadFile(path);
-        const std::string text = Redact(std::string{raw.begin(), raw.end()});
-        auto [log, note] = TrimmedLog({text.begin(), text.end()});
+        auto [trimmed, note] = TrimmedLog(ReadFile(path));
+        const std::vector<u8> log = Bytes(Redact(std::string{trimmed.begin(), trimmed.end()}));
         if (path.filename() != "eden_log.txt" && path.filename() != "eden_log.txt.old.txt") {
             note += fmt::format("{}from {}", note.empty() ? "" : "; ", path.filename().string());
         }
