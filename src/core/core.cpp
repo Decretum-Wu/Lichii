@@ -398,6 +398,21 @@ struct System::Impl {
         return SystemResultStatus::Success;
     }
 
+    SystemResultStatus InitializeForGpuReplay(System& system, Frontend::EmuWindow& emu_window,
+                                              u64 program_id) {
+        if (const auto result = InitializeKernel(system); result != SystemResultStatus::Success) {
+            return result;
+        }
+        host1x_core.emplace(system);
+        VideoCore::CreateGPU(gpu_core, emu_window, system);
+        if (!gpu_core) {
+            return SystemResultStatus::ErrorVideoCore;
+        }
+        is_powered_on = true;
+        perf_stats.emplace(program_id);
+        return SystemResultStatus::Success;
+    }
+
     SystemResultStatus SetupForApplicationProcess(System& system, Frontend::EmuWindow& emu_window) {
         host1x_core.emplace(system);
         VideoCore::CreateGPU(gpu_core, emu_window, system);
@@ -807,6 +822,11 @@ bool System::GetNVDECActive() {
 
 void System::InitializeDebugger() {
     impl->InitializeDebugger(*this, Settings::values.gdbstub_port.GetValue());
+}
+
+SystemResultStatus System::InitializeForGpuReplay(Frontend::EmuWindow& emu_window,
+                                                  u64 program_id) {
+    return impl->InitializeForGpuReplay(*this, emu_window, program_id);
 }
 
 SystemResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::string& filepath,

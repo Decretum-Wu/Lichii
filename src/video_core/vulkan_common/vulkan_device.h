@@ -566,9 +566,12 @@ FN_MAX_LIMIT_LIST
         return is_warp_potentially_bigger;
     }
 
-    /// Returns true if the device can be forced to use the guest warp size.
+    /// Returns true if the device can be forced to use the guest warp size. Lavapipe's
+    /// subgroups are 8 wide and can't be forced to 32.
     bool IsGuestWarpSizeSupported(VkShaderStageFlagBits stage) const {
-        return properties.subgroup_size_control.requiredSubgroupSizeStages & stage;
+        const auto& control = properties.subgroup_size_control;
+        return (control.requiredSubgroupSizeStages & stage) != 0 &&
+               control.minSubgroupSize <= GuestWarpSize && GuestWarpSize <= control.maxSubgroupSize;
     }
 
     /// Returns true if the device supports the provided subgroup feature.

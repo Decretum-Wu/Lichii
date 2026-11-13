@@ -35,6 +35,10 @@ namespace Core {
 class System;
 }
 
+namespace VideoCommon::GpuTrace {
+struct StateAccess;
+}
+
 namespace Tegra {
 class MemoryManager;
 }
@@ -62,6 +66,8 @@ namespace Tegra::Engines {
 #define MAXWELL3D_REG_INDEX(field_name) (offsetof(Maxwell3D::Regs, field_name) / sizeof(u32))
 
 class Maxwell3D final : public EngineInterface {
+    friend struct ::VideoCommon::GpuTrace::StateAccess;
+
 public:
     explicit Maxwell3D(MemoryManager& memory_manager);
     ~Maxwell3D();

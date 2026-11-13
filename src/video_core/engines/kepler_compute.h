@@ -33,6 +33,10 @@ namespace VideoCommon {
 class GpuSplit;
 }
 
+namespace VideoCommon::GpuTrace {
+struct StateAccess;
+}
+
 namespace Tegra {
 class MemoryManager;
 }
@@ -59,6 +63,8 @@ extern std::atomic<u32> g_nx2_trace_draws_after_upscale;
     (offsetof(Tegra::Engines::KeplerCompute::LaunchParams, field_name) / sizeof(u32))
 
 class KeplerCompute final : public EngineInterface {
+    friend struct ::VideoCommon::GpuTrace::StateAccess;
+
 public:
     explicit KeplerCompute(MemoryManager& memory_manager);
     ~KeplerCompute();
