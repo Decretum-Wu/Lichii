@@ -139,13 +139,14 @@ LegacyCacheMigration MigrateLegacyPipelineCache(const std::filesystem::path& dir
         }
 
         // The second pass copies the records the first kept. A source another process wrote in
-        // between no longer matches the offsets: this one is tried again on the next boot.
+        // between no longer matches the offsets. The migration fails then, as when the log is
+        // busy, rather than falling back to an older source that would shadow this one.
         std::ifstream kept_source(source, std::ios::binary);
         if (!kept_source.is_open() ||
             std::filesystem::file_size(source, error) != source_size ||
             std::filesystem::last_write_time(source, error) != source_mtime) {
             builder.Discard();
-            continue;
+            return {.failed = true};
         }
         std::vector<u8> bytes;
         bool appended{true};
