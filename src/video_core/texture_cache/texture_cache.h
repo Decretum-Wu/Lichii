@@ -468,15 +468,17 @@ void TextureCache<P>::TickFrame() {
                         if (spill_collect_tick == 0) {
                             spill_collect_tick = frame_tick + 1;
                         }
+                        // The forced collects run only on frames that spill, so a sparse
+                        // episode may still have some left after the grace period: use them
+                        // all before raising the margin.
                         const u64 since = frame_tick + 1 - spill_collect_tick;
-                        if (since < SpillGraceFrames) {
-                            if (spill_forced_collects < MaxSpillCollects &&
-                                since >= spill_forced_collects * SpillCollectSpacing) {
+                        if (spill_forced_collects < MaxSpillCollects) {
+                            if (since >= spill_forced_collects * SpillCollectSpacing) {
                                 ++spill_forced_collects;
                                 ++spill_log_collects;
                                 spill_collect = true;
                             }
-                        } else {
+                        } else if (since >= SpillGraceFrames) {
                             const u64 target = (std::min)(spill_window_bytes + 128_MiB, 768_MiB);
                             if (target > spill_margin) {
                                 spill_margin = target;
