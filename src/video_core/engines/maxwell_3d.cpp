@@ -785,8 +785,9 @@ void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 
         dirty.flags = flags_before;
         // Other threads break fast draws too (fences, maps), into the same serial and last
         // break: mark the last break, and judge only a register break this thread left there or
-        // the mark left alone. Restored when untouched.
-        constexpr u32 unset = static_cast<u32>(FastDraw::Reason::Count);
+        // the mark left alone. Restored when untouched. The mark is a register break of no
+        // register, so a draw that reads it meanwhile counts it in range.
+        constexpr u32 unset = static_cast<u32>(FastDraw::Reason::Register) | 0xffffff00u;
         const u32 previous = FastDraw::g_last_break.exchange(unset, std::memory_order_relaxed);
         one_by_one();
         u32 last = unset;
