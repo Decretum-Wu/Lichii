@@ -1113,11 +1113,12 @@ bool OcarinaUpscaler::Record(VkImageView color, VkImageView depth, VkImageView t
 VideoCommon::OcarinaUpscaleBackend ResolveOcarinaUpscaler(const Device& device) {
     const char* value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
     bool dlss_available = false;
-    bool render_scaled = false;
 #ifdef EGLANTINE_STREAMLINE
     dlss_available = Streamline::IsDlssAvailable();
-    render_scaled = Settings::OcarinaDlssRenderScale().has_value();
 #endif
+    // Balanced's scene is padded, which only DLSS takes.
+    const auto scale = Settings::AppliedOcarinaRenderScale();
+    const bool render_scaled = scale && *scale != Settings::NvidiaDlssQuality::Balanced;
     const auto backend = VideoCommon::SelectOcarinaUpscaler(
         Settings::values.ocarina_fsr.GetValue(), Settings::values.nvidia_dlss.GetValue(),
         dlss_available, render_scaled, value ? value : "");

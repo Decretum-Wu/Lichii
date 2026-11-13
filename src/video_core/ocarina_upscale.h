@@ -9,7 +9,7 @@ namespace VideoCommon {
 
 enum class OcarinaUpscaleBackend { Native, Fsr, Dlss };
 
-/// render_scaled: the DLSS quality shrank the scene (Settings::OcarinaDlssRenderScale), so FSR 3.1
+/// render_scaled: a DLSS render-scale patch shrank the scene to a size FSR 3.1 takes, so FSR 3.1
 /// reconstructs it when DLSS can't run.
 constexpr OcarinaUpscaleBackend SelectOcarinaUpscaler(bool fsr_enabled, bool dlss_enabled,
                                                     bool dlss_available, bool render_scaled,

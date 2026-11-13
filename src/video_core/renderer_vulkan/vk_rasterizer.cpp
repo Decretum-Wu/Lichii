@@ -472,10 +472,8 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
-#ifdef EGLANTINE_STREAMLINE
     oot_performance_scale =
-        Settings::OcarinaDlssRenderScale() == Settings::NvidiaDlssQuality::Performance;
-#endif
+        Settings::AppliedOcarinaRenderScale() == Settings::NvidiaDlssQuality::Performance;
 }
 
 RasterizerVulkan::~RasterizerVulkan() {

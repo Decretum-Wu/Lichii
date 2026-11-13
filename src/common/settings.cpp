@@ -90,6 +90,7 @@ Values values;
 
 namespace {
 std::atomic<u32> nvidia_dlss_runtime_options{};
+std::atomic<u32> applied_ocarina_render_scale{};
 }
 
 void RefreshNvidiaDlssRuntimeSettings() {
@@ -107,6 +108,19 @@ std::optional<NvidiaDlssQuality> OcarinaDlssRenderScale() {
         return std::nullopt;
     }
     return quality;
+}
+
+void SetAppliedOcarinaRenderScale(std::optional<NvidiaDlssQuality> quality) {
+    applied_ocarina_render_scale.store(quality ? static_cast<u32>(*quality) + 1 : 0,
+                                       std::memory_order_relaxed);
+}
+
+std::optional<NvidiaDlssQuality> AppliedOcarinaRenderScale() {
+    const u32 value = applied_ocarina_render_scale.load(std::memory_order_relaxed);
+    if (value == 0) {
+        return std::nullopt;
+    }
+    return static_cast<NvidiaDlssQuality>(value - 1);
 }
 
 NvidiaDlssRuntimeSettings GetNvidiaDlssRuntimeSettings() {

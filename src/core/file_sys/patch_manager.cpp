@@ -576,6 +576,9 @@ std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualD
 }
 
 std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::string& name) const {
+    if (name == "main") {
+        Settings::SetAppliedOcarinaRenderScale(std::nullopt);
+    }
     if (nso.size() < sizeof(Loader::NSOHeader)) {
         return nso;
     }
@@ -745,6 +748,9 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
                  patch.records.size(), name);
         if (!patch.replaces.empty()) {
             replaced.push_back(patch.replaces);
+        }
+        if (patch.dlss_quality) {
+            Settings::SetAppliedOcarinaRenderScale(patch.dlss_quality);
         }
     }
 

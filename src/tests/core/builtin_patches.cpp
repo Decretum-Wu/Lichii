@@ -458,6 +458,8 @@ TEST_CASE("Built-in DLSS render scale follows the NVIDIA DLSS quality", "[patch_
          }}) {
         Settings::values.nvidia_dlss_quality.SetValue(quality);
         CHECK(scale() == (DlssBuild ? word : ScaleOne));
+        CHECK(Settings::AppliedOcarinaRenderScale() ==
+              (DlssBuild && word != ScaleOne ? std::optional{quality} : std::nullopt));
     }
 
     Settings::values.nvidia_dlss_quality.SetValue(Quality::Performance);
@@ -469,6 +471,7 @@ TEST_CASE("Built-in DLSS render scale follows the NVIDIA DLSS quality", "[patch_
     Settings::values.nvidia_dlss.SetValue(true);
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution}};
     CHECK(scale() == ScaleOne);
+    CHECK_FALSE(Settings::AppliedOcarinaRenderScale());
 
     for (const auto& patch : context.Manager().GetPatches()) {
         CHECK(patch.name.find("render scale") == std::string::npos);
