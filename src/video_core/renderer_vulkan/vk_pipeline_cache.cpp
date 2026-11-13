@@ -1591,8 +1591,8 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                     return [this, &state, &built_one, key, entry = std::move(entry)]() mutable {
                         entry.pipeline->Build();
                         std::scoped_lock driver_lock{state.mutex};
+                        state.compute_built += entry.pipeline->IsBound() ? 1 : 0;
                         compute_cache.emplace(key, std::move(entry));
-                        ++state.compute_built;
                         built_one();
                     };
                 },
@@ -1634,8 +1634,8 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                             pipeline = std::move(pipeline)]() mutable {
                         pipeline->Build();
                         std::scoped_lock lock{state.mutex};
+                        state.graphics_built += pipeline->Failed() ? 0 : 1;
                         graphics_cache.emplace(key, std::move(pipeline));
-                        ++state.graphics_built;
                         built_one();
                     };
                 },
