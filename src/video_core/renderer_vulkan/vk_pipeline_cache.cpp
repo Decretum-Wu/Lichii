@@ -555,6 +555,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
     // A sixty-fourth of the RAM (16 GB: 256 MB), about 25 KB per evicted pipeline
     const u64 ram = Common::GetMemInfo().TotalPhysicalMemory;
     kept_stages = decltype(kept_stages){ram != 0 ? ram / 64 : u64{256} << 20};
+    if (Settings::values.use_vulkan_driver_pipeline_cache.GetValue() && !use_vulkan_pipeline_cache) {
+        LOG_INFO(Render_Vulkan, "Driver keeps its own pipeline cache, not saving a Vulkan one");
+    }
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
     const VkShaderStageFlags subgroup_stages{device.GetSubgroupSupportedStages()};
@@ -596,6 +599,18 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_separate_rounding_mode =
             float_control.roundingModeIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL,
         .support_fp16_denorm_preserve = float_control.shaderDenormPreserveFloat16 != VK_FALSE,
+        .support_fp16_rounding_rte =
+            device.IsFloat16Supported() && float_control.shaderRoundingModeRTEFloat16 != VK_FALSE,
+        .fp16_float_controls_shared_with_fp64 =
+            float_control.denormBehaviorIndependence ==
+                VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY ||
+            float_control.roundingModeIndependence ==
+                VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY,
+        .fp16_float_controls_independent_of_fp32 =
+            float_control.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE &&
+            float_control.roundingModeIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE,
+        .support_fp64_rounding_rte = float_control.shaderRoundingModeRTEFloat64 != VK_FALSE,
+        .support_fp64_denorm_preserve = float_control.shaderDenormPreserveFloat64 != VK_FALSE,
         .support_fp32_denorm_preserve = float_control.shaderDenormPreserveFloat32 != VK_FALSE,
         .support_fp16_denorm_flush = float_control.shaderDenormFlushToZeroFloat16 != VK_FALSE,
         .support_fp32_denorm_flush = float_control.shaderDenormFlushToZeroFloat32 != VK_FALSE,
@@ -667,6 +682,10 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .max_subgroup_size = device.GetMaxSubgroupSize(),
         .has_broken_robust =
             device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Pascal,
+        // Mesa MR 45092 ("radv: Clear stale vertex user SGPR state when binding mesh shaders"),
+        // in 26.2.5. Only GFX11+ is affected, but the workaround costs one SGPR read anywhere.
+        .has_broken_mesh_user_sgprs = driver_id == VK_DRIVER_ID_MESA_RADV &&
+                                      device.GetDriverVersion() < VK_MAKE_VERSION(26, 2, 5),
         .min_ssbo_alignment = device.GetStorageBufferAlignment(),
         .max_user_clip_distances = device.GetMaxUserClipDistances()
     };
@@ -676,6 +695,10 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         !profile.support_cooperative_hmma && device.IsCooperativeHmma16x16x16Supported();
     if (profile.support_cooperative_hmma_16x16x16) {
         LOG_INFO(Render_Vulkan, "Guest tensor operations run on 16x16x16 cooperative matrices");
+    }
+    if (profile.has_broken_mesh_user_sgprs) {
+        LOG_INFO(Render_Vulkan, "RADV before 26.2.5: native mesh shaders read the grid size to "
+                                "avoid the stale mesh user SGPR hang");
     }
 
     host_info = Shader::HostTranslateInfo{
@@ -2787,6 +2810,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             return nullptr;
         }
 
+        if (program.is_geometry_passthrough && previous_stage != nullptr &&
+            !host_info.support_geometry_shader_passthrough) {
+            // Emulated passthrough: only the previous stage's outputs can pass through. Copying all
+            // 32 generics exceeds AMD's 128 output components, and amdvlk fail-fasts instead of
+            // returning an error. The previous stage's legacy outputs are generics by now, so the
+            // ones they were mapped to are kept.
+            Shader::Maxwell::TrimGeometryPassthrough(program, previous_stage->info.stores);
+        }
         auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
         if (mesh_emulation && (program.stage == Shader::Stage::Mesh ||
                                program.stage == Shader::Stage::Task)) {
@@ -3121,13 +3152,18 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     // Shader cache v2: two or more stages translate at once on the shader jobs' CPU workers while
     // this thread waits. Only this thread may flush guest memory, as reading a texture descriptor
     // does, so the descriptor pool is flushed here first; with this thread waiting nothing can
-    // make it dirty again. A pool too large to flush on every miss translates here as before.
+    // make it dirty again. A pool too large to flush on every miss translates here as before
+    // (VideoCommon::MaxFlushedTexturePoolBytes), as does one running past the GPU address space,
+    // which FlushRegion would skip whole.
     if (std::ranges::count_if(graphics_key.unique_hashes, [](u64 hash) { return hash != 0; }) >=
         2) {
-        constexpr u64 MaxFlushedTexturePoolBytes = u64{1} << 20;
+        static_assert(sizeof(Tegra::Texture::TICEntry) == VideoCommon::TextureDescriptorBytes);
         const auto& tex_header = maxwell3d->regs.tex_header;
-        const u64 pool_bytes = (u64{tex_header.limit} + 1) * sizeof(Tegra::Texture::TICEntry);
-        if (pool_bytes <= MaxFlushedTexturePoolBytes) {
+        const u64 pool_bytes = VideoCommon::TexturePoolBytes(tex_header.limit);
+        const std::optional<u64> pool_last =
+            VideoCommon::TexturePoolLastAddress(tex_header.Address(), tex_header.limit);
+        if (VideoCommon::CanFlushTexturePool(tex_header.limit) && pool_last &&
+            gpu_memory->IsWithinGPUAddressRange(*pool_last)) {
             gpu_memory->FlushRegion(tex_header.Address(), pool_bytes);
             for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
                 if (graphics_key.unique_hashes[index] != 0) {

@@ -239,8 +239,16 @@ void MeshEpilogue(EmitContext& ctx) {
         return;
     }
     Barrier(ctx);
-    const Id count{ctx.OpUMin(ctx.U32[1], ctx.OpLoad(ctx.U32[1], ctx.mesh_primitive_count),
-                              ctx.Const(mesh.max_primitives))};
+    Id count{ctx.OpUMin(ctx.U32[1], ctx.OpLoad(ctx.U32[1], ctx.mesh_primitive_count),
+                        ctx.Const(mesh.max_primitives))};
+    if (Sirit::ValidId(ctx.mesh_num_workgroups)) {
+        // The grid size is never zero while a workgroup runs, so the count doesn't change; the
+        // read only has to survive the driver's optimisations (see DefineMesh).
+        const Id groups{ctx.OpCompositeExtract(
+            ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.mesh_num_workgroups), 0U)};
+        count = ctx.OpSelect(ctx.U32[1], ctx.OpIEqual(ctx.U1, groups, ctx.u32_zero_value),
+                             ctx.u32_zero_value, count);
+    }
     const Id max_vertices{ctx.Const(mesh.max_vertices)};
     // Marker for OpSetMeshOutputsEXT max_vertices, count (PatchMeshInstructions).
     ctx.OpStore(max_vertices, count);

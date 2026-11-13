@@ -184,6 +184,14 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setAttribute(Qt::AA_DontCheckOpenGLContextThreadAffinity);
 
 #ifdef _WIN32
+    // A native window (the render widget's, for the graphics surface) would otherwise make its
+    // siblings native too: the loading screen and the game list, next to GRenderWindow. In
+    // single-window borderless fullscreen those cover the main window, which Qt then no longer
+    // repaints (see RenderWidget in bootmanager.cpp).
+    QCoreApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
+#endif
+
+#ifdef _WIN32
     QApplication::setStyle(QStringLiteral("windowsvista"));
 #endif
 
