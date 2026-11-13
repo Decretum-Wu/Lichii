@@ -6,6 +6,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -795,6 +796,41 @@ TEST_CASE("Prebuilds built in the background are taken without building again",
         REQUIRE((pipeline != nullptr) == (key % 4 != 0));
     }
     REQUIRE(builds == 20);
+}
+
+TEST_CASE("A prebuild reports what became of its builds once all have ended",
+          "[video_core][shader_jobs]") {
+    ShaderJobScheduler scheduler{Config(1, 1)};
+    Gate gate;
+    const auto blocker = Block(scheduler, gate);
+    std::atomic<int> builds{};
+    TestPrebuild prebuild{scheduler};
+    REQUIRE(prebuild.Add(0, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
+    REQUIRE(prebuild.Add(1, 0, 0, [] { return std::unique_ptr<TestPipeline>{}; }));
+    REQUIRE(prebuild.Add(2, 0, 0, [&] { return std::make_unique<TestPipeline>(builds, true); }));
+    REQUIRE(prebuild.Add(3, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
+
+    // Taken while queued: built here, and how long that took is given
+    std::optional<std::chrono::steady_clock::duration> waited;
+    REQUIRE(prebuild.Take(3, &waited) != nullptr);
+    REQUIRE(waited.has_value());
+    REQUIRE_FALSE(prebuild.Finished().has_value());
+
+    gate.Open();
+    scheduler.RunOrWait(blocker);
+    prebuild.Batch().Wait();
+    const auto outcome = prebuild.Finished();
+    REQUIRE(outcome.has_value());
+    REQUIRE(outcome->built == 2);
+    REQUIRE(outcome->failed == 2);
+    REQUIRE(outcome->taken_unfinished == 1);
+    REQUIRE(outcome->unclaimed == 1);
+
+    // Taken once built: no wait to report
+    std::optional<std::chrono::steady_clock::duration> no_wait;
+    REQUIRE(prebuild.Take(0, &no_wait) != nullptr);
+    REQUIRE_FALSE(no_wait.has_value());
+    REQUIRE(prebuild.Finished()->unclaimed == 0);
 }
 
 TEST_CASE("A cancelled prebuild leaves the scheduler usable", "[video_core][shader_jobs]") {

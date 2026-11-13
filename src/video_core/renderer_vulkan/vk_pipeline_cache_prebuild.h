@@ -3,10 +3,12 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -32,6 +34,14 @@ public:
     /// Translates a pipeline on a CPU worker, unbuilt (null when it doesn't translate). Its
     /// Build() runs on a driver worker, and it is dropped when it Failed().
     using Translate = Common::UniqueFunction<std::unique_ptr<Pipeline>>;
+
+    /// What became of the builds once every one has ended
+    struct Outcome {
+        size_t built;
+        size_t failed;
+        size_t taken_unfinished; ///< Taken by a lookup while still queued or building
+        size_t unclaimed;        ///< Built, and no lookup has taken them yet
+    };
 
     explicit ScheduledPrebuild(VideoCommon::ShaderJobScheduler& jobs_)
         : jobs{jobs_}, batch{jobs_.CreateBatch()} {}
@@ -65,19 +75,24 @@ public:
                             translate = {};
                             Translated();
                         };
-                        if (!context.StopRequested()) {
-                            pipeline = translate();
+                        if (context.StopRequested()) {
+                            return {};
                         }
+                        pipeline = translate();
                     }
                     if (!pipeline) {
+                        std::scoped_lock lock{mutex};
+                        ++failed;
                         return {};
                     }
                     return [this, entry, pipeline = std::move(pipeline)]() mutable {
                         pipeline->Build();
+                        std::scoped_lock entry_lock{mutex};
                         if (pipeline->Failed()) {
+                            ++failed;
                             return;
                         }
-                        std::scoped_lock entry_lock{mutex};
+                        ++built;
                         entry->pipeline = std::move(pipeline);
                     };
                 },
@@ -87,9 +102,10 @@ public:
         return true;
     }
 
-    /// The pipeline of `key`, built here or waited for while it builds; null when there is none
-    /// or it didn't build
-    std::unique_ptr<Pipeline> Take(const Key& key) {
+    /// The pipeline of `key`, built here or waited for while it builds (`waited` gets how long
+    /// when it was still queued or building); null when there is none or it didn't build
+    std::unique_ptr<Pipeline> Take(
+        const Key& key, std::optional<std::chrono::steady_clock::duration>* waited = nullptr) {
         std::shared_ptr<Entry> entry;
         {
             std::scoped_lock lock{mutex};
@@ -100,8 +116,16 @@ public:
             entry = std::move(it->second);
             entries.erase(it);
         }
+        const bool unfinished = !entry->job.Ready();
+        const auto begin = std::chrono::steady_clock::now();
         jobs.RunOrWait(entry->job);
         std::scoped_lock lock{mutex};
+        if (unfinished) {
+            ++taken_unfinished;
+            if (waited) {
+                *waited = std::chrono::steady_clock::now() - begin;
+            }
+        }
         return std::move(entry->pipeline);
     }
 
@@ -116,6 +140,21 @@ public:
             }
         }
         done();
+    }
+
+    /// The outcome once every build has ended, else nothing
+    std::optional<Outcome> Finished() const {
+        if (!batch.Idle()) {
+            return std::nullopt;
+        }
+        std::scoped_lock lock{mutex};
+        return Outcome{
+            .built = built,
+            .failed = failed,
+            .taken_unfinished = taken_unfinished,
+            .unclaimed = static_cast<size_t>(std::ranges::count_if(
+                entries, [](const auto& entry) { return entry.second->pipeline != nullptr; })),
+        };
     }
 
     /// The batch of the builds, to cancel them without waiting
@@ -156,8 +195,11 @@ private:
     VideoCommon::ShaderJobBatch batch;
     size_t translating{}; ///< Builds added and not translated yet
     Common::UniqueFunction<void> after_translations;
+    size_t built{};
+    size_t failed{};
+    size_t taken_unfinished{};
     bool stopped{};
-    std::mutex mutex;
+    mutable std::mutex mutex;
     std::unordered_map<Key, std::shared_ptr<Entry>> entries;
 };
 

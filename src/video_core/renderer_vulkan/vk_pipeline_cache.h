@@ -149,9 +149,9 @@ private:
     [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) noexcept;
 
     /// With `keep_pointers`, the slots an evicted pipeline of this key bound stay storage buffer
-    /// pointers whatever they hold now.
+    /// pointers whatever they hold now. `evicted`: a pipeline of this key was evicted.
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
-        const VideoCommon::EvictedPointerSlots::Slots* keep_pointers = nullptr);
+        const VideoCommon::EvictedPointerSlots::Slots* keep_pointers, bool evicted);
 
     /// Builds the current key's pipeline again from what an evicted one kept, without translating
     std::unique_ptr<GraphicsPipeline> RebuildGraphicsPipeline(KeptGraphicsStages kept);
@@ -276,6 +276,8 @@ private:
     /// IR of the pipelines whose job emits their SPIR-V
     QueuedIrBudget queued_ir{VideoCommon::DefaultShaderJobBudget()};
     std::optional<ScheduledPrebuild<GraphicsPipelineCacheKey, GraphicsPipeline>> scheduled_prebuild;
+    /// When the boot load that started the background prebuild began, until the prebuild is done
+    std::optional<std::chrono::steady_clock::time_point> prebuild_load_begin;
 
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
@@ -289,6 +291,7 @@ private:
     s64 native_wait_used_us{}; ///< Budget spent since the last 10 s log line.
     std::deque<std::pair<u64, std::unique_ptr<GraphicsPipeline>>> evicted_pipelines; ///< (tick, pipeline)
     std::unordered_set<u64> used_and_evicted; ///< Key hashes of pipelines used this session, evicted since
+    std::unordered_set<u64> evicted_hashes;   ///< Key hashes of evicted pipelines not created again
     VideoCommon::EvictedPointerSlots evicted_pointer_slots;
     /// The SPIR-V and stage infos of evicted pipelines, which build them again when used again
     VideoCommon::BoundedStore<GraphicsPipelineCacheKey, KeptGraphicsStages> kept_stages{0};
