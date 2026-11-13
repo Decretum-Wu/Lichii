@@ -1,7 +1,7 @@
 # Game-DLSS replacement
 
 The Vulkan renderer can replace a recognized game-DLSS evaluation with NVIDIA DLSS on
-Windows, then AMD FSR 3.1.4 if NVIDIA DLSS is disabled or unavailable. FSR uses AMD's
+Windows, then AMD FSR 3.1.6 if NVIDIA DLSS is disabled or unavailable. FSR uses AMD's
 eight temporal-upscaling passes, including depth, motion, history and optional RCAS.
 This is separate from the presentation filters that scale the finished window image.
 
@@ -156,8 +156,9 @@ from the upstream implementation remain available for diagnostic comparisons.
 ## Build and distribution
 
 FSR needs no external runtime. Keep `externals/FidelityFX-SDK/LICENSE.txt` and its attribution
-with distributions. The vendored files are unmodified AMD MIT sources from FidelityFX SDK
-v1.1.4, commit `c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`.
+with distributions. The vendored files are unmodified AMD MIT sources: the FSR 3.1.6 GPU code
+from AMD FSR SDK v2.4.0, commit `7539ae8b6568ad29ed78a753404351daf3b5cca7`, and the GLSL passes
+and callbacks from FidelityFX SDK v1.1.4, commit `c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`.
 
 For the optional Windows NVIDIA path, obtain only the MIT Streamline headers and license
 from NVIDIA-RTX/Streamline tag `v2.14.16`, commit
