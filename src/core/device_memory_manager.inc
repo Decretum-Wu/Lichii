@@ -171,7 +171,7 @@ inline void ReportUnmappedRead(DAddr first_unmapped, DAddr address, size_t size,
 template <typename DTraits>
 struct DeviceMemoryManagerAllocator {
     static constexpr size_t device_virtual_bits = DTraits::device_virtual_bits;
-    static constexpr DAddr first_address = 1ULL << Memory::YUZU_PAGEBITS;
+    static constexpr DAddr first_address = 1ULL << Memory::LICHII_PAGEBITS;
     static constexpr DAddr max_device_area = 1ULL << device_virtual_bits;
 
     DeviceMemoryManagerAllocator() : main_allocator(first_address) {}
@@ -239,8 +239,8 @@ DeviceMemoryManager<Traits>::DeviceMemoryManager(const DeviceMemory& device_memo
     : physical_base{uintptr_t(device_memory_.buffer.BackingBasePointer())}
     , device_memory_ptr{&device_memory_}
     , device_inter{nullptr}
-    , compressed_device_addr(1ULL << ((Settings::values.memory_layout_mode.GetValue() == Settings::MemoryLayout::Memory_4Gb ? physical_min_bits : physical_max_bits) - Memory::YUZU_PAGEBITS))
-    , tracked_entries(device_as_size >> Memory::YUZU_PAGEBITS)
+    , compressed_device_addr(1ULL << ((Settings::values.memory_layout_mode.GetValue() == Settings::MemoryLayout::Memory_4Gb ? physical_min_bits : physical_max_bits) - Memory::LICHII_PAGEBITS))
+    , tracked_entries(device_as_size >> Memory::LICHII_PAGEBITS)
 {
     impl = std::make_unique<DeviceMemoryManagerAllocator<Traits>>();
     cached_pages = std::make_unique<CachedPages>();
@@ -257,24 +257,24 @@ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
         u64 size;
     };
     std::vector<Run> runs;
-    const size_t page_end = Common::DivCeil(address + size, Memory::YUZU_PAGESIZE);
-    for (size_t page = address >> Memory::YUZU_PAGEBITS; page < page_end; ++page) {
+    const size_t page_end = Common::DivCeil(address + size, Memory::LICHII_PAGESIZE);
+    for (size_t page = address >> Memory::LICHII_PAGEBITS; page < page_end; ++page) {
         const u32 compressed = tracked_entries[page].compressed_physical_ptr;
         if (compressed == 0) {
             continue;
         }
-        const u64 physical = u64{compressed - 1} << Memory::YUZU_PAGEBITS;
+        const u64 physical = u64{compressed - 1} << Memory::LICHII_PAGEBITS;
         const VAddr vaddr = ExtractCPUBacking(page).second;
         if (!runs.empty()) {
             Run& last = runs.back();
             const bool contiguous_view =
                 last.virtual_address == 0 ? vaddr == 0 : last.virtual_address + last.size == vaddr;
             if (last.physical_offset + last.size == physical && contiguous_view) {
-                last.size += Memory::YUZU_PAGESIZE;
+                last.size += Memory::LICHII_PAGESIZE;
                 continue;
             }
         }
-        runs.push_back({physical, vaddr, Memory::YUZU_PAGESIZE});
+        runs.push_back({physical, vaddr, Memory::LICHII_PAGESIZE});
     }
     if (runs.empty()) {
         return;
@@ -316,14 +316,14 @@ template <typename Traits>
 void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size_t size, Asid asid,
                                       bool track) {
     Core::Memory::Memory* process_memory = registered_processes[asid.id];
-    size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
-    size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
+    size_t start_page_d = address >> Memory::LICHII_PAGEBITS;
+    size_t num_pages = Common::AlignUp(size, Memory::LICHII_PAGESIZE) >> Memory::LICHII_PAGEBITS;
     std::scoped_lock lk(kept_mutex, mapping_guard);
 
     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages);
     CutContinuityAt(start_page_d);
     for (size_t i = 0; i < num_pages; i++) {
-        const VAddr new_vaddress = virtual_address + i * Memory::YUZU_PAGESIZE;
+        const VAddr new_vaddress = virtual_address + i * Memory::LICHII_PAGESIZE;
         auto* ptr = process_memory->GetPointerSilent(Common::ProcessAddress(new_vaddress));
         if (const auto kept = kept_pages.find(start_page_d + i);
             kept != kept_pages.end() && ptr != nullptr) [[unlikely]] {
@@ -342,7 +342,7 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
             tracked_entries.GetUnchecked(start_page_d + i).compressed_physical_ptr = 0;
             continue;
         }
-        auto phys_addr = static_cast<u32>(GetRawPhysicalAddr(ptr) >> Memory::YUZU_PAGEBITS) + 1U;
+        auto phys_addr = static_cast<u32>(GetRawPhysicalAddr(ptr) >> Memory::LICHII_PAGEBITS) + 1U;
         tracked_entries.GetUnchecked(start_page_d + i).compressed_physical_ptr = phys_addr;
         InsertCPUBacking(start_page_d + i, new_vaddress, asid);
         const u32 base_dev = compressed_device_addr[phys_addr - 1U];
@@ -366,8 +366,8 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size) {
-    size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
-    size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
+    size_t start_page_d = address >> Memory::LICHII_PAGEBITS;
+    size_t num_pages = Common::AlignUp(size, Memory::LICHII_PAGESIZE) >> Memory::LICHII_PAGEBITS;
     device_inter->InvalidateRegion(address, size);
     while (deferred_cached_updates.load(std::memory_order_acquire) != 0) {
         std::this_thread::yield();
@@ -424,15 +424,15 @@ template <typename Traits>
 void DeviceMemoryManager<Traits>::TrackContinuityImpl(DAddr address, VAddr virtual_address,
                                                       size_t size, Asid asid) {
     Core::Memory::Memory* process_memory = registered_processes[asid.id];
-    size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
-    size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
+    size_t start_page_d = address >> Memory::LICHII_PAGEBITS;
+    size_t num_pages = Common::AlignUp(size, Memory::LICHII_PAGESIZE) >> Memory::LICHII_PAGEBITS;
     uintptr_t last_ptr = 0;
     size_t page_count = 1;
 
     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages);
     for (size_t i = num_pages; i > 0; i--) {
         size_t index = i - 1;
-        const VAddr new_vaddress = virtual_address + index * Memory::YUZU_PAGESIZE;
+        const VAddr new_vaddress = virtual_address + index * Memory::LICHII_PAGESIZE;
         const uintptr_t new_ptr = reinterpret_cast<uintptr_t>(
             process_memory->GetPointerSilent(Common::ProcessAddress(new_vaddress)));
         if (new_ptr + page_size == last_ptr) {
@@ -481,23 +481,23 @@ void DeviceMemoryManager<Traits>::InnerGatherDeviceAddresses(Common::ScratchBuff
 template <typename Traits>
 template <typename T>
 T* DeviceMemoryManager<Traits>::GetPointer(DAddr address) {
-    const size_t index = address >> Memory::YUZU_PAGEBITS;
-    const size_t offset = address & Memory::YUZU_PAGEMASK;
+    const size_t index = address >> Memory::LICHII_PAGEBITS;
+    const size_t offset = address & Memory::LICHII_PAGEMASK;
     auto phys_addr = tracked_entries[index].compressed_physical_ptr;
     if (phys_addr == 0) [[unlikely]]
         return nullptr;
-    return GetPointerFromRaw<T>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS) + offset);
+    return GetPointerFromRaw<T>((PAddr(phys_addr - 1) << Memory::LICHII_PAGEBITS) + offset);
 }
 
 template <typename Traits>
 template <typename T>
 const T* DeviceMemoryManager<Traits>::GetPointer(DAddr address) const {
-    const size_t index = address >> Memory::YUZU_PAGEBITS;
-    const size_t offset = address & Memory::YUZU_PAGEMASK;
+    const size_t index = address >> Memory::LICHII_PAGEBITS;
+    const size_t offset = address & Memory::LICHII_PAGEMASK;
     auto phys_addr = tracked_entries[index].compressed_physical_ptr;
     if (phys_addr == 0)
         return nullptr;
-    return GetPointerFromRaw<T>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS) + offset);
+    return GetPointerFromRaw<T>((PAddr(phys_addr - 1) << Memory::LICHII_PAGEBITS) + offset);
 }
 
 template <typename Traits>
@@ -518,8 +518,8 @@ T DeviceMemoryManager<Traits>::Read(DAddr address) const {
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::KeepWrites(DAddr address, size_t size) {
-    const size_t first = address >> Memory::YUZU_PAGEBITS;
-    const size_t last = (address + size - 1) >> Memory::YUZU_PAGEBITS;
+    const size_t first = address >> Memory::LICHII_PAGEBITS;
+    const size_t last = (address + size - 1) >> Memory::LICHII_PAGEBITS;
     std::scoped_lock lk(kept_mutex);
     for (size_t page = first; page <= last; ++page) {
         if (tracked_entries[page].compressed_physical_ptr == 0) {
@@ -538,12 +538,12 @@ bool DeviceMemoryManager<Traits>::ReadKept(DAddr address, void* dest_pointer, si
     bool handled = false;
     auto* dest = static_cast<u8*>(dest_pointer);
     while (size != 0) {
-        const size_t page = address >> Memory::YUZU_PAGEBITS;
-        const size_t offset = address & Memory::YUZU_PAGEMASK;
-        const size_t amount = (std::min<size_t>)(Memory::YUZU_PAGESIZE - offset, size);
+        const size_t page = address >> Memory::LICHII_PAGEBITS;
+        const size_t offset = address & Memory::LICHII_PAGEMASK;
+        const size_t amount = (std::min<size_t>)(Memory::LICHII_PAGESIZE - offset, size);
         if (const auto phys = tracked_entries[page].compressed_physical_ptr; phys != 0) {
             handled = true; // mapped since the caller looked
-            std::memcpy(dest, GetPointerFromRaw<u8>((PAddr(phys - 1) << Memory::YUZU_PAGEBITS) + offset),
+            std::memcpy(dest, GetPointerFromRaw<u8>((PAddr(phys - 1) << Memory::LICHII_PAGEBITS) + offset),
                         amount);
         } else if (const auto kept = kept_pages.find(page); kept != kept_pages.end()) {
             handled = true;
@@ -571,12 +571,12 @@ bool DeviceMemoryManager<Traits>::WriteKept(DAddr address, const void* src_point
     bool handled = false;
     const auto* src = static_cast<const u8*>(src_pointer);
     while (size != 0) {
-        const size_t page = address >> Memory::YUZU_PAGEBITS;
-        const size_t offset = address & Memory::YUZU_PAGEMASK;
-        const size_t amount = (std::min<size_t>)(Memory::YUZU_PAGESIZE - offset, size);
+        const size_t page = address >> Memory::LICHII_PAGEBITS;
+        const size_t offset = address & Memory::LICHII_PAGEMASK;
+        const size_t amount = (std::min<size_t>)(Memory::LICHII_PAGESIZE - offset, size);
         if (const auto phys = tracked_entries[page].compressed_physical_ptr; phys != 0) {
             handled = true;
-            std::memcpy(GetPointerFromRaw<u8>((PAddr(phys - 1) << Memory::YUZU_PAGEBITS) + offset), src,
+            std::memcpy(GetPointerFromRaw<u8>((PAddr(phys - 1) << Memory::LICHII_PAGEBITS) + offset), src,
                         amount);
         } else if (const auto kept = kept_pages.find(page); kept != kept_pages.end()) {
             handled = true;
@@ -595,16 +595,16 @@ bool DeviceMemoryManager<Traits>::WriteKept(DAddr address, const void* src_point
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WalkBlock(DAddr addr, std::size_t size, auto on_unmapped, auto on_memory, auto increment) {
     std::size_t remaining_size = size;
-    std::size_t page_index = addr >> Memory::YUZU_PAGEBITS;
-    std::size_t page_offset = addr & Memory::YUZU_PAGEMASK;
+    std::size_t page_index = addr >> Memory::LICHII_PAGEBITS;
+    std::size_t page_offset = addr & Memory::LICHII_PAGEMASK;
     while (remaining_size) {
         const auto phys_addr = tracked_entries[page_index].compressed_physical_ptr;
         // An unmapped page says nothing about the pages after it: its run cannot be trusted, so
         // only this page is handed to on_unmapped before the walk moves on.
         const size_t next_pages =
             phys_addr == 0 ? 1 : std::size_t(tracked_entries[page_index].continuity_tracker + 1);
-        const std::size_t copy_amount = (std::min)((next_pages << Memory::YUZU_PAGEBITS) - page_offset, remaining_size);
-        const auto current_vaddr = u64((page_index << Memory::YUZU_PAGEBITS) + page_offset);
+        const std::size_t copy_amount = (std::min)((next_pages << Memory::LICHII_PAGEBITS) - page_offset, remaining_size);
+        const auto current_vaddr = u64((page_index << Memory::LICHII_PAGEBITS) + page_offset);
         SCOPE_EXIT{
             page_index += next_pages;
             page_offset = 0;
@@ -616,7 +616,7 @@ void DeviceMemoryManager<Traits>::WalkBlock(DAddr addr, std::size_t size, auto o
             on_unmapped(copy_amount, current_vaddr);
             continue;
         }
-        auto* mem_ptr = GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS) + page_offset);
+        auto* mem_ptr = GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << Memory::LICHII_PAGEBITS) + page_offset);
         on_memory(copy_amount, mem_ptr);
     }
 }
@@ -625,9 +625,9 @@ template <typename Traits>
 void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, size_t size,
                                             std::source_location caller) {
     device_inter->FlushRegion(address, size);
-    const std::size_t page_offset = address & Memory::YUZU_PAGEMASK;
-    if (size <= Memory::YUZU_PAGESIZE - page_offset) {
-        const DAddr guest_page = address & ~static_cast<DAddr>(Memory::YUZU_PAGEMASK);
+    const std::size_t page_offset = address & Memory::LICHII_PAGEMASK;
+    if (size <= Memory::LICHII_PAGESIZE - page_offset) {
+        const DAddr guest_page = address & ~static_cast<DAddr>(Memory::LICHII_PAGEMASK);
         TranslationCache& cache = Translations();
         for (const TranslationEntry& entry : cache.slots) {
             if (entry.guest_page == guest_page && entry.host_ptr != nullptr) {
@@ -636,10 +636,10 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
             }
         }
 
-        const std::size_t page_index = address >> Memory::YUZU_PAGEBITS;
+        const std::size_t page_index = address >> Memory::LICHII_PAGEBITS;
         const auto phys_addr = tracked_entries[page_index].compressed_physical_ptr;
         if (phys_addr != 0) {
-            auto* const mem_ptr = GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS));
+            auto* const mem_ptr = GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << Memory::LICHII_PAGEBITS));
             cache.slots[cache.cursor] = TranslationEntry{.guest_page = guest_page, .host_ptr = mem_ptr};
             cache.cursor = (cache.cursor + 1) & 3U;
             std::memcpy(dest_pointer, mem_ptr + page_offset, size);
@@ -699,9 +699,9 @@ void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_poin
 template <typename Traits>
 void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_pointer, size_t size,
                                                   std::source_location caller) {
-    const std::size_t page_offset = address & Memory::YUZU_PAGEMASK;
-    if (size <= Memory::YUZU_PAGESIZE - page_offset) {
-        const DAddr guest_page = address & ~static_cast<DAddr>(Memory::YUZU_PAGEMASK);
+    const std::size_t page_offset = address & Memory::LICHII_PAGEMASK;
+    if (size <= Memory::LICHII_PAGESIZE - page_offset) {
+        const DAddr guest_page = address & ~static_cast<DAddr>(Memory::LICHII_PAGEMASK);
         TranslationCache& cache = Translations();
         for (const TranslationEntry& entry : cache.slots) {
             if (entry.guest_page == guest_page && entry.host_ptr != nullptr) {
@@ -710,10 +710,10 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
             }
         }
 
-        const std::size_t page_index = address >> Memory::YUZU_PAGEBITS;
+        const std::size_t page_index = address >> Memory::LICHII_PAGEBITS;
         const auto phys_addr = tracked_entries[page_index].compressed_physical_ptr;
         if (phys_addr != 0) {
-            auto* const mem_ptr = GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS));
+            auto* const mem_ptr = GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << Memory::LICHII_PAGEBITS));
             cache.slots[cache.cursor] = TranslationEntry{.guest_page = guest_page, .host_ptr = mem_ptr};
             cache.cursor = (cache.cursor + 1) & 3U;
             std::memcpy(dest_pointer, mem_ptr + page_offset, size);
@@ -799,32 +799,32 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCountNoLock(DAddr addr, size_
     const auto MarkRegionCaching = &DeviceMemoryManager<Traits>::DeviceMethods::MarkRegionCaching;
 
     std::atomic_thread_fence(std::memory_order_acquire);
-    const size_t page_end = Common::DivCeil(addr + size, Memory::YUZU_PAGESIZE);
-    size_t page = addr >> Memory::YUZU_PAGEBITS;
+    const size_t page_end = Common::DivCeil(addr + size, Memory::LICHII_PAGESIZE);
+    size_t page = addr >> Memory::LICHII_PAGEBITS;
     auto [asid, base_vaddress] = ExtractCPUBacking(page);
     auto* memory_device_inter =
         asid.id < registered_processes.size() ? registered_processes[asid.id] : nullptr;
     const auto release_pending = [&] {
         if (uncache_bytes > 0) {
             if (memory_device_inter != nullptr) {
-                MarkRegionCaching(memory_device_inter, uncache_begin << Memory::YUZU_PAGEBITS,
+                MarkRegionCaching(memory_device_inter, uncache_begin << Memory::LICHII_PAGEBITS,
                                   uncache_bytes, false);
             }
             uncache_bytes = 0;
         }
         if (cache_bytes > 0) {
             if (memory_device_inter != nullptr) {
-                MarkRegionCaching(memory_device_inter, cache_begin << Memory::YUZU_PAGEBITS,
+                MarkRegionCaching(memory_device_inter, cache_begin << Memory::LICHII_PAGEBITS,
                                   cache_bytes, true);
             }
             cache_bytes = 0;
         }
     };
-    size_t old_vpage = (base_vaddress >> Memory::YUZU_PAGEBITS) - 1;
+    size_t old_vpage = (base_vaddress >> Memory::LICHII_PAGEBITS) - 1;
     for (; page != page_end; ++page) {
         CounterAtomicType& count = cached_pages->at(page >> subentries_shift).Count(page);
         auto [asid_2, vpage] = ExtractCPUBacking(page);
-        vpage >>= Memory::YUZU_PAGEBITS;
+        vpage >>= Memory::LICHII_PAGEBITS;
 
         if (vpage == 0) [[unlikely]] {
             release_pending();
@@ -852,10 +852,10 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCountNoLock(DAddr addr, size_
             if (uncache_bytes == 0) {
                 uncache_begin = vpage;
             }
-            uncache_bytes += Memory::YUZU_PAGESIZE;
+            uncache_bytes += Memory::LICHII_PAGESIZE;
         } else if (uncache_bytes > 0) {
             if (memory_device_inter != nullptr) {
-                MarkRegionCaching(memory_device_inter, uncache_begin << Memory::YUZU_PAGEBITS,
+                MarkRegionCaching(memory_device_inter, uncache_begin << Memory::LICHII_PAGEBITS,
                                   uncache_bytes, false);
             }
             uncache_bytes = 0;
@@ -864,10 +864,10 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCountNoLock(DAddr addr, size_
             if (cache_bytes == 0) {
                 cache_begin = vpage;
             }
-            cache_bytes += Memory::YUZU_PAGESIZE;
+            cache_bytes += Memory::LICHII_PAGESIZE;
         } else if (cache_bytes > 0) {
             if (memory_device_inter != nullptr) {
-                MarkRegionCaching(memory_device_inter, cache_begin << Memory::YUZU_PAGEBITS,
+                MarkRegionCaching(memory_device_inter, cache_begin << Memory::LICHII_PAGEBITS,
                                   cache_bytes, true);
             }
             cache_bytes = 0;
@@ -951,15 +951,15 @@ void DeviceMemoryManager<Traits>::ArmReadTraps(DAddr addr, size_t size) {
     u64 run_pages = 0;
     const auto release_run = [&] {
         if (run_pages > 0 && run_inter != nullptr) {
-            MarkRegionReadTrap(run_inter, run_begin << Memory::YUZU_PAGEBITS,
-                               run_pages << Memory::YUZU_PAGEBITS);
+            MarkRegionReadTrap(run_inter, run_begin << Memory::LICHII_PAGEBITS,
+                               run_pages << Memory::LICHII_PAGEBITS);
         }
         run_pages = 0;
     };
-    const size_t page_end = Common::DivCeil(addr + size, Memory::YUZU_PAGESIZE);
-    for (size_t page = addr >> Memory::YUZU_PAGEBITS; page != page_end; ++page) {
+    const size_t page_end = Common::DivCeil(addr + size, Memory::LICHII_PAGESIZE);
+    for (size_t page = addr >> Memory::LICHII_PAGEBITS; page != page_end; ++page) {
         auto [asid, vaddr] = ExtractCPUBacking(page);
-        const u64 vpage = vaddr >> Memory::YUZU_PAGEBITS;
+        const u64 vpage = vaddr >> Memory::LICHII_PAGEBITS;
         if (vpage == 0) {
             release_run();
             continue;

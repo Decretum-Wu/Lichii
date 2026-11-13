@@ -259,7 +259,7 @@ target_link_libraries(profile_migration_tests PRIVATE common Catch2::Catch2WithM
 add_test(NAME profile_migration_tests COMMAND profile_migration_tests)
 
 if (TARGET SDL3::SDL3)
-    add_executable(sdl_window_state_tests yuzu_cmd/sdl_window_state.cpp)
+    add_executable(sdl_window_state_tests lichii_cmd/sdl_window_state.cpp)
     target_link_libraries(sdl_window_state_tests PRIVATE SDL3::SDL3 Catch2::Catch2WithMain)
     add_test(NAME sdl_window_state_tests COMMAND sdl_window_state_tests)
 endif()
