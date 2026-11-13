@@ -41,7 +41,7 @@ def card(entry):
         title = f"pass {entry['pass']} samples tic {entry['tic']} (stage {entry['stage']}) · draw {entry['draw']}"
     else:
         title = f"present · after draw {entry.get('after_draws', '?')}"
-    png = entry.get("png")
+    png = entry.get("png") or entry.get("preview")
     image = (f'<a href="{html.escape(png)}"><img loading="lazy" src="{html.escape(png)}"></a>'
              if png else '<div class="noimg">no preview</div>')
     rows = [
@@ -77,10 +77,8 @@ td{word-break:break-all}.b{display:inline-block;padding:1px 5px;margin:0 4px 4px
 """
 
 
-def main():
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    root = Path(sys.argv[1])
+def build_index(root: Path) -> Path:
+    """Writes root/index.html for the dump in root and returns its path."""
     entries, header, summary = [], {}, {}
     for line in (root / "manifest.jsonl").read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -108,6 +106,13 @@ def main():
     out = root / "index.html"
     out.write_text(page, encoding="utf-8")
     print(f"{out}: {len(entries)} entries")
+    return out
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    build_index(Path(sys.argv[1]))
 
 
 if __name__ == "__main__":

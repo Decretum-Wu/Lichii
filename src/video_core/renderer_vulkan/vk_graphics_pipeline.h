@@ -151,6 +151,13 @@ public:
     const std::array<u64, 6>& ShaderHashes() const noexcept {
         return key.unique_hashes;
     }
+    const GraphicsPipelineCacheKey& Key() const noexcept {
+        return key;
+    }
+    /// Each stage's SPIR-V (zstd), kept once the pipeline is built; empty for absent stages.
+    const std::array<std::vector<u8>, NUM_STAGES>& KeptSpirv() const noexcept {
+        return kept_spirv;
+    }
 
     struct SampledImage {
         u32 stage;

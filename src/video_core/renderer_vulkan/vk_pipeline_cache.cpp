@@ -35,6 +35,7 @@
 #include "common/thread.h"
 #include "common/thread_worker.h"
 #include "common/zstd_compression.h"
+#include "common/zstd_compression.h"
 #include "core/core.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
@@ -448,10 +449,14 @@ std::vector<u32> EmitStageSpirv(const Device& device, const Shader::Profile& pro
     return code;
 }
 
+/// Also keeps the SPIR-V, compressed, for frame dumps.
 vk::ShaderModule EmitComputeModule(const Device& device, const Shader::Profile& profile,
                                    Shader::IR::Program& program, u64 shader_hash,
+                                   std::vector<u8>& kept_spirv,
                                    std::span<const u32> reference = {}) {
     const std::vector<u32> code{EmitComputeShader(profile, program, shader_hash, reference)};
+    kept_spirv = Common::Compression::CompressDataZSTD(reinterpret_cast<const u8*>(code.data()),
+                                                       code.size() * sizeof(u32), 1);
     device.SaveShader(code);
     vk::ShaderModule spv_module{BuildShader(device, code)};
 
@@ -3287,10 +3292,10 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         job->program = std::move(program);
         // Copied by the pipeline before its job can run
         const Shader::Info& info = job->program.info;
-        auto emit = [this, job, shader_hash = key.unique_hash]() mutable {
+        auto emit = [this, job, shader_hash = key.unique_hash](std::vector<u8>& kept_spirv) mutable {
             const auto begin = std::chrono::steady_clock::now();
             vk::ShaderModule module{EmitComputeModule(device, profile, job->program, shader_hash,
-                                                      job->reference_spirv)};
+                                                      kept_spirv, job->reference_spirv)};
             auto completed_pools = std::move(job->pools);
             job.reset();
             ReturnPools(std::move(completed_pools));
@@ -3301,9 +3306,12 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
             device, scheduler, vulkan_pipeline_cache, pipeline_binaries.get(), hash,
             descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring,
             BuildQueue(build_in_parallel, ir_bytes), statistics,
-            &shader_notify, info, vk::ShaderModule{}, key.unique_hash, std::move(emit));
+            &shader_notify, info, vk::ShaderModule{}, key.unique_hash, std::vector<u8>{},
+            std::move(emit));
     } else {
-        vk::ShaderModule module{EmitComputeModule(device, profile, program, key.unique_hash)};
+        std::vector<u8> kept_spirv;
+        vk::ShaderModule module{
+            EmitComputeModule(device, profile, program, key.unique_hash, kept_spirv)};
         const Shader::Info info{std::move(program.info)};
         if (!build_in_parallel) {
             // The driver compiles on this thread. Precache and boot workers would otherwise hold their
@@ -3316,7 +3324,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
             device, scheduler, vulkan_pipeline_cache, pipeline_binaries.get(), hash,
             descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring,
             BuildQueue(build_in_parallel), statistics, &shader_notify, info, std::move(module),
-            key.unique_hash);
+            key.unique_hash, std::move(kept_spirv));
     }
     return {.pipeline = std::move(pipeline),
             .null_pointer_slots = env.IsNativeProgram() ? env.NullStoragePointerSlots()
