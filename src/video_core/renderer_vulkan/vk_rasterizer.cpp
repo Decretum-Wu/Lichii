@@ -5050,24 +5050,95 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) 
         return;
     }
 
-    boost::container::static_vector<VkVertexInputBindingDescription2EXT, 32> bindings;
-    boost::container::static_vector<VkVertexInputAttributeDescription2EXT, 32> attributes;
-
     const u32 max_attributes =
         static_cast<u32>(std::min<size_t>(Maxwell::NumVertexAttributes,
                                           device.GetMaxVertexInputAttributes()));
     const u32 max_bindings =
         static_cast<u32>(std::min<size_t>(Maxwell::NumVertexArrays,
                                           device.GetMaxVertexInputBindings()));
+    const auto same_state = [](const VertexInputState& lhs, const VertexInputState& rhs) {
+        return std::ranges::equal(lhs.bindings, rhs.bindings,
+                                  [](const auto& a, const auto& b) {
+                                      return a.binding == b.binding && a.stride == b.stride &&
+                                             a.inputRate == b.inputRate && a.divisor == b.divisor;
+                                  }) &&
+               std::ranges::equal(lhs.attributes, rhs.attributes, [](const auto& a, const auto& b) {
+                   return a.location == b.location && a.binding == b.binding &&
+                          a.format == b.format && a.offset == b.offset;
+               });
+    };
 
+    if (!record) {
+        // EDEN_NX2_FAST_DRAW_VERIFY: no dirty flag asked for it, so the vertex input recorded
+        // last must be what the registers give.
+        VertexInputState state;
+        BuildVertexInput(regs, max_attributes, max_bindings, state);
+        if (vertex_input_recorded && !same_state(state, recorded_vertex_input)) {
+            ++fast_draw_stats.vertex_input_mismatches;
+        }
+        return;
+    }
+    dirty[Dirty::VertexInput] = false;
+    for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
+        dirty[Dirty::VertexAttribute0 + index] = false;
+    }
+    for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
+        dirty[Dirty::VertexBinding0 + index] = false;
+    }
 
+    // The state these registers built before, recorded by reference instead of built and copied
+    // into the command again (jpkto/Lichii e7581fa9f6): converting every attribute's format and
+    // copying both arrays into the command was ~0.5 ms a frame of Mario Kart World's back.
+    VideoCommon::VertexInputKey key{
+        .num_attributes = max_attributes,
+        .num_bindings = max_bindings,
+    };
+    for (u32 index = 0; index < max_attributes; ++index) {
+        key.attributes[index] = regs.vertex_attrib_format[index].hex;
+    }
+    for (u32 binding = 0; binding < max_bindings; ++binding) {
+        const auto& stream{regs.vertex_streams[binding]};
+        key.strides[binding] = stream.stride.Value();
+        key.divisors[binding] = stream.frequency;
+        key.instanced |= (regs.vertex_stream_instances.IsInstancingEnabled(binding) ? 1U : 0U)
+                         << binding;
+        key.repacked |= (buffer_cache_runtime.IsVertexRepacked(binding) ? 1U : 0U) << binding;
+    }
+    const u64 hash = key.Hash();
+    std::shared_ptr<const VertexInputState> state = vertex_input_cache.Find(key, hash);
+    if (!state) {
+        auto built = std::make_shared<VertexInputState>();
+        BuildVertexInput(regs, max_attributes, max_bindings, *built);
+        state = std::move(built);
+        vertex_input_cache.Insert(key, hash, state);
+    } else if (fast_draw_verify) {
+        // The key must hold everything the build reads.
+        VertexInputState built;
+        BuildVertexInput(regs, max_attributes, max_bindings, built);
+        if (!same_state(built, *state)) {
+            ++fast_draw_stats.vertex_input_mismatches;
+        }
+    }
+    if (fast_draw_verify) {
+        recorded_vertex_input = *state;
+        vertex_input_recorded = true;
+    }
+
+    scheduler.Record([input = std::move(state)](vk::CommandBuffer cmdbuf) {
+        cmdbuf.SetVertexInputEXT(input->bindings, input->attributes);
+    });
+}
+
+void RasterizerVulkan::BuildVertexInput(const Tegra::Engines::Maxwell3D::Regs& regs,
+                                        u32 max_attributes, u32 max_bindings,
+                                        VertexInputState& state) {
     for (u32 index = 0; index < max_attributes; ++index) {
         const Maxwell::VertexAttribute attribute{regs.vertex_attrib_format[index]};
         const u32 binding{attribute.buffer};
         if (attribute.constant || binding >= max_bindings) {
             continue;
         }
-        attributes.push_back({
+        state.attributes.push_back({
             .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
             .pNext = nullptr,
             .location = index,
@@ -5081,7 +5152,7 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) 
     for (u32 binding = 0; binding < max_bindings; ++binding) {
         const auto& input_binding{regs.vertex_streams[binding]};
         const bool is_instanced{regs.vertex_stream_instances.IsInstancingEnabled(binding)};
-        bindings.push_back({
+        state.bindings.push_back({
             .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
             .pNext = nullptr,
             .binding = binding,
@@ -5090,41 +5161,6 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) 
             .divisor = is_instanced ? input_binding.frequency : 1,
         });
     }
-
-    if (!record) {
-        // EDEN_NX2_FAST_DRAW_VERIFY: no dirty flag asked for it, so the vertex input recorded
-        // last must be what the registers give.
-        const bool same_bindings = std::ranges::equal(
-            bindings, recorded_bindings, [](const auto& lhs, const auto& rhs) {
-                return lhs.binding == rhs.binding && lhs.stride == rhs.stride &&
-                       lhs.inputRate == rhs.inputRate && lhs.divisor == rhs.divisor;
-            });
-        const bool same_attributes = std::ranges::equal(
-            attributes, recorded_attributes, [](const auto& lhs, const auto& rhs) {
-                return lhs.location == rhs.location && lhs.binding == rhs.binding &&
-                       lhs.format == rhs.format && lhs.offset == rhs.offset;
-            });
-        if (vertex_input_recorded && !(same_bindings && same_attributes)) {
-            ++fast_draw_stats.vertex_input_mismatches;
-        }
-        return;
-    }
-    dirty[Dirty::VertexInput] = false;
-    for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
-        dirty[Dirty::VertexAttribute0 + index] = false;
-    }
-    for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
-        dirty[Dirty::VertexBinding0 + index] = false;
-    }
-    if (fast_draw_verify) {
-        recorded_bindings = bindings;
-        recorded_attributes = attributes;
-        vertex_input_recorded = true;
-    }
-
-    scheduler.Record([bindings, attributes](vk::CommandBuffer cmdbuf) {
-        cmdbuf.SetVertexInputEXT(bindings, attributes);
-    });
 }
 
 void RasterizerVulkan::InitializeChannel(Tegra::Control::ChannelState& channel) {
