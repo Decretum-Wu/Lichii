@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -10,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/scope_exit.h"
 #include "common/unique_function.h"
 #include "video_core/renderer_vulkan/pipeline_build.h"
 #include "video_core/shader_jobs.h"
@@ -31,8 +33,8 @@ public:
     /// Build() runs on a driver worker, and it is dropped when it Failed().
     using Translate = Common::UniqueFunction<std::unique_ptr<Pipeline>>;
 
-    ScheduledPrebuild(VideoCommon::ShaderJobScheduler& jobs_, u64 capture_limit_)
-        : jobs{jobs_}, batch{jobs_.CreateBatch()}, capture_limit{capture_limit_} {}
+    explicit ScheduledPrebuild(VideoCommon::ShaderJobScheduler& jobs_)
+        : jobs{jobs_}, batch{jobs_.CreateBatch()} {}
 
     ~ScheduledPrebuild() {
         Stop();
@@ -41,32 +43,31 @@ public:
     ScheduledPrebuild(const ScheduledPrebuild&) = delete;
     ScheduledPrebuild& operator=(const ScheduledPrebuild&) = delete;
 
-    /// Submits the build of a pipeline whose translation holds `capture_bytes` until it runs,
-    /// unless one of its key is queued or the captures queued would pass the limit
-    bool Add(const Key& key, u64 capture_bytes, u64 cpu_bytes, u64 driver_bytes,
-             Translate translate) {
+    /// Submits the build of a pipeline, unless one of its key is queued
+    bool Add(const Key& key, u64 cpu_bytes, u64 driver_bytes, Translate translate) {
         std::scoped_lock lock{mutex};
-        if (stopped || entries.contains(key) || capture_bytes > capture_limit - captured_bytes) {
+        if (stopped || entries.contains(key)) {
             return false;
         }
-        captured_bytes += capture_bytes;
+        ++translating;
         auto entry = std::make_shared<Entry>();
         entry->job = jobs.Submit(
             {
                 .priority = VideoCommon::ShaderJobPriority::Background,
                 .cpu_bytes = cpu_bytes,
                 .driver_bytes = driver_bytes,
-                .cpu = [this, entry, capture_bytes, translate = std::move(translate)](
+                .cpu = [this, entry, translate = std::move(translate)](
                            VideoCommon::ShaderJobContext& context) mutable
                 -> VideoCommon::ShaderDriverStage {
-                    if (context.StopRequested()) {
-                        return {};
-                    }
-                    std::unique_ptr<Pipeline> pipeline = translate();
-                    translate = {};
+                    std::unique_ptr<Pipeline> pipeline;
                     {
-                        std::scoped_lock capture_lock{mutex};
-                        captured_bytes -= capture_bytes;
+                        SCOPE_EXIT {
+                            translate = {};
+                            Translated();
+                        };
+                        if (!context.StopRequested()) {
+                            pipeline = translate();
+                        }
                     }
                     if (!pipeline) {
                         return {};
@@ -104,6 +105,19 @@ public:
         return std::move(entry->pipeline);
     }
 
+    /// Calls `done` once every build added so far was translated, on the thread that translated
+    /// the last one, or now when none is left. Never once Stop() returned.
+    void AfterTranslations(Common::UniqueFunction<void> done) {
+        {
+            std::scoped_lock lock{mutex};
+            if (translating != 0) {
+                after_translations = std::move(done);
+                return;
+            }
+        }
+        done();
+    }
+
     /// The batch of the builds, to cancel them without waiting
     const VideoCommon::ShaderJobBatch& Batch() const {
         return batch;
@@ -111,6 +125,10 @@ public:
 
     /// Cancels the builds and drops every pipeline once the running ones end
     void Stop() {
+        {
+            std::scoped_lock lock{mutex};
+            after_translations = {};
+        }
         jobs.Cancel(batch);
         batch.Wait();
         std::unordered_map<Key, std::shared_ptr<Entry>> dropped;
@@ -121,13 +139,36 @@ public:
     }
 
 private:
+    void Translated() {
+        Common::UniqueFunction<void> done;
+        {
+            std::scoped_lock lock{mutex};
+            if (--translating != 0 || !after_translations) {
+                return;
+            }
+            done = std::move(after_translations);
+            after_translations = {};
+        }
+        done();
+    }
+
     VideoCommon::ShaderJobScheduler& jobs;
     VideoCommon::ShaderJobBatch batch;
-    const u64 capture_limit;
-    u64 captured_bytes{};
+    size_t translating{}; ///< Builds added and not translated yet
+    Common::UniqueFunction<void> after_translations;
     bool stopped{};
     std::mutex mutex;
     std::unordered_map<Key, std::shared_ptr<Entry>> entries;
 };
+
+/// The skipped cached records the prebuild takes, from `skipped` in the order of the log: the
+/// newest first (the log appends, so its end is what recent sessions recorded), at most `limit`.
+template <typename Record>
+std::vector<Record> NewestFirst(std::vector<Record> skipped, size_t limit) {
+    std::ranges::reverse(skipped);
+    skipped.erase(skipped.begin() + static_cast<std::ptrdiff_t>(std::min(limit, skipped.size())),
+                  skipped.end());
+    return skipped;
+}
 
 } // namespace Vulkan
