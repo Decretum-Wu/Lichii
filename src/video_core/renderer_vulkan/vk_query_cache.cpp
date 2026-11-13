@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -224,7 +225,11 @@ public:
         // Time's title screen and file select reached 16,384 slots over 64 banks, while gameplay
         // windows in Hyrule Field, Kakariko Village, and the Shooting Gallery reach up to 346
         // slots across two banks. Past 4 banks (1,024 slots), drop the count as a reset would.
-        static constexpr size_t MaxRunningQuerySlots = 4 * SamplesQueryBank::BANK_SIZE;
+        static const size_t MaxRunningQuerySlots = [] {
+            const char* const banks = std::getenv("EDEN_NX2_TEST_QUERY_MAX_BANKS");
+            const size_t count = banks ? std::strtoull(banks, nullptr, 10) : 0;
+            return (count != 0 ? count : 4) * SamplesQueryBank::BANK_SIZE;
+        }();
         if (current_query && current_query->size_slots > MaxRunningQuerySlots) {
             // It drops a real count. Logged on the 1st, 2nd, 4th, 8th... drop, so a window this
             // long during gameplay doesn't go unnoticed and a title screen doesn't flood the log.
@@ -280,8 +285,9 @@ public:
         // AMD's drivers wait on each query of a WAIT_BIT copy separately (3.8 us per query, ~5 ms
         // a frame in Ocarina). Queries complete in order on the queue, so waiting for the newest
         // one is enough before copying the range without the wait.
-        const bool wait_on_last =
-            driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE;
+        static const bool wait_all = std::getenv("EDEN_NX2_TEST_QUERY_WAIT_ALL") != nullptr;
+        const bool wait_on_last = !wait_all && (driver_id == VK_DRIVER_ID_AMD_PROPRIETARY ||
+                                                driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE);
 
         ApplyBanksWideOp<true>(pending_sync, [&](SamplesQueryBank* bank, size_t start,
                                                  size_t amount) {
