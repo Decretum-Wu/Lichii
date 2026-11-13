@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <iterator>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -163,12 +164,17 @@ std::pair<std::vector<u8>, std::string> TrimmedLog(std::vector<u8> log) {
     if (log.size() <= LOG_TRIM) {
         return {std::move(log), {}};
     }
+    // Cut at line ends, so no word (a redacted user name included) is split.
+    auto head_end = log.begin() + LOG_HEAD;
+    head_end = std::find(std::make_reverse_iterator(head_end), log.rend(), u8{'\n'}).base();
+    auto tail_begin = std::find(log.end() - LOG_TAIL, log.end(), u8{'\n'});
+    tail_begin = tail_begin == log.end() ? tail_begin : tail_begin + 1;
     const std::string marker = fmt::format(
-        "\n[... {:.1f} MiB cut from the middle by the bug report ...]\n",
-        static_cast<double>(log.size() - LOG_HEAD - LOG_TAIL) / MiB);
-    std::vector<u8> out(log.begin(), log.begin() + LOG_HEAD);
+        "[... {:.1f} MiB cut from the middle by the bug report ...]\n",
+        static_cast<double>(tail_begin - head_end) / MiB);
+    std::vector<u8> out(log.begin(), head_end);
     out.insert(out.end(), marker.begin(), marker.end());
-    out.insert(out.end(), log.end() - LOG_TAIL, log.end());
+    out.insert(out.end(), tail_begin, log.end());
     return {std::move(out), fmt::format("trimmed: first 1 MiB and last 6 MiB of {:.1f} MiB",
                                         static_cast<double>(log.size()) / MiB)};
 }
