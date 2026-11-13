@@ -782,10 +782,14 @@ void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 
             shadow_state.reg_array[method_at(i)] = before[i * 2 + 1];
         }
         dirty.flags = flags_before;
-        const u64 serial = FastDraw::Serial();
+        // The serial as is, not through Serial(): that marks the thread as the one that draws,
+        // whose breaks skip the add once one bumped it. Armed here so the first break bumps.
+        const bool bumped = std::exchange(FastDraw::t_serial_bumped, false);
+        const u64 serial = FastDraw::g_serial.load(std::memory_order_relaxed);
         one_by_one();
         const bool expected_break = last_break != NoBreak && FastDraw::Enabled();
-        const bool broke = FastDraw::Serial() != serial;
+        const bool broke = FastDraw::g_serial.load(std::memory_order_relaxed) != serial;
+        FastDraw::t_serial_bumped = FastDraw::t_serial_bumped || bumped;
         const u32 last = FastDraw::g_last_break.load(std::memory_order_relaxed);
         const u32 expected_last =
             static_cast<u32>(FastDraw::Reason::Register) | (expected_break ? last_break << 8 : 0);

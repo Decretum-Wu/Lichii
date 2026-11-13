@@ -91,8 +91,9 @@ inline void SetEnabledForTest(bool on) {
 
 /// On its own cache line, away from what every thread reads (g_enabled).
 alignas(64) inline std::atomic<u64> g_serial{1};
-/// The reason of the break that bumped g_serial last and, for Register and Method, its 3D method
-/// (diagnostics; on the thread that draws, the first break since it read the serial).
+/// The last break's reason and, for Register and Method, its 3D method (diagnostics). Stored by
+/// every break, also those that skip the add below, so a register block's one break names what
+/// its writes one by one would.
 inline std::atomic<u32> g_last_break{};
 
 /// The thread that draws reads the serial before each draw (Serial). Once one of its breaks
@@ -123,9 +124,12 @@ inline void Break(Reason reason, u32 method = 0) {
         reason != Reason::TextureHeaders && reason != Reason::Invalidation) {
         NoteSync();
     }
-    if (Enabled() && !(t_reads_serial && t_serial_bumped && TestMicro::On(0x10))) {
+    if (!Enabled()) {
+        return;
+    }
+    g_last_break.store(static_cast<u32>(reason) | (method << 8), std::memory_order_relaxed);
+    if (!(t_reads_serial && t_serial_bumped && TestMicro::On(0x10))) {
         g_serial.fetch_add(1, std::memory_order_relaxed);
-        g_last_break.store(static_cast<u32>(reason) | (method << 8), std::memory_order_relaxed);
         t_serial_bumped = t_reads_serial;
     }
 }
