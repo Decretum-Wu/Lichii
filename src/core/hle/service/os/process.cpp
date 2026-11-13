@@ -18,7 +18,6 @@ bool Process::Initialize(Loader::AppLoader& loader, Loader::ResultStatus& out_lo
 
     // Create the process.
     auto* const process = Kernel::KProcess::Create(m_system.Kernel());
-    Kernel::KProcess::Register(m_system.Kernel(), process);
 
     // On exit, ensure we free the additional reference to the process.
     SCOPE_EXIT {
@@ -33,6 +32,9 @@ bool Process::Initialize(Loader::AppLoader& loader, Loader::ResultStatus& out_lo
     if (load_result != Loader::ResultStatus::Success) {
         return false;
     }
+
+    // Register the process now that it loaded.
+    Kernel::KProcess::Register(m_system.Kernel(), process);
 
     // TODO: remove this, kernel already tracks this
     m_system.Kernel().AppendNewProcess(process);
