@@ -61,6 +61,10 @@ public:
         return offset == bytes.size();
     }
 
+    [[nodiscard]] size_t Remaining() const {
+        return bytes.size() - offset;
+    }
+
 private:
     std::span<const u8> bytes;
     size_t offset = 0;
@@ -316,7 +320,8 @@ bool StateAccess::Restore(const Record& record, ChannelState* channel, ChannelSt
         while (!cursor.Done()) {
             u32 method{};
             u32 size{};
-            if (!cursor.Get(method) || !cursor.Get(size)) {
+            if (!cursor.Get(method) || !cursor.Get(size) ||
+                size > cursor.Remaining() / sizeof(u32)) {
                 return false;
             }
             auto& code = engine.uploaded_macro_code[method];
