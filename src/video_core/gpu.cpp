@@ -253,6 +253,8 @@ struct GPU::Impl {
 
     void NotifyShutdown() {
         gpu_thread.NotifyShutdown();
+        // Ends a recording while guest memory and the SMMU it holds references in still exist.
+        VideoCommon::GpuTrace::OnGpuShutdown();
         {
             // The GPU threads stopped: no sync operation runs anymore. Guest threads still run
             // until the kernel suspends them, and one waiting for a read's flush (OnCPURead)
@@ -359,6 +361,7 @@ struct GPU::Impl {
 
     /// Notify rasterizer that any caches of the specified region should be invalidated
     void InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {
+        VideoCommon::GpuTrace::NoteDeviceWrite(addr, size);
         if (preserve_gpu_writes) {
             VideoCore::RasterizerInterface* rasterizer = renderer->ReadRasterizer();
             if (!rasterizer->TryCacheInvalidation(addr, size)) {

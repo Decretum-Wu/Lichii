@@ -58,8 +58,15 @@ struct RecorderStatus {
 };
 [[nodiscard]] RecorderStatus GetRecorderStatus();
 
-/// The guest CPU wrote [pointer, pointer + size) of guest physical memory.
-void NoteCpuWrite(const u8* pointer, size_t size);
+/// The guest CPU wrote [pointer, pointer + size) of guest physical memory. Call after the store.
+/// `before_store`: the store may land after the call (NCE faults, and services that invalidate
+/// before they write), so the range is recorded again at the command after the next one.
+void NoteCpuWrite(const u8* pointer, size_t size, bool before_store = false);
+/// The same, by device address (GPU::InvalidateRegion), as a before-store write.
+void NoteDeviceWrite(DAddr address, u64 size);
+
+/// The GPU thread stopped: writes what was recorded and releases the recorder.
+void OnGpuShutdown();
 
 void NoteGmmuMap(const Tegra::MemoryManager& memory_manager, const MapLog::Entry& entry);
 void NoteGmmuUnmap(const Tegra::MemoryManager& memory_manager, GPUVAddr gpu_address, u64 size);

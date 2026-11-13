@@ -27,13 +27,13 @@ A recording starts at the GPU thread's next command boundary where no channel wa
 What happens (`video_core/gpu_trace/recorder.cpp`):
 
 1. **Snapshot.** The GPU split drains and the 3D and compute engines take their state back from its front. Then the recorder writes every GPU address space and its mappings, from a map log each address space keeps, and the engine and global state. GPU-written data in the caches is flushed to guest memory, and every guest page the mappings reach is copied (zero pages skipped, identical pages stored once).
-2. **CPU writes.** For the window, the recorder holds a cached-page reference on every page it copied, so each guest CPU write to them takes the rasterizer write path, where it is noted. Before each later GPU command, the pages written since the previous command are recorded with their current content. CPU-heavy scenes run slower while recording.
+2. **CPU writes.** For the window, the recorder holds a cached-page reference on every page it copied, so each guest CPU write to them takes the rasterizer write path, where it is noted after the store. Before each later GPU command, the bytes written since the previous command are recorded with their current content, so GPU results on the rest of the page stay the replay's own. Writes noted before their store (NCE faults, services that invalidate a range and then write it) are recorded at the next command and again at the one after. CPU-heavy scenes run slower while recording.
 3. **Commands.** Each command list is recorded when the GPU thread takes it: its GPFIFO entries, the words copied at submit and the entries still deferred. GPU memory maps are recorded when they happen, with the SMMU mapping and content of any new pages.
 4. **Presents.** A composite request is recorded at the GPU tick that runs it, in order with the commands.
 
 `eden-cli --replay <trace> --out <dir> --record <new trace> --record-from <present>` records a replay from a present on. Replaying the new trace must give the same frames as the original from that present: that round trip checks the recorder, the snapshot and the restore against each other.
 
-Not recorded yet: SMMU unmaps (the replay keeps the stale mapping), sparse backing changes, the order in which suspended channels resume, and Switch 2 semaphore region changes after the snapshot. There is no Qt hotkey yet: use the debug server or the file trigger.
+A channel that starts submitting after the snapshot ends the recording before its first submit, and a GPU shutdown ends it at once; both traces replay up to that point. Not recorded yet: SMMU unmaps (the replay keeps the stale mapping), sparse backing changes, the order in which suspended channels resume, and Switch 2 semaphore region changes after the snapshot. There is no Qt hotkey yet: use the debug server or the file trigger.
 
 ## File format
 
