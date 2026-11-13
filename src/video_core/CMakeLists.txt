@@ -108,6 +108,9 @@ add_library(video_core STATIC
     gpu_split.h
     gpu_thread.cpp
     gpu_thread.h
+    gpu_trace/map_log.h
+    gpu_trace/recorder.cpp
+    gpu_trace/recorder.h
     gpu_trace/replay.cpp
     gpu_trace/replay.h
     gpu_trace/sample.cpp

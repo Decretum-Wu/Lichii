@@ -36,6 +36,7 @@
 #include "core/hle/kernel/nx2_thread_stats.h"
 #include "core/memory.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_trace/recorder.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/nx2_async_readback.h"
@@ -962,6 +963,7 @@ struct Memory::Impl {
             ReportForeignPointer(v_address, p);
             return;
         }
+        VideoCommon::GpuTrace::NoteCpuWrite(p, size);
         // Guard on sys_core;
         if (core == sys_core) [[unlikely]] {
             sys_core_guard.lock();
@@ -1015,6 +1017,7 @@ struct Memory::Impl {
                 sys_core_guard.unlock();
             }
         };
+        VideoCommon::GpuTrace::NoteCpuWrite(p, size);
         auto& gpu = system.GPU();
         gpu_device_memory->ApplyOpOnPointer(
             p, scratch_buffers[core], [&](DAddr address) { gpu.InvalidateRegion(address, size, true); });

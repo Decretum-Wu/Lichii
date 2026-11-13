@@ -61,6 +61,10 @@ public:
         return offset == bytes.size();
     }
 
+    [[nodiscard]] size_t Remaining() const {
+        return bytes.size() - offset;
+    }
+
 private:
     std::span<const u8> bytes;
     size_t offset = 0;
@@ -130,6 +134,17 @@ bool GetRegs(Cursor& cursor, Regs& regs) {
     return cursor.Get(regs) && cursor.Done();
 }
 } // Anonymous namespace
+
+AddressSpaceRecord StateAccess::AddressSpace(const Tegra::MemoryManager& memory_manager) {
+    return {static_cast<u32>(memory_manager.GetID()),
+            static_cast<u32>(memory_manager.address_space_bits), memory_manager.split_address,
+            static_cast<u32>(memory_manager.big_page_bits),
+            static_cast<u32>(memory_manager.page_bits)};
+}
+
+std::vector<MapLog::Entry> StateAccess::Maps(const Tegra::MemoryManager& memory_manager) {
+    return memory_manager.trace_maps.Entries();
+}
 
 void StateAccess::Settle(ChannelState& channel) {
     auto& payload = *channel.payload;
@@ -316,7 +331,8 @@ bool StateAccess::Restore(const Record& record, ChannelState* channel, ChannelSt
         while (!cursor.Done()) {
             u32 method{};
             u32 size{};
-            if (!cursor.Get(method) || !cursor.Get(size)) {
+            if (!cursor.Get(method) || !cursor.Get(size) ||
+                size > cursor.Remaining() / sizeof(u32)) {
                 return false;
             }
             auto& code = engine.uploaded_macro_code[method];
