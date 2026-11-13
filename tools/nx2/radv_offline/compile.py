@@ -820,7 +820,16 @@ def parse_variants(values):
     variants = [("default", {})]
     for value in values or []:
         name, _, settings = value.partition(":")
-        variants.append((name, dict(item.split("=", 1) for item in settings.split(",") if item)))
+        env, last = {}, None
+        for item in filter(None, settings.split(",")):
+            if "=" in item:
+                last, setting = item.split("=", 1)
+                env[last] = setting
+            elif last is None:
+                sys.exit(f"--variant {value}: expected VAR=VALUE before {item}")
+            else:
+                env[last] += "," + item
+        variants.append((name, env))
     return variants
 
 
@@ -1029,7 +1038,7 @@ def cmd_cache(args):
     with ThreadPoolExecutor(args.jobs) as pool:
         for result in pool.map(check, checks):
             findings += result
-    done = []
+    done, rows = [], []
     for name, modules in selected:
         stages = [Stage(path, shader_hash=h) for path, h in modules]
         target = out / "pipelines" / name
@@ -1037,13 +1046,14 @@ def cmd_cache(args):
         write_report(target, f"radv_offline: record {name}", results, stage_findings(stages, results))
         done.append({"record": name, "hashes": [s.hash for s in stages],
                      "ok": sum(r["status"] == "ok" for r in results), "runs": len(results)})
+        rows += [{**r, "chip": f"{name} {r['chip']}"} for r in results]
     (out / "records.json").write_text(json.dumps({"compiled": done, "not_compiled": broken}, indent=1))
-    write_report(out, f"radv_offline: cache {Path(args.cache).name}", [], findings)
+    write_report(out, f"radv_offline: cache {Path(args.cache).name}", rows, findings)
     by_check = Counter((f["severity"], f["check"]) for f in findings)
     print(f"{len(records)} records, {len(seen)} programs checked, {len(broken)} records the offline compiler "
-          f"can't emit, {len(done)} pipelines compiled. Findings: " +
-          ", ".join(f"{c} {s} {k}" for (s, k), c in sorted(by_check.items())))
-    return 0
+          f"can't emit, {len(done)} pipelines compiled, {sum(r['status'] != 'ok' for r in rows)} compiles "
+          f"failed. Findings: " + ", ".join(f"{c} {s} {k}" for (s, k), c in sorted(by_check.items())))
+    return failed(rows)
 
 
 def cmd_foz(args):

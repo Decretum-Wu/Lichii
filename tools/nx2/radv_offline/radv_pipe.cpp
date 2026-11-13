@@ -345,7 +345,7 @@ void PrintProfile(VkPhysicalDevice physical, const HasExtension& has_extension) 
         {"support_float64", features.features.shaderFloat64},
         {"support_float16", v12.shaderFloat16},
         {"support_int64", features.features.shaderInt64},
-        {"needs_demote_reorder", 1},
+        {"needs_demote_reorder", 0},
         {"support_snorm_render_buffer", 1},
         {"support_viewport_index_layer", layer},
         {"support_viewport_mask", 0},
