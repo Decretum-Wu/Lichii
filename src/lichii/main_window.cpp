@@ -13,6 +13,7 @@
 #include "common/fs/path_util.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
+#include "common/shutdown_progress.h"
 #include "frontend_common/settings_generator.h"
 #include "render/performance_overlay.h"
 #ifdef HAS_RESHADE
@@ -338,6 +339,9 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 constexpr int default_mouse_hide_timeout = 2500;
 constexpr int default_input_update_timeout = 1;
 constexpr int EmuThreadStopTimeoutMs = 10'000;
+// A teardown that keeps making progress (Common::ShutdownProgress) is waited for this long at
+// most before its thread is terminated.
+constexpr qint64 MaxEmuThreadShutdownMs = 180'000;
 
 constexpr size_t CopyBufferSize = 1_MiB;
 
@@ -2531,6 +2535,8 @@ void MainWindow::OnShutdownBeginDialog() {
 void MainWindow::OnEmulationStopTimeExpired() {
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->ForceStop();
+        emu_force_stop_clock.start();
+        shutdown_progress_seen = Common::ShutdownProgress();
         emu_terminate_timer.setSingleShot(true);
         emu_terminate_timer.start(EmuThreadStopTimeoutMs);
         connect(&emu_terminate_timer, &QTimer::timeout, this, &MainWindow::OnEmulationStopTimeout,
@@ -2538,7 +2544,25 @@ void MainWindow::OnEmulationStopTimeExpired() {
     }
 }
 
+bool MainWindow::EmulationShutdownProgressing() {
+    const u64 progress = Common::ShutdownProgress();
+    const bool moved = progress != shutdown_progress_seen;
+    shutdown_progress_seen = progress;
+    return moved && emu_force_stop_clock.isValid() &&
+           emu_force_stop_clock.elapsed() < MaxEmuThreadShutdownMs;
+}
+
 void MainWindow::OnEmulationStopTimeout() {
+    // Terminating the thread mid-teardown can leave a lock it holds (the heap's, the driver's)
+    // taken for good, which froze the whole app. While the teardown still moves (pipeline caches
+    // written, pipelines destroyed), it gets another timeout.
+    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning() &&
+        EmulationShutdownProgressing()) {
+        LOG_INFO(Frontend, "Emulation thread still shutting down after {} ms, waiting",
+                 emu_force_stop_clock.elapsed());
+        emu_terminate_timer.start(EmuThreadStopTimeoutMs);
+        return;
+    }
     TerminateEmulationThread();
     OnEmulationStopped();
 }
@@ -2664,8 +2688,13 @@ void MainWindow::ShutdownGame() {
         timeout.setSingleShot(true);
         connect(QtCommon::emu_thread.get(), &QThread::finished, &loop, &QEventLoop::quit);
         connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
-        timeout.start(EmuThreadStopTimeoutMs);
-        loop.exec(QEventLoop::ExcludeUserInputEvents);
+        // Waits on while the teardown still makes progress (see OnEmulationStopTimeout).
+        do {
+            timeout.start(EmuThreadStopTimeoutMs);
+            loop.exec(QEventLoop::ExcludeUserInputEvents);
+            // OnEmulationStopped (on QThread::finished) may have reset the thread meanwhile.
+        } while (QtCommon::emu_thread && QtCommon::emu_thread->isRunning() &&
+                 EmulationShutdownProgressing());
     }
     TerminateEmulationThread();
     OnEmulationStopped();

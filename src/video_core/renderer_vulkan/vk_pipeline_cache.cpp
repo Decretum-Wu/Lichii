@@ -28,6 +28,7 @@
 #include "common/fs/path_util.h"
 #include "common/memory_detect.h"
 #include "common/scope_exit.h"
+#include "common/shutdown_progress.h"
 #include "common/thread.h"
 #include "common/thread_worker.h"
 #include "common/zstd_compression.h"
@@ -855,6 +856,23 @@ size_t KeptPipelines() {
     return kept;
 #endif
 }
+
+/// Destroys the pipelines of `pipelines` (a map or a deque of pairs holding unique_ptrs), telling
+/// the frontend every few hundred that the teardown still moves: tens of thousands of them took
+/// longer than the frontend waited for the emulation thread.
+template <typename Container>
+void DestroyPipelinesWithProgress(Container& pipelines) {
+    constexpr size_t ProgressEvery = 256;
+    size_t destroyed = 0;
+    for (auto& entry : pipelines) {
+        entry.second.reset();
+        if (++destroyed % ProgressEvery == 0) {
+            Common::NoteShutdownProgress();
+        }
+    }
+    pipelines.clear();
+    Common::NoteShutdownProgress();
+}
 } // Anonymous namespace
 
 PipelineCache::~PipelineCache() {
@@ -862,17 +880,21 @@ PipelineCache::~PipelineCache() {
     StopBackgroundJobs();
     // The pipelines' builds end before the driver pipeline cache they build into goes.
     shader_jobs->Shutdown();
+    Common::NoteShutdownProgress();
     serialization_thread.WaitForRequests();
+    Common::NoteShutdownProgress();
     SaveUsedPipelines();
     if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {
         SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
                                      CACHE_VERSION);
     }
+    Common::NoteShutdownProgress();
     // After the records the serialization thread queued: its writer drains on destruction
     shader_cache_v2 = nullptr;
     cache_v2.reset();
-    graphics_cache.clear();
-    evicted_pipelines.clear();
+    Common::NoteShutdownProgress();
+    DestroyPipelinesWithProgress(graphics_cache);
+    DestroyPipelinesWithProgress(evicted_pipelines);
     if (pipeline_binaries) {
         pipeline_binaries->LogCounts("at the end of the session");
         pipeline_binaries.reset();
@@ -3200,7 +3222,15 @@ void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& fi
             cache_data.resize(cache_size);
             pipeline_cache.Read(&cache_size, cache_data.data());
         }
-        file.write(cache_data.data(), cache_size);
+        Common::NoteShutdownProgress();
+        // In pieces: a cache of tens of thousands of pipelines is gigabytes, and a shutdown
+        // waiting on it is told the write still moves.
+        constexpr size_t Chunk = size_t{64} << 20;
+        for (size_t offset = 0; offset < cache_size; offset += Chunk) {
+            file.write(cache_data.data() + offset,
+                       static_cast<std::streamsize>((std::min)(Chunk, cache_size - offset)));
+            Common::NoteShutdownProgress();
+        }
         file.close();
     } catch (const std::ios_base::failure& e) {
         // The cache stays as it was: only the file being written goes.
