@@ -140,6 +140,9 @@ jobs:
           python3 tools/nx2/test_thread_worker_wake.py
           python3 -I tools/nx2/thread_worker_wake.py --cxx g++-13
 
+      - name: Test offline RADV shader checks
+        run: python3 tools/nx2/radv_offline/test_checks.py
+
       - name: Test Linux switch discovery
         run: CXX=g++-13 python3 tools/nx2/test_switches.py
 
