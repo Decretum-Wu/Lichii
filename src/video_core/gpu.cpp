@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <list>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "common/assert.h"
@@ -118,11 +119,20 @@ struct GPU::Impl {
         // locks per core's manager) only when a manager shows a write. One collected after this
         // check is gathered by the next call, as one collected just after the gather would be.
         const auto managers = system.GetGPUDirtyMemoryManager();
+        const auto collects = [&managers] {
+            u64 sum = 0;
+            for (const Core::GPUDirtyMemoryManager& manager : managers) {
+                sum += manager.Collects();
+            }
+            return sum;
+        };
+        const u64 collects_before = VideoCommon::BackX::g_verify ? collects() : 0;
         if (std::ranges::none_of(managers, &Core::GPUDirtyMemoryManager::MayHavePending)) {
-            if (VideoCommon::BackX::g_verify && ApplyCollectedWrites()) {
-                // Also counts a write collected between the check and this gather (rare).
-                VideoCommon::BackX::Mismatch("collected CPU write while no manager showed one", 0,
-                                             0);
+            if (VideoCommon::BackX::g_verify) {
+                const auto first_write = ApplyCollectedWrites();
+                VideoCommon::BackX::SkippedGather(first_write.has_value(),
+                                                  collects() != collects_before,
+                                                  first_write.value_or(std::pair<DAddr, u64>{}));
             }
             return;
         }
@@ -130,8 +140,8 @@ struct GPU::Impl {
     }
 
     /// Gathers the CPU writes collected into GPU-written pages and applies them to the caches.
-    /// True when there were some.
-    bool ApplyCollectedWrites() {
+    /// Returns the first of them, if there were some.
+    std::optional<std::pair<DAddr, u64>> ApplyCollectedWrites() {
         std::vector<std::pair<DAddr, u64>> writes;
         {
             // Gathered writes stay pending (ForEachPendingCpuWrite) until they are applied: a
@@ -142,7 +152,7 @@ struct GPU::Impl {
                 [&writes](PAddr address, size_t size) { writes.emplace_back(address, size); });
             system.GatherGPUDirtyMemory(callback_writes);
             if (writes.empty()) {
-                return false;
+                return std::nullopt;
             }
             applying_writes.push_back(&writes);
         }
@@ -153,7 +163,7 @@ struct GPU::Impl {
             std::erase(applying_writes, &writes);
         };
         renderer->ReadRasterizer()->OnCacheInvalidations(writes);
-        return true;
+        return writes.front();
     }
 
     void ForEachPendingCpuWrite(const std::function<void(DAddr, size_t)>& callback) {

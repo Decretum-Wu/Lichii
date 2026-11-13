@@ -11,6 +11,7 @@
 #include "core/core.h"
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
+#include "core/gpu_dirty_memory_manager.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/nx2_async_readback.h"
@@ -66,6 +67,7 @@ void CreateGPU(std::optional<Tegra::GPU>& gpu, Core::Frontend::EmuWindow& emu_wi
     VideoCore::AsyncReadback::ReadSwitch();
     VideoCommon::Nx2Perf::ReadSwitch();
     VideoCommon::BackX::ReadSwitch();
+    Core::GPUDirtyMemoryManager::count_collects = VideoCommon::BackX::g_verify;
 
     const auto nvdec_value = Settings::values.nvdec_emulation.GetValue();
     const bool use_nvdec = nvdec_value != Settings::NvdecEmulation::Off;

@@ -23,6 +23,9 @@ public:
 
     ~GPUDirtyMemoryManager() = default;
 
+    /// Off unless EDEN_NX2_BACKX_VERIFY counts the writes that add bits (Collects).
+    static inline bool count_collects{};
+
     void Collect(PAddr address, size_t size) {
         // A transform covers one page: a write past its page goes in a page at a time. Its mask
         // was otherwise built with shifts of 32 or more, which could leave it empty and lose the
@@ -33,6 +36,11 @@ public:
             address += in_page;
             size -= in_page;
         }
+    }
+
+    /// Writes collected that added bits, ever (only while count_collects is set).
+    [[nodiscard]] u64 Collects() const {
+        return collects.load(std::memory_order_acquire);
     }
 
     /// Calls `callback` for each write collected and not yet applied, without consuming them: those
@@ -126,6 +134,7 @@ private:
                     std::scoped_lock lk(guard);
                     back_buffer.emplace_back(tmp);
                     current.exchange(t, std::memory_order_relaxed);
+                    CountCollect();
                     return;
                 }
                 tmp.address = t.address;
@@ -137,6 +146,14 @@ private:
             tmp.mask |= t.mask;
         } while (!current.compare_exchange_weak(original, tmp, std::memory_order_release,
                                                 std::memory_order_relaxed));
+        CountCollect();
+    }
+
+    /// After the write is in `current`: a reader that sees the count sees the write.
+    void CountCollect() {
+        if (count_collects) {
+            collects.fetch_add(1, std::memory_order_release);
+        }
     }
 
     template <typename Func>
@@ -189,6 +206,7 @@ private:
     }
 
     std::atomic<TransformAddress> current{};
+    std::atomic<u64> collects{};
     std::mutex guard;
     std::mutex gather_guard;
     std::vector<TransformAddress> back_buffer;

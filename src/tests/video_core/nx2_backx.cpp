@@ -142,3 +142,21 @@ TEST_CASE("BackX gather: a write crossing a 2 KiB page is collected whole and sh
         REQUIRE_FALSE(manager.MayHavePending());
     }
 }
+
+TEST_CASE("BackX gather: Collects counts the collects that add bits", "[core][nx2_backx]") {
+    // The verify tells a race from a miss by this count, so it must move for every collect a
+    // gather can find (a page split counting each page) and only when counting is on.
+    Core::GPUDirtyMemoryManager manager;
+    manager.Collect(0x10000, 0x40);
+    REQUIRE(manager.Collects() == 0);
+    Core::GPUDirtyMemoryManager::count_collects = true;
+    manager.Collect(0x10000, 0x40);
+    REQUIRE(manager.Collects() == 0);
+    manager.Collect(0x10040, 0x40);
+    REQUIRE(manager.Collects() == 1);
+    manager.Collect(0x7000, 0x40);
+    REQUIRE(manager.Collects() == 2);
+    manager.Collect(0x107c0, 0x80);
+    REQUIRE(manager.Collects() == 4);
+    Core::GPUDirtyMemoryManager::count_collects = false;
+}
