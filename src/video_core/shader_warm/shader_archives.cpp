@@ -913,7 +913,7 @@ GameFileKind ClassifyGameFile(std::string_view path) {
         }
     }
     if (path.starts_with("Effect/") && path.find('/', 7) == std::string_view::npos &&
-        (EndsWith(path, ".vsetb.byml.zs") || EndsWith(path, ".esetb.byml.zs"))) {
+        (EndsWith(Lower(path), ".vsetb.byml.zs") || EndsWith(Lower(path), ".esetb.byml.zs"))) {
         return GameFileKind::Effect;
     }
     if (EndsWith(lower, ".ptcl")) {
