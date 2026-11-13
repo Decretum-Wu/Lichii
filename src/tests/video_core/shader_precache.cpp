@@ -99,6 +99,10 @@ TEST_CASE("ShaderPrecache: the marker matches only the same file and driver", "[
     WriteBytes(warm, "precache");
     REQUIRE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2206, 53)));
 
+    // The same size with other contents: only the content hash tells them apart.
+    WriteBytes(warm, "precachf");
+    REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2206, 53)));
+
     WriteBytes(warm, "a rebuilt precache");
     REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 0x1234, 0x2206, 53)));
 }
@@ -150,6 +154,16 @@ TEST_CASE("ShaderPrecache: a marker of an older format is not read", "[video_cor
     // Size, last-write time, entries, driver, device and cache version, then the line end.
     WriteBytes(ShaderWarm::WarmMarkerPath(warm), "8 133981234567890000 12 4660 8710 53\n");
     REQUIRE_FALSE(ShaderWarm::ReadWarmMarker(warm).has_value());
+    // The same with a variant but no format tag.
+    WriteBytes(ShaderWarm::WarmMarkerPath(warm),
+               "8 133981234567890000 12 4660 8710 53 18364758544493064720\n");
+    REQUIRE_FALSE(ShaderWarm::ReadWarmMarker(warm).has_value());
+    // Tagged v2 but cut short.
+    WriteBytes(ShaderWarm::WarmMarkerPath(warm), "v2 8 1234 12 4660 8710 53\n");
+    REQUIRE_FALSE(ShaderWarm::ReadWarmMarker(warm).has_value());
+
+    REQUIRE(ShaderWarm::WriteWarmMarker(warm, *ShaderWarm::CurrentWarmStamp(warm, 12, 1, 2, 3)));
+    REQUIRE(ShaderWarm::ReadWarmMarker(warm).has_value());
 }
 
 TEST_CASE("ShaderPrecache: precached pipelines are kept per driver", "[video_core]") {

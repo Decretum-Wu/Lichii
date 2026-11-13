@@ -706,7 +706,7 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
         return fail("Writing the precache file failed");
     }
     // A new file: the count of the old one no longer applies, and its marker only when the
-    // contents changed (the marker also carries the driver and lowering, checked at boot).
+    // contents changed (the marker also carries the driver and variant, checked at boot).
     DropStaleWarmMarker(compute_path, compute_tmp);
     std::error_code ignored;
     fs::remove(WarmCountPath(compute_path), ignored);
