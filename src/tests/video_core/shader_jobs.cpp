@@ -255,6 +255,31 @@ TEST_CASE("Shader jobs age Background jobs into Soon order", "[video_core][shade
     }
 }
 
+TEST_CASE("Shader jobs alternate an aged Background backlog with Soon jobs",
+          "[video_core][shader_jobs]") {
+    auto config = Config(1, 1);
+    config.background_aging = 1ms;
+    ShaderJobScheduler scheduler{config};
+    Gate gate;
+    const auto blocker = Block(scheduler, gate);
+    Order order;
+    std::vector<ShaderJobHandle> handles;
+    for (int id = 0; id < 1000; ++id) {
+        handles.push_back(scheduler.Submit(CpuJob(Background, [&order, id] { order.Add(id); })));
+    }
+    std::this_thread::sleep_for(20ms);
+    handles.push_back(scheduler.Submit(CpuJob(Soon, [&] { order.Add(-1); })));
+    handles.push_back(scheduler.Submit(CpuJob(Soon, [&] { order.Add(-2); })));
+    gate.Open();
+    for (const auto& handle : handles) {
+        handle.Wait();
+    }
+    blocker.Wait();
+    const auto ids = order.Get();
+    REQUIRE(ids.size() == 1002);
+    REQUIRE(std::vector<int>(ids.begin(), ids.begin() + 5) == std::vector<int>{0, -1, 1, -2, 2});
+}
+
 TEST_CASE("Shader job budget admits by in-flight bytes", "[video_core][shader_jobs]") {
     ShaderJobScheduler scheduler{Config(4, 1, 100)};
     Gate first_gate, later_gate;
