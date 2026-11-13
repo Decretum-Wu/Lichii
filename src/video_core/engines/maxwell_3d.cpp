@@ -749,6 +749,7 @@ void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 
     static u64 by_write{};
     static u64 differences{};
     static u64 total_differences{};
+    static u64 hidden_breaks{};
     static auto last_report = std::chrono::steady_clock::now();
     const auto one_by_one = [&] {
         for (const u64 write : writes) {
@@ -782,13 +783,22 @@ void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 
             shadow_state.reg_array[method_at(i)] = before[i * 2 + 1];
         }
         dirty.flags = flags_before;
-        const u64 serial = FastDraw::Serial();
+        // Other threads break fast draws too (fences, maps), into the same serial and last
+        // break: mark the last break, and judge only a register break this thread left there or
+        // the mark left alone. Restored when untouched.
+        constexpr u32 unset = static_cast<u32>(FastDraw::Reason::Count);
+        const u32 previous = FastDraw::g_last_break.exchange(unset, std::memory_order_relaxed);
         one_by_one();
+        u32 last = unset;
+        FastDraw::g_last_break.compare_exchange_strong(last, previous, std::memory_order_relaxed);
         const bool expected_break = last_break != NoBreak && FastDraw::Enabled();
-        const bool broke = FastDraw::Serial() != serial;
-        const u32 last = FastDraw::g_last_break.load(std::memory_order_relaxed);
         const u32 expected_last =
             static_cast<u32>(FastDraw::Reason::Register) | (expected_break ? last_break << 8 : 0);
+        const bool own_break = (last & 0xff) == static_cast<u32>(FastDraw::Reason::Register);
+        if (last != unset && !own_break) {
+            ++hidden_breaks;
+        }
+        const bool break_differs = last == unset ? expected_break : own_break && last != expected_last;
         std::string register_differences;
         for (size_t i = 0; i < writes.size(); ++i) {
             const u32 method = method_at(i);
@@ -801,8 +811,7 @@ void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 
             }
         }
         const DirtyState::Flags flag_differences = stored_flags ^ dirty.flags;
-        if (!register_differences.empty() || flag_differences.any() || broke != expected_break ||
-            (broke && last != expected_last)) {
+        if (!register_differences.empty() || flag_differences.any() || break_differs) {
             ++differences;
             if (++total_differences <= 16) {
                 std::string flag_list;
@@ -816,7 +825,7 @@ void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 
                           "registers (block/shadow){}, block dirty flags{}, fast draw break {} "
                           "{:#x} against {} {:#x}",
                           writes.size(), register_differences, flag_list, expected_break ? 1 : 0,
-                          expected_last, broke ? 1 : 0, last);
+                          expected_last, last != unset ? 1 : 0, last != unset ? last : 0);
             }
         }
     }
@@ -828,12 +837,14 @@ void Maxwell3D::VerifyStateRegisters(Core::System& system, std::span<const u64, 
     last_report = now;
     LOG_INFO(HW_GPU,
              "Register block verify (EDEN_NX2_REG_BLOCK_VERIFY) in {:.1f} s: {} blocks of {} writes "
-             "compared with the writes one by one, {} differ ({} in all); {} blocks written one by one",
-             seconds, blocks, block_writes, differences, total_differences, by_write);
+             "compared with the writes one by one, {} differ ({} in all), {} breaks not judged as "
+             "another thread's break came last; {} blocks written one by one",
+             seconds, blocks, block_writes, differences, total_differences, hidden_breaks, by_write);
     blocks = 0;
     block_writes = 0;
     by_write = 0;
     differences = 0;
+    hidden_breaks = 0;
 }
 
 void Maxwell3D::CallMethodSlow(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
