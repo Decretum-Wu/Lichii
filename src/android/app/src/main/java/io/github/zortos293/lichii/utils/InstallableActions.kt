@@ -124,8 +124,7 @@ object InstallableActions {
         val resultString = activity.resources.getStringArray(R.array.installKeysResults)[resultCode]
         MessageDialogFragment.newInstance(
             titleId = R.string.keys_failed,
-            descriptionString = resultString,
-            helpLinkId = R.string.keys_missing_help
+            descriptionString = resultString
         ).show(fragmentManager, MessageDialogFragment.TAG)
     }
 
@@ -280,8 +279,7 @@ object InstallableActions {
                 return@newInstance MessageDialogFragment.newInstance(
                     activity,
                     titleId = R.string.install_game_content_failure,
-                    descriptionString = installResult.toString().trim(),
-                    helpLinkId = R.string.install_game_content_help_link
+                    descriptionString = installResult.toString().trim()
                 )
             } else {
                 return@newInstance MessageDialogFragment.newInstance(

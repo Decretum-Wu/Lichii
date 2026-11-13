@@ -303,8 +303,7 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
         if (!NativeLibrary.areKeysPresent()) {
             MessageDialogFragment.newInstance(
                 titleId = R.string.keys_missing,
-                descriptionId = R.string.keys_missing_description,
-                helpLinkId = R.string.keys_missing_help
+                descriptionId = R.string.keys_missing_description
             ).show(supportFragmentManager, MessageDialogFragment.TAG)
         }
     }

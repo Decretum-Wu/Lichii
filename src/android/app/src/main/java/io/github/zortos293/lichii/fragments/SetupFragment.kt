@@ -177,7 +177,6 @@ class SetupFragment : Fragment() {
                                 true,
                                 R.string.install_prod_keys_warning,
                                 R.string.install_prod_keys_warning_description,
-                                R.string.install_prod_keys_warning_help,
                             )
                         )
                         add(
@@ -200,7 +199,6 @@ class SetupFragment : Fragment() {
                                 true,
                                 R.string.install_firmware_warning,
                                 R.string.install_firmware_warning_description,
-                                R.string.install_firmware_warning_help,
                             )
                         )
                         add(
@@ -241,7 +239,6 @@ class SetupFragment : Fragment() {
                                 true,
                                 R.string.add_games_warning,
                                 R.string.add_games_warning_description,
-                                R.string.add_games_warning_help,
                             )
                         )
                     },

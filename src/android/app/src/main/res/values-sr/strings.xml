@@ -599,7 +599,6 @@
     <string name="verify_no_result_description">Садржај датотеке није проверен за валидност</string>
     <!-- ROM loading errors -->
     <string name="loader_error_encrypted">Ваш РОМ је шифровани</string>
-    <string name="loader_error_encrypted_roms_description">Игра ЦартиДгес</string>
     <string name="loader_error_encrypted_keys_description">prod.keys</string>
     <string name="loader_error_video_core">Дошло је до грешке приликом иницијализације видео језгра</string>
     <string name="loader_error_video_core_description">То обично узрокује некомпатибилни ГПУ драјвер. Инсталирање прилагођеног ГПУ управљачког програма може решити овај проблем.</string>
