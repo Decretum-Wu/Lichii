@@ -1136,6 +1136,10 @@ struct NvidiaDlssRuntimeSettings {
 void RefreshNvidiaDlssRuntimeSettings();
 NvidiaDlssRuntimeSettings GetNvidiaDlssRuntimeSettings();
 
+/// The NVIDIA DLSS quality whose render scale Ocarina of Time's built-in patch applies when the
+/// game starts: Balanced, Performance or Ultra Performance with NVIDIA DLSS on, docked.
+std::optional<NvidiaDlssQuality> OcarinaDlssRenderScale();
+
 constexpr u32 MIN_FRAME_GEN_MULTIPLIER = 2;
 constexpr u32 MAX_FRAME_GEN_MULTIPLIER = 4;
 

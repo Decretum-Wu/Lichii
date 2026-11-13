@@ -64,7 +64,10 @@ game's fixed render scale so it renders at 2276×1280, 1920×1080 and 1280×720
 QuincyForbes' follow-up for the Balanced and Performance upscale passes). Automatic and Quality keep 2560×1440. The render scale is
 patched into the game when it starts, so a change takes effect at the next
 start; until then DLSS applies the new mode to the old render size. Handheld,
-DLSS off and a disabled Max Resolution add-on leave the game's scale alone.
+DLSS off and a disabled Max Resolution add-on leave the game's scale alone. If
+DLSS turns out to be unavailable when the game starts (no NVIDIA runtime, another
+GPU), FSR 3.1 reconstructs the smaller scene instead of the game's own upscale;
+at Balanced, whose padded scene only DLSS takes, the game's own upscale runs.
 
 Ultra Quality is not offered merely because an SDK enum exists; this integration
 does not establish runtime support for it.

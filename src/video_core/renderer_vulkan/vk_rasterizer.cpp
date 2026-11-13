@@ -472,6 +472,10 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
+#ifdef EGLANTINE_STREAMLINE
+    oot_performance_scale =
+        Settings::OcarinaDlssRenderScale() == Settings::NvidiaDlssQuality::Performance;
+#endif
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
@@ -3509,9 +3513,9 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
     if ((!replace && upscale_hash != depth_reader) || !OcarinaTemporalEnabled()) {
         return false;
     }
-    const bool dlss = oot_backend == VideoCommon::OcarinaUpscaleBackend::Dlss;
-    const auto dlss_quality = Settings::GetNvidiaDlssRuntimeSettings().quality;
-    const bool native_resolution = dlss && dlss_quality == Settings::NvidiaDlssQuality::Native;
+    const bool native_resolution =
+        oot_backend == VideoCommon::OcarinaUpscaleBackend::Dlss &&
+        Settings::GetNvidiaDlssRuntimeSettings().quality == Settings::NvidiaDlssQuality::Native;
     const auto read_tic = [this](u32 index) -> std::optional<Tegra::Texture::TICEntry> {
         const auto& table = kepler_compute->regs.tic;
         using Entry = Tegra::Texture::TICEntry;
@@ -3594,11 +3598,11 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
     const auto extent = oot_motion.extent;
     const bool native_size = upscale_hash == ComputePipeline::OcarinaFullSizeShader;
     // At the DLSS Performance render scale (1920x1080) the game upscales to 2560x1440 with its
-    // 3/4 pass instead (QuincyForbes' f7d0938b5b).
-    const bool three_quarter_1440p =
-        upscale_hash == ComputePipeline::OcarinaThreeQuarterShader && dlss &&
-        dlss_quality == Settings::NvidiaDlssQuality::Performance && target.size.width == 2560 &&
-        target.size.height == 1440;
+    // 3/4 pass instead (QuincyForbes' f7d0938b5b). The scale is the one the game started with,
+    // whatever quality is chosen since.
+    const bool three_quarter_1440p = upscale_hash == ComputePipeline::OcarinaThreeQuarterShader &&
+                                     oot_performance_scale && target.size.width == 2560 &&
+                                     target.size.height == 1440;
     const bool pass_1440p = upscale_hash == ComputePipeline::Ocarina1440pShader ||
                             upscale_hash == ComputePipeline::Ocarina1440pScaledShader ||
                             upscale_hash == ComputePipeline::Ocarina1440pScaledFieldShader ||

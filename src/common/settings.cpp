@@ -99,6 +99,16 @@ void RefreshNvidiaDlssRuntimeSettings() {
         std::memory_order_relaxed);
 }
 
+std::optional<NvidiaDlssQuality> OcarinaDlssRenderScale() {
+    const auto quality = values.nvidia_dlss_quality.GetValue();
+    if (!values.nvidia_dlss.GetValue() || !IsDockedMode() ||
+        (quality != NvidiaDlssQuality::Balanced && quality != NvidiaDlssQuality::Performance &&
+         quality != NvidiaDlssQuality::UltraPerformance)) {
+        return std::nullopt;
+    }
+    return quality;
+}
+
 NvidiaDlssRuntimeSettings GetNvidiaDlssRuntimeSettings() {
     const u32 options = nvidia_dlss_runtime_options.load(std::memory_order_relaxed);
     return {static_cast<NvidiaDlssQuality>(options & 0xff),

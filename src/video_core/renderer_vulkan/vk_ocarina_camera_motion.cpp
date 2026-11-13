@@ -1113,12 +1113,14 @@ bool OcarinaUpscaler::Record(VkImageView color, VkImageView depth, VkImageView t
 VideoCommon::OcarinaUpscaleBackend ResolveOcarinaUpscaler(const Device& device) {
     const char* value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
     bool dlss_available = false;
+    bool render_scaled = false;
 #ifdef EGLANTINE_STREAMLINE
     dlss_available = Streamline::IsDlssAvailable();
+    render_scaled = Settings::OcarinaDlssRenderScale().has_value();
 #endif
     const auto backend = VideoCommon::SelectOcarinaUpscaler(
         Settings::values.ocarina_fsr.GetValue(), Settings::values.nvidia_dlss.GetValue(),
-        dlss_available, value ? value : "");
+        dlss_available, render_scaled, value ? value : "");
     if (backend == VideoCommon::OcarinaUpscaleBackend::Fsr && !Fsr3Upscaler::IsSupported(device)) {
         return VideoCommon::OcarinaUpscaleBackend::Native;
     }
