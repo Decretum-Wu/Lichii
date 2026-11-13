@@ -12,6 +12,7 @@
 #include <type_traits>
 
 #include "common/common_types.h"
+#include "video_core/nx2_test_micro.h"
 
 namespace VideoCommon {
 
@@ -139,7 +140,7 @@ template <class Runtime, class DeviceMemory>
     } else {
         slot.size = size;
         std::memcpy(slot.bytes.data(), scratch, size);
-        if (++slot.misses >= Reuse::MissStreak) {
+        if (TestMicro::On(8) && ++slot.misses >= Reuse::MissStreak) {
             slot.misses = 0;
             slot.direct = Reuse::DirectBinds;
         }
