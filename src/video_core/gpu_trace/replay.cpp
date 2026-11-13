@@ -356,13 +356,15 @@ bool Replayer::BringUp(std::string& error) {
 
     system.GPU().Start();
     if (!states.empty()) {
-        for (auto& [id, channel] : channels) {
-            const u64 fence = system.GPU().RunOnGpuThread([this, id = id, &channel = *channel] {
-                system.GPU().BindChannel(id);
-                StateAccess::Rebind(channel);
-            });
-            system.GPU().WaitForSyncOperation(fence);
-        }
+        std::promise<void> rebound;
+        system.GPU().RunInOrder([this, &rebound] {
+            for (auto& [recorded_id, channel] : channels) {
+                system.GPU().BindChannel(channel->bind_id);
+                StateAccess::Rebind(*channel);
+            }
+            rebound.set_value();
+        });
+        rebound.get_future().wait();
     }
     states.clear();
     std::filesystem::create_directories(options.out);
@@ -586,7 +588,9 @@ bool Replayer::Stream(std::string& error) {
                 error = "a memory record names a missing blob or lies outside guest memory";
                 return false;
             }
-            gpu.RunInOrder([this, memory, bytes = it->second] { WriteMemory(memory, *bytes); });
+            // Before later reads: the split's front may parse the next list from this memory.
+            gpu.RunInOrder([this, memory, bytes = it->second] { WriteMemory(memory, *bytes); },
+                           true);
             break;
         }
         case RecordType::GmmuMap: {
@@ -617,7 +621,7 @@ bool Replayer::Stream(std::string& error) {
                 return false;
             }
             const auto map = record->As<SmmuMapRecord>();
-            gpu.RunInOrder([this, map] { MapSmmu(map); });
+            gpu.RunInOrder([this, map] { MapSmmu(map); }, true);
             break;
         }
         case RecordType::SmmuUnmap: {
@@ -626,9 +630,11 @@ bool Replayer::Stream(std::string& error) {
                 return false;
             }
             const auto unmap = record->As<SmmuUnmapRecord>();
-            gpu.RunInOrder([this, unmap] {
-                system.Host1x().MemoryManager().Unmap(unmap.device_address, unmap.size);
-            });
+            gpu.RunInOrder(
+                [this, unmap] {
+                    system.Host1x().MemoryManager().Unmap(unmap.device_address, unmap.size);
+                },
+                true);
             break;
         }
         case RecordType::Submit:

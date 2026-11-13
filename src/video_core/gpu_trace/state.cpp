@@ -182,6 +182,19 @@ void StateAccess::CaptureChannel(Writer& writer, ChannelState& channel) {
         bytes.Put(compute.native_bind_pointer);
         Emit(writer, StateKind::KeplerCompute, id, bytes);
     }
+    if (!payload.maxwell_3d.native_macro_context) {
+        const auto& maxwell = payload.maxwell_3d;
+        Bytes bytes;
+        bytes.Put(maxwell.macro_positions);
+        for (const auto& [method, code] : maxwell.macro_engine.uploaded_macro_code) {
+            bytes.Put(method);
+            bytes.Put(static_cast<u32>(code.size()));
+            for (const u32 word : code) {
+                bytes.Put(word);
+            }
+        }
+        Emit(writer, StateKind::Macros, id, bytes);
+    }
     PutRegs(writer, StateKind::Fermi2D, id, payload.fermi_2d.regs);
     PutRegs(writer, StateKind::MaxwellDMA, id, payload.maxwell_dma.regs);
     PutRegs(writer, StateKind::KeplerMemory, id, payload.kepler_memory.regs);
@@ -233,7 +246,8 @@ bool StateAccess::Restore(const Record& record, ChannelState* channel, ChannelSt
     const auto& header = record.As<StateRecord>();
     Cursor cursor{std::span<const u8>{record.payload}.subspan(sizeof(StateRecord))};
     const auto kind = static_cast<StateKind>(header.kind);
-    const bool per_channel = kind >= StateKind::Pusher && kind <= StateKind::KeplerMemory;
+    const bool per_channel = (kind >= StateKind::Pusher && kind <= StateKind::KeplerMemory) ||
+                             kind == StateKind::Macros;
     if (per_channel && (channel == nullptr || !channel->payload)) {
         LOG_ERROR(HW_GPU, "GPU trace: state for unknown channel {}", header.channel);
         return false;
@@ -288,6 +302,30 @@ bool StateAccess::Restore(const Record& record, ChannelState* channel, ChannelSt
             compute.native_macro_positions = compute.native_compute_uploaded
                                                  ? std::span<u32>{context->compute_positions}
                                                  : std::span<u32>{context->positions};
+        }
+        return true;
+    }
+    case StateKind::Macros: {
+        auto& maxwell = channel->payload->maxwell_3d;
+        if (!cursor.Get(maxwell.macro_positions)) {
+            return false;
+        }
+        auto& engine = maxwell.macro_engine;
+        engine.macro_cache.clear();
+        engine.uploaded_macro_code.clear();
+        while (!cursor.Done()) {
+            u32 method{};
+            u32 size{};
+            if (!cursor.Get(method) || !cursor.Get(size)) {
+                return false;
+            }
+            auto& code = engine.uploaded_macro_code[method];
+            code.resize(size);
+            for (u32& word : code) {
+                if (!cursor.Get(word)) {
+                    return false;
+                }
+            }
         }
         return true;
     }

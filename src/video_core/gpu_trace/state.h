@@ -37,6 +37,8 @@ enum class StateKind : u32 {
     Syncpoints = 9,
     /// Switch 2 queue semaphore regions (their GPU address starts).
     SemaphoreRegions = 10,
+    /// Per channel, Switch 1 only: the 3D engine's uploaded macro code and its bind table.
+    Macros = 11,
 };
 
 /// Reads and writes the GPU state a replay needs that isn't in memory. Every engine it reads
