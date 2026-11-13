@@ -3,6 +3,7 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -41,7 +42,9 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_async_readback.h"
+#include "video_core/nx2_backx.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_test_micro.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
 
@@ -112,6 +115,25 @@ struct GPU::Impl {
 
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
+        // ~900 calls a frame, most with nothing collected: gather (applying_writes_mutex and two
+        // locks per core's manager) only when a manager shows a write. One collected after this
+        // check is gathered by the next call, as one collected just after the gather would be.
+        const auto managers = system.GetGPUDirtyMemoryManager();
+        if (VideoCommon::TestMicro::On(1) &&
+            std::ranges::none_of(managers, &Core::GPUDirtyMemoryManager::MayHavePending)) {
+            if (VideoCommon::BackX::g_verify && ApplyCollectedWrites()) {
+                // Also counts a write collected between the check and this gather (rare).
+                VideoCommon::BackX::Mismatch("collected CPU write while no manager showed one", 0,
+                                             0);
+            }
+            return;
+        }
+        ApplyCollectedWrites();
+    }
+
+    /// Gathers the CPU writes collected into GPU-written pages and applies them to the caches.
+    /// True when there were some.
+    bool ApplyCollectedWrites() {
         std::vector<std::pair<DAddr, u64>> writes;
         {
             // Gathered writes stay pending (ForEachPendingCpuWrite) until they are applied: a
@@ -122,7 +144,7 @@ struct GPU::Impl {
                 [&writes](PAddr address, size_t size) { writes.emplace_back(address, size); });
             system.GatherGPUDirtyMemory(callback_writes);
             if (writes.empty()) {
-                return;
+                return false;
             }
             applying_writes.push_back(&writes);
         }
@@ -133,6 +155,7 @@ struct GPU::Impl {
             std::erase(applying_writes, &writes);
         };
         renderer->ReadRasterizer()->OnCacheInvalidations(writes);
+        return true;
     }
 
     void ForEachPendingCpuWrite(const std::function<void(DAddr, size_t)>& callback) {
