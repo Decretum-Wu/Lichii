@@ -478,19 +478,23 @@ TEST_CASE("List grid trusts a QMD marker only where its list patched it", "[list
 }
 
 TEST_CASE("List grid verify compares a run on the markers with the real run", "[list_grid]") {
-    using Pairs = std::vector<std::pair<u32, u32>>;
+    using Emits = std::vector<ListGrid::Emit>;
     const u32 x = ListGrid::Marker(KeepId, 0);
     const auto real_word = [](u32 marker) -> std::optional<u32> {
         return marker == ListGrid::Marker(KeepId, 0) ? std::optional<u32>{60} : std::nullopt;
     };
-    const Pairs marked{{0x6c, 0x41}, {0x6d, x}};
-    CHECK(ListGrid::MatchesRealRun(marked, Pairs{{0x6c, 0x41}, {0x6d, 60}}, real_word));
-    CHECK_FALSE(ListGrid::MatchesRealRun(marked, Pairs{{0x6c, 0x41}, {0x6d, 61}}, real_word));
-    CHECK_FALSE(ListGrid::MatchesRealRun(marked, Pairs{{0x6c, 0x41}}, real_word));
+    const Emits marked{{0x6c, 0x41, false}, {0x6d, x, true}};
+    CHECK(ListGrid::MatchesRealRun(marked, Emits{{0x6c, 0x41, false}, {0x6d, 60, false}}, real_word));
+    CHECK_FALSE(
+        ListGrid::MatchesRealRun(marked, Emits{{0x6c, 0x41, false}, {0x6d, 61, false}}, real_word));
+    CHECK_FALSE(ListGrid::MatchesRealRun(marked, Emits{{0x6c, 0x41, false}}, real_word));
     // A marker without a real word never matches.
-    const Pairs unknown{{0x6d, ListGrid::Marker(KeepId, 1)}};
-    CHECK_FALSE(ListGrid::MatchesRealRun(unknown, Pairs{{0x6d, ListGrid::Marker(KeepId, 1)}},
-                                         real_word));
+    const Emits unknown{{0x6d, ListGrid::Marker(KeepId, 1), true}};
+    CHECK_FALSE(ListGrid::MatchesRealRun(
+        unknown, Emits{{0x6d, ListGrid::Marker(KeepId, 1), false}}, real_word));
+    // A clean value that only looks like a marker compares as it is.
+    const Emits constant{{0x6d, x, false}};
+    CHECK(ListGrid::MatchesRealRun(constant, Emits{{0x6d, x, false}}, real_word));
 }
 
 TEST_CASE("List grid admits Mario Kart World's inline QMD reader", "[list_grid]") {

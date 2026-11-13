@@ -2371,6 +2371,14 @@ void RasterizerVulkan::DispatchCompute() {
     // marked. The indirect path records its bind at once.
     const bool marking_effects = oot_effects_frame == render_trace_frame && OcarinaTemporalEnabled() &&
                                  !indirect && !frame_dump.Capturing();
+    // Kept grid reads wait for the copy and can flush the command buffer: before Configure records
+    // the binds the dispatch uses.
+    std::array<u32, 3> kept_words{};
+    const bool kept_words_read = !indirect_address && kept_grid && frame_dump.CapturingBuffers() &&
+                                 buffer_cache_runtime.ReadKeptListWords(*kept_grid, kept_words);
+    if (kept_grid && Tegra::Nx2ListGrid::g_verify) {
+        VerifyKeptGrid(*kept_grid);
+    }
     ComputePipeline::BindCommand deferred_bind;
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
                              texture_cache, texture_cache_runtime, byte_addressed_shadow,
@@ -2422,9 +2430,9 @@ void RasterizerVulkan::DispatchCompute() {
             indirect_grid = std::array{gpu_memory->Read<u32>(*indirect_address),
                                        gpu_memory->Read<u32>(*indirect_address + 4),
                                        gpu_memory->Read<u32>(*indirect_address + 8)};
-        } else if (std::array<u32, 3> words{};
-                   kept_grid && buffer_cache_runtime.ReadKeptListWords(*kept_grid, words)) {
-            indirect_grid = std::array{words[0] & 0x7fffffff, words[1] & 0xffff, words[2] & 0xffff};
+        } else if (kept_words_read) {
+            indirect_grid = std::array{kept_words[0] & 0x7fffffff, kept_words[1] & 0xffff,
+                                       kept_words[2] & 0xffff};
         }
         frame_dump.NoteLaunch(pipeline->ShaderHash(),
                               {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z},
@@ -2437,9 +2445,6 @@ void RasterizerVulkan::DispatchCompute() {
         VkDeviceSize indirect_offset{};
         if (kept_grid) {
             std::tie(indirect_buffer, indirect_offset) = buffer_cache_runtime.KeptGrid(*kept_grid);
-            if (Tegra::Nx2ListGrid::g_verify) {
-                VerifyKeptGrid(*kept_grid);
-            }
         } else {
             const auto [buffer, offset] =
                 VideoCommon::ObtainIndirectBuffer(buffer_cache, *indirect_address);

@@ -1053,29 +1053,29 @@ struct GridSource {
     return {GridKind::ReadBack};
 }
 
-/// Verify mode: whether `marked` (method or address, value) pairs, from a run on the markers,
-/// match `real`, from the same call on the real words: the same pairs where each marker is the
-/// word `real_word(marker)` gives. A marker without a real word never matches.
+/// Verify mode: whether `marked`, the emits of a run on the markers, match `real`, the same
+/// call's emits on the real words: the same writes, where each marker the run moved
+/// (Emit::grid) is the word `real_word(marker)` gives. A marker without a real word never
+/// matches; any other value compares as it is.
 template <typename RealWord>
-[[nodiscard]] bool MatchesRealRun(std::span<const std::pair<Word, Word>> marked,
-                                  std::span<const std::pair<Word, Word>> real,
+[[nodiscard]] bool MatchesRealRun(std::span<const Emit> marked, std::span<const Emit> real,
                                   RealWord&& real_word) {
     if (marked.size() != real.size()) {
         return false;
     }
     for (size_t i = 0; i < marked.size(); ++i) {
-        if (marked[i].first != real[i].first) {
+        if (marked[i].method != real[i].method) {
             return false;
         }
-        Word value = marked[i].second;
-        if (IsMarker(value)) {
+        Word value = marked[i].value;
+        if (marked[i].grid) {
             const std::optional<Word> word = real_word(value);
             if (!word) {
                 return false;
             }
             value = *word;
         }
-        if (value != real[i].second) {
+        if (value != real[i].value) {
             return false;
         }
     }

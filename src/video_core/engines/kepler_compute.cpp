@@ -1984,22 +1984,17 @@ void KeplerCompute::FrontGuardListGrid(VideoCommon::GpuSplit& split, FrontState&
                                                grid_marker->cells, {}, real_read,
                                                [](u32, u32) { return false; });
             if (known) {
-                std::vector<std::pair<u32, u32>> emits, real_emits;
-                for (const auto& emit : result.emits) {
-                    emits.emplace_back(emit.method, emit.value);
-                }
-                for (const auto& emit : real.emits) {
-                    real_emits.emplace_back(emit.method, emit.value);
-                }
+                // An admitted call stores no marker in the data RAM (Admit): its data RAM
+                // writes compare as they are.
                 const bool match =
-                    real.completed && ListGrid::MatchesRealRun(emits, real_emits, real_word) &&
-                    ListGrid::MatchesRealRun(result.data_ram_writes, real.data_ram_writes,
-                                             real_word);
+                    real.completed &&
+                    ListGrid::MatchesRealRun(result.emits, real.emits, real_word) &&
+                    result.data_ram_writes == real.data_ram_writes;
                 ListGrid::NoteVerify(ListGrid::Check::Reader,
                                      FrontMacroInfo(fs, macro, start).hash, match,
                                      fmt::format("compute macro at {:#x}: {} writes on the markers, "
                                                  "{} on the real words",
-                                                 start, emits.size(), real_emits.size()));
+                                                 start, result.emits.size(), real.emits.size()));
             }
         }
         return;
