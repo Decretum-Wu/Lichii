@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -433,6 +432,8 @@ private:
         HandleBind,
         HandleData,
         SampledImages,
+        ComputedHandles,
+        VertexInput,
         Count,
     };
     /// Why a recorded draw can't be followed by a delta draw.
@@ -463,6 +464,8 @@ private:
         u64 pipeline_mismatches{};
         u64 view_mismatches{};
         u64 binding_mismatches{};
+        /// Draws whose recorded dynamic vertex input isn't what the registers give.
+        u64 vertex_input_mismatches{};
         /// DeltaPipeline draws by GraphicsPipeline::DeltaDrawBlocker.
         std::array<u64, static_cast<size_t>(GraphicsPipeline::DeltaBlocker::Count)> delta_blockers{};
         /// StateChanged draws by the reason of the last break, and by its 3D method.
@@ -518,6 +521,12 @@ private:
     /// Nx2FastDraw::Enabled and VerifyEnabled as the drawing thread last read them.
     bool fast_draw_on{};
     bool fast_draw_verify{};
+    /// EDEN_NX2_FAST_DRAW_VERIFY: this draw passed DeltaStillHolds, so UpdateVertexInput compares
+    /// the vertex input recorded last with what the registers give now.
+    bool verify_vertex_input{};
+    boost::container::static_vector<VkVertexInputBindingDescription2EXT, 32> recorded_bindings;
+    boost::container::static_vector<VkVertexInputAttributeDescription2EXT, 32> recorded_attributes;
+    bool vertex_input_recorded{};
 
     struct IndirectTrace {
         vk::Buffer readback;

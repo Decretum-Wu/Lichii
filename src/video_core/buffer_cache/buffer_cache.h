@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
@@ -1457,6 +1456,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
 
     ClearDownload(*cpu_dest_address, amount);
     MarkVertexBuffersStale(*cpu_dest_address, amount);
+    NoteUniformWrite(*cpu_dest_address, amount);
 
     BufferId buffer_a;
     BufferId buffer_b;
@@ -1503,7 +1503,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
-        NoteUniformWrite(*cpu_dest_address, amount);
         const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
         if (should_sync) {
             runtime.Finish();
@@ -1530,6 +1529,7 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     const size_t size = amount * sizeof(u32);
     ClearDownload(*cpu_dst_address, size);
     gpu_modified_ranges.Subtract(*cpu_dst_address, size);
+    NoteUniformWrite(*cpu_dst_address, size);
 
     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
     Buffer& dest_buffer = slot_buffers[buffer];
@@ -1725,10 +1725,12 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
     UniformKeep& keep = uniform_keep;
     const u64 sync_serial = Nx2FastDraw::SyncSerial();
     const u64 host_serial = gpu_memory != nullptr ? gpu_memory->HostPointerSerial() : 0;
-    const bool known = delta != nullptr && !delta->overflow && !keep.memory_writes_lost &&
+    const bool known = delta != nullptr && !delta->no_uniform_keeps && !keep.memory_writes_lost &&
                        keep.draw_deletions == buffer_deletions &&
-                       keep.sync_serial == sync_serial && keep.host_serial == host_serial;
+                       keep.sync_serial == sync_serial && keep.host_serial == host_serial &&
+                       keep.gpu_memory == gpu_memory;
     keep.draw_deletions = buffer_deletions;
+    keep.gpu_memory = gpu_memory;
     keep.sync_serial = sync_serial;
     keep.host_serial = host_serial;
     if (!known) {
@@ -2562,15 +2564,18 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         // Unnoticed writes would reach a kept bank too: those stream as before.
         if (!native_bank && UniformRangeKept(stage, index, device_addr, size)) {
             if (ubo_keep_verify) {
-                ++uniform_keep.verified;
-                verify_kept = true;
-                if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
-                                                             device_addr, size)) {
-                    if (uniform_keep.mismatches++ < 16) {
-                        LOG_ERROR(HW_GPU,
-                                  "Uniform keep verify: stage {} slot {} at {:#x}+{:#x} changed "
-                                  "since the previous draw",
-                                  stage, index, device_addr, size);
+                // Only the ranges RebindKeptUniform would bind again: the others are streamed.
+                if (VideoCommon::KeptUniformMatches(runtime, stage, index, device_addr, size)) {
+                    ++uniform_keep.verified;
+                    verify_kept = true;
+                    if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
+                                                                 device_addr, size)) {
+                        if (uniform_keep.mismatches++ < 16) {
+                            LOG_ERROR(HW_GPU,
+                                      "Uniform keep verify: stage {} slot {} at {:#x}+{:#x} "
+                                      "changed since the previous draw",
+                                      stage, index, device_addr, size);
+                        }
                     }
                 }
             } else if (VideoCommon::RebindKeptUniform(runtime, stage, index, device_addr, size)) {
@@ -3950,6 +3955,7 @@ bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
         return false;
     }
 
+    NoteUniformWrite(dest_address, copy_size);
     InlineMemoryImplementation(dest_address, copy_size, inlined_buffer);
 
     return true;

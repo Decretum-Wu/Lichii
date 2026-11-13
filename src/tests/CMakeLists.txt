@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# SPDX-FileCopyrightText: 2018 yuzu Emulator Project
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
@@ -337,7 +336,8 @@ if (NOT ANDROID)
         common/first_run_config.cpp
         common/recommended_settings.cpp
         ../frontend_common/profile_import.cpp
-        ../frontend_common/config.cpp)
+        ../frontend_common/config.cpp
+        ../frontend_common/recommended_settings.cpp)
     target_link_libraries(config_tests PRIVATE common SimpleIni::SimpleIni Catch2::Catch2WithMain
         ${PLATFORM_LIBRARIES})
     add_test(NAME config_tests COMMAND config_tests)

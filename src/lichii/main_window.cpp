@@ -133,6 +133,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 
 // Frontend //
 #include "frontend_common/play_time_manager.h"
+#include "frontend_common/recommended_settings.h"
 
 #ifdef ENABLE_UPDATE_CHECKER
 #include "frontend_common/update_checker.h"
@@ -4375,7 +4376,7 @@ void MainWindow::OnApplyRecommendedSettings() {
     if (!RecommendedSettingsDialog::Ask(this) || emulation_running) {
         return;
     }
-    const auto changes = Settings::ApplyRecommendedSettings(Settings::values);
+    const auto changes = FrontendCommon::ApplyRecommendedSettings(Settings::values);
     LOG_INFO(Config, "Applied the recommended settings: {} changed", changes.size());
     Settings::UpdateGPUAccuracy();
     OnSaveConfig();
@@ -4387,7 +4388,7 @@ void MainWindow::OnRestorePreviousSettings() {
     if (emulation_running) {
         return;
     }
-    const auto changes = Settings::RestorePreviousSettings(Settings::values);
+    const auto changes = FrontendCommon::RestorePreviousSettings(Settings::values);
     LOG_INFO(Config, "Restored the settings from before the recommended ones: {} changed",
              changes.size());
     Settings::UpdateGPUAccuracy();
