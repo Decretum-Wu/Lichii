@@ -262,6 +262,16 @@ jobs:
             exit 1
           fi
 
+      # Antivirus heuristics count an unsigned program without file metadata against it.
+      - name: Check the shipped programs carry a version resource
+        run: |
+          for exe in lichii eden-cli lichii-updater; do
+            if ! "$LLVM_ROOT/bin/llvm-readobj" --coff-resources "build/bin/$exe.exe" | grep -q 'Type: VERSIONINFO'; then
+              echo "::error::$exe.exe has no version resource"
+              exit 1
+            fi
+          done
+
       - name: Run tests
         run: ctest --test-dir build --output-on-failure --no-tests=error --parallel "$NUMBER_OF_PROCESSORS"
 
