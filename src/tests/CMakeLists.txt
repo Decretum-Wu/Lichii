@@ -222,6 +222,7 @@ add_executable(tests
     video_core/turing_macro_ram.cpp
     video_core/uniform_stream_reuse.cpp
     video_core/usage_tracker.cpp
+    video_core/nx2_backx.cpp
     video_core/shader_invalidation.cpp
     video_core/descriptor_table.cpp
     video_core/descriptor_payload_growth.cpp
