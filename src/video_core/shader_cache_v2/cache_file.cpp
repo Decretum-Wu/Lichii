@@ -77,6 +77,26 @@ LogFile ReadLogFile(const std::filesystem::path& file, const ForEach& for_each) 
     return log;
 }
 
+std::optional<std::vector<u8>> ReadRecordPayload(const std::filesystem::path& file,
+                                                 RecordKind kind, u64 key, u64 offset,
+                                                 u64 payload_size) {
+    std::vector<u8> bytes(RecordHeaderSize + payload_size + RecordHashSize);
+    std::ifstream stream(file, std::ios::binary);
+    if (!stream.seekg(static_cast<std::streamoff>(offset)) ||
+        !stream.read(reinterpret_cast<char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()))) {
+        return std::nullopt;
+    }
+    const std::optional<LogRecord> record = ParseRecord(bytes, offset);
+    if (!record || record->kind != kind || record->key != key ||
+        record->payload.size() != payload_size) {
+        return std::nullopt;
+    }
+    bytes.erase(bytes.begin(), bytes.begin() + RecordHeaderSize);
+    bytes.resize(payload_size);
+    return bytes;
+}
+
 WriteResult AppendToLog(const std::filesystem::path& file, std::span<const u8> records) {
     // Without locks on this file system (the lock is neither held nor busy) it goes on as the
     // other caches do there.

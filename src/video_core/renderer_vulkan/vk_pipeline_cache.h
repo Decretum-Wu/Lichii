@@ -216,7 +216,7 @@ private:
                          std::stop_token stop_loading,
                          const VideoCore::DiskResourceLoadCallback& callback,
                          std::chrono::steady_clock::time_point load_begin, bool precache,
-                         std::unordered_set<u64> precached_pipelines, bool build_at_boot);
+                         bool build_at_boot);
 
     /// Reads a v2 graphics record and translates its pipeline, left for Build(). Null when it
     /// doesn't translate, `incomplete` when the record lacks a value the translation reads.
@@ -242,24 +242,21 @@ private:
     /// only pipelines built during play.
     void QueueVulkanPipelineCacheSave();
 
-    /// One build of the shader precache: a pipeline built and destroyed
+    /// One build of the shader precache: a compute pipeline built and destroyed
     struct PrecacheJob {
-        u64 graphics_hash{}; ///< The cached graphics pipeline it builds, 0 for a compute program
         /// Translates the pipeline and returns its build, which is true when it built (the job's
         /// CPU and driver stages)
         Common::UniqueFunction<Common::UniqueFunction<bool>> translate;
         u64 cpu_bytes{};
     };
 
-    /// Shader precache before the game starts (precache_shaders), on every CPU thread: the cached
-    /// graphics pipelines this boot skipped (`jobs`; `precached` holds those built by earlier
-    /// precaches) and the compute programs of the title's precache file (made from the game files,
-    /// missing reads guessed) are built, then thrown away. They only fill the driver's shader
-    /// cache, so a later build of the same pipeline finds the driver's work done. Reports progress
-    /// through `callback` and returns when it is done, skipped from the loading screen or the load
-    /// is stopped.
-    void PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
-                         std::unordered_set<u64> precached, std::stop_token stop_loading,
+    /// Shader precache before the game starts (precache_shaders), on every CPU thread: the compute
+    /// programs of the title's precache file (made from the game files, missing reads guessed) are
+    /// built, then thrown away. They only fill the driver's shader cache, so a later build of the
+    /// same pipeline finds the driver's work done. The cached graphics pipelines the boot skipped
+    /// are the background prebuild's. Reports progress through `callback` and returns when it is
+    /// done, skipped from the loading screen or the load is stopped.
+    void PrecacheShaders(u64 title_id, std::stop_token stop_loading,
                          const VideoCore::DiskResourceLoadCallback& callback);
 
     const Device& device;

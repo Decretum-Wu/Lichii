@@ -526,6 +526,38 @@ TEST_CASE("Shader cache v2: compaction keeps the live records and only them",
     REQUIRE(compacted.parsed.live.size() == expected.size());
 }
 
+TEST_CASE("Shader cache v2: a record reads again at its offset until a compaction moves it",
+          "[video_core][shader_cache_v2]") {
+    TempDir temp;
+    const auto file = temp.path / "cache.bin";
+    {
+        V2::CacheWriter writer{file};
+        for (u64 i = 0; i < 20; ++i) {
+            writer.Append(RecordKind::Graphics, i, TestPayload(i));
+        }
+        writer.Append(RecordKind::Tombstone, 3, V2::TombstonePayload(RecordKind::Graphics));
+        REQUIRE(writer.Drain(5s));
+    }
+    const V2::LogFile log = V2::ReadLogFile(file);
+    REQUIRE(log.parsed.live.size() == 19);
+    for (const V2::LogRecord& record : log.parsed.live) {
+        const auto payload = V2::ReadRecordPayload(file, record.kind, record.key, record.offset,
+                                                   record.payload.size());
+        REQUIRE(payload);
+        REQUIRE(std::ranges::equal(*payload, record.payload));
+    }
+    const V2::LogRecord& last = log.parsed.live.back();
+    const u64 size = last.payload.size();
+    REQUIRE_FALSE(V2::ReadRecordPayload(file, RecordKind::Compute, last.key, last.offset, size));
+    REQUIRE_FALSE(V2::ReadRecordPayload(file, last.kind, last.key + 1, last.offset, size));
+    REQUIRE_FALSE(V2::ReadRecordPayload(file, last.kind, last.key, last.offset, size - 1));
+    REQUIRE_FALSE(V2::ReadRecordPayload(file, last.kind, last.key, last.offset + 8, size));
+    REQUIRE_FALSE(V2::ReadRecordPayload(file, last.kind, last.key, log.bytes.size(), size));
+
+    REQUIRE(V2::CompactLog(file) == V2::WriteResult::Written);
+    REQUIRE_FALSE(V2::ReadRecordPayload(file, last.kind, last.key, last.offset, size));
+}
+
 TEST_CASE("Shader cache v2: two writers on one file lose no record",
           "[video_core][shader_cache_v2]") {
     TempDir temp;

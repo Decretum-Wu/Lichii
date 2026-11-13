@@ -779,14 +779,13 @@ TEST_CASE("A lookup builds a queued prebuild once, on the looking thread",
     std::atomic<int> builds{};
     std::atomic<int> translations{};
     std::thread::id translated_on;
-    TestPrebuild prebuild{scheduler, 100};
-    REQUIRE(prebuild.Add(1, 60, 0, 0, [&] {
+    TestPrebuild prebuild{scheduler};
+    REQUIRE(prebuild.Add(1, 0, 0, [&] {
         ++translations;
         translated_on = std::this_thread::get_id();
         return std::make_unique<TestPipeline>(builds);
     }));
-    REQUIRE_FALSE(prebuild.Add(1, 1, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
-    REQUIRE_FALSE(prebuild.Add(2, 41, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
+    REQUIRE_FALSE(prebuild.Add(1, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
 
     const auto pipeline = prebuild.Take(1);
     REQUIRE(pipeline != nullptr);
@@ -795,8 +794,8 @@ TEST_CASE("A lookup builds a queued prebuild once, on the looking thread",
     REQUIRE(translated_on == std::this_thread::get_id());
     REQUIRE(prebuild.Take(1) == nullptr);
 
-    // Its capture was let go once translated; one that doesn't translate gives nothing.
-    REQUIRE(prebuild.Add(2, 100, 0, 0, [] { return std::unique_ptr<TestPipeline>{}; }));
+    // One that doesn't translate gives nothing.
+    REQUIRE(prebuild.Add(2, 0, 0, [] { return std::unique_ptr<TestPipeline>{}; }));
     REQUIRE(prebuild.Take(2) == nullptr);
     REQUIRE(prebuild.Take(3) == nullptr);
     gate.Open();
@@ -807,9 +806,9 @@ TEST_CASE("Prebuilds built in the background are taken without building again",
           "[video_core][shader_jobs]") {
     ShaderJobScheduler scheduler{Config(2, 2)};
     std::atomic<int> builds{};
-    TestPrebuild prebuild{scheduler, 1 << 20};
+    TestPrebuild prebuild{scheduler};
     for (int key = 0; key < 20; ++key) {
-        REQUIRE(prebuild.Add(key, 10, 0, 0, [&builds, key] {
+        REQUIRE(prebuild.Add(key, 0, 0, [&builds, key] {
             return std::make_unique<TestPipeline>(builds, key % 4 == 0);
         }));
     }
@@ -829,9 +828,9 @@ TEST_CASE("A cancelled prebuild leaves the scheduler usable", "[video_core][shad
     const auto blocker = Block(scheduler, gate);
     std::atomic<int> builds{};
     std::atomic<int> translations{};
-    TestPrebuild prebuild{scheduler, 1 << 20};
+    TestPrebuild prebuild{scheduler};
     for (int key = 0; key < 10; ++key) {
-        REQUIRE(prebuild.Add(key, 1, 0, 0, [&] {
+        REQUIRE(prebuild.Add(key, 0, 0, [&] {
             ++translations;
             return std::make_unique<TestPipeline>(builds);
         }));
@@ -844,13 +843,63 @@ TEST_CASE("A cancelled prebuild leaves the scheduler usable", "[video_core][shad
     REQUIRE(translations == 0);
     REQUIRE(builds == 0);
     REQUIRE(prebuild.Take(5) == nullptr);
-    REQUIRE_FALSE(prebuild.Add(20, 1, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
+    REQUIRE_FALSE(prebuild.Add(20, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
 
     std::atomic<bool> ran{};
     const auto after = scheduler.Submit(CpuJob(Background, [&] { ran = true; }));
     after.Wait();
     REQUIRE(after.Status() == ShaderJobStatus::Done);
     REQUIRE(ran);
+}
+
+TEST_CASE("The prebuild calls back once every build added was translated",
+          "[video_core][shader_jobs]") {
+    ShaderJobScheduler scheduler{Config(1, 1)};
+    Gate gate;
+    const auto blocker = Block(scheduler, gate);
+    std::atomic<int> builds{};
+    TestPrebuild prebuild{scheduler};
+    int now{};
+    prebuild.AfterTranslations([&] { ++now; });
+    REQUIRE(now == 1);
+
+    for (int key = 0; key < 3; ++key) {
+        REQUIRE(prebuild.Add(key, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
+    }
+    std::atomic<int> translated{};
+    prebuild.AfterTranslations([&] { ++translated; });
+    REQUIRE(prebuild.Take(1) != nullptr);
+    REQUIRE(translated == 0);
+    gate.Open();
+    scheduler.RunOrWait(blocker);
+    prebuild.Batch().Wait();
+    REQUIRE(translated == 1);
+    REQUIRE(builds == 3);
+}
+
+TEST_CASE("A stopped prebuild never calls back", "[video_core][shader_jobs]") {
+    ShaderJobScheduler scheduler{Config(1, 1)};
+    Gate gate;
+    const auto blocker = Block(scheduler, gate);
+    std::atomic<int> builds{};
+    TestPrebuild prebuild{scheduler};
+    REQUIRE(prebuild.Add(1, 0, 0, [&] { return std::make_unique<TestPipeline>(builds); }));
+    std::atomic<int> translated{};
+    prebuild.AfterTranslations([&] { ++translated; });
+    prebuild.Stop();
+    gate.Open();
+    scheduler.RunOrWait(blocker);
+    REQUIRE(translated == 0);
+    REQUIRE(builds == 0);
+}
+
+TEST_CASE("The prebuild takes the newest skipped records first, up to its limit",
+          "[video_core][shader_jobs]") {
+    using Vulkan::NewestFirst;
+    REQUIRE(NewestFirst(std::vector<int>{1, 2, 3, 4, 5}, 3) == std::vector<int>{5, 4, 3});
+    REQUIRE(NewestFirst(std::vector<int>{1, 2}, 10) == std::vector<int>{2, 1});
+    REQUIRE(NewestFirst(std::vector<int>{1, 2}, 0).empty());
+    REQUIRE(NewestFirst(std::vector<int>{}, 4).empty());
 }
 
 TEST_CASE("A pipeline build job is dropped while queued and run by a waiting draw",
