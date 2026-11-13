@@ -2174,7 +2174,10 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 
     // Made where a dropped GPU-written image left stale bytes (MarkStale): nothing to upload.
     // Pages the buffer cache wrote on the GPU may hold data written back since: upload those.
-    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) && image.dirty_layers.empty() &&
+    // Test (EGLA-175): EDEN_NX2_TEST_UPLOAD_STALE uploads images over stale pages too.
+    static const bool test_upload_stale{std::getenv("EDEN_NX2_TEST_UPLOAD_STALE") != nullptr};
+    if (!test_upload_stale && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+        image.dirty_layers.empty() &&
         False(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
                              ImageFlagBits::SparseTiles | ImageFlagBits::Unbacked)) &&
         stale_pages.IsAll(image.cpu_addr, image.guest_size_bytes)) {

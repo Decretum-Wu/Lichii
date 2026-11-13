@@ -640,13 +640,14 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
 
         .lower_left_origin_mode = false,
         .need_declared_frag_colors = false,
-        .need_gather_subpixel_offset = driver_id == VK_DRIVER_ID_AMD_PROPRIETARY ||
+        .need_gather_subpixel_offset = std::getenv("EDEN_NX2_TEST_NO_GATHER_NUDGE") == nullptr &&
+                                       (driver_id == VK_DRIVER_ID_AMD_PROPRIETARY ||
                                        driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
                                        driver_id == VK_DRIVER_ID_MESA_RADV ||
                                        driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS ||
                                        driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ||
                                        driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
-                                       driver_id == VK_DRIVER_ID_MESA_TURNIP,
+                                       driver_id == VK_DRIVER_ID_MESA_TURNIP),
 
         .has_broken_spirv_clamp = driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS,
         .has_broken_spirv_position_input = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY,

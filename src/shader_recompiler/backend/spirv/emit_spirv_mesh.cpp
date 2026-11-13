@@ -10,6 +10,7 @@
 // epilogue (reached by every invocation, see structured_control_flow.cpp) hands them to Vulkan.
 
 #include <algorithm>
+#include <cstdlib>
 #include <span>
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -360,6 +361,19 @@ void EmitMeshPrologue(EmitContext& ctx) {
     } else {
         // Every invocation stores the zero.
         ctx.OpStore(ctx.mesh_primitive_count, ctx.u32_zero_value);
+        // Test (EGLA-175): native mesh attribute memory starts at zero, as it does as compute.
+        static const bool test_mesh_zero{std::getenv("EDEN_NX2_TEST_MESH_ZERO") != nullptr};
+        if (!as_compute && test_mesh_zero) {
+            const Id invocation{LocalInvocation(ctx)};
+            const u32 step{(std::max)(ctx.mesh_threads, 1U)};
+            const u32 words{ctx.mesh_attribute_words};
+            for (u32 first = 0; first < words; first += step) {
+                const Id word{ctx.OpUMin(ctx.U32[1],
+                                         ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first)),
+                                         ctx.Const(words - 1))};
+                ctx.OpStore(SharedWord(ctx, ctx.mesh_attributes, word), ctx.u32_zero_value);
+            }
+        }
     }
     if (as_compute) {
         const Id invocation{LocalInvocation(ctx)};

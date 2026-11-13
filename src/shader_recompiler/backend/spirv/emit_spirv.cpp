@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <span>
 #include <tuple>
 #include <type_traits>
@@ -445,6 +446,11 @@ void SetupDenormControl(const Profile& profile, const IR::Program& program, Emit
 void SetupSignedNanCapabilities(const Profile& profile, const IR::Program& program,
                                 EmitContext& ctx, Id main_func) {
     if (profile.has_broken_fp16_float_controls && program.info.uses_fp16) {
+        return;
+    }
+    // Test (EGLA-175): no SignedZeroInfNanPreserve, as NVIDIA gets for programs using fp16.
+    static const bool test_no_szinp{std::getenv("EDEN_NX2_TEST_NO_SZINP") != nullptr};
+    if (test_no_szinp) {
         return;
     }
     if (program.info.uses_fp16 && profile.support_fp16_signed_zero_nan_preserve) {

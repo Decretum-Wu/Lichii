@@ -1824,8 +1824,20 @@ void Device::RemoveUnsuitableExtensions() {
                                        VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 
     // VK_EXT_robustness2
-    features.robustness2.robustBufferAccess2 = VK_FALSE;
-    features.robustness2.robustImageAccess2 = VK_FALSE;
+    // Test (EGLA-175): EDEN_NX2_TEST_ROBUST2 keeps the driver's robust buffer and image access 2.
+    if (std::getenv("EDEN_NX2_TEST_ROBUST2") == nullptr) {
+        features.robustness2.robustBufferAccess2 = VK_FALSE;
+        features.robustness2.robustImageAccess2 = VK_FALSE;
+    }
+    for (const char* name : {"EDEN_NX2_TEST_MESH_ZERO", "EDEN_NX2_TEST_NO_SZINP",
+                             "EDEN_NX2_TEST_LOCAL_ZERO", "EDEN_NX2_TEST_NO_GATHER_NUDGE",
+                             "EDEN_NX2_TEST_UPLOAD_STALE", "EDEN_NX2_TEST_ROBUST2"}) {
+        if (std::getenv(name) != nullptr) {
+            LOG_INFO(Render_Vulkan, "EGLA-175 test switch on: {}", name);
+        }
+    }
+    LOG_INFO(Render_Vulkan, "EGLA-175 robustness2: robustBufferAccess2={} robustImageAccess2={}",
+             features.robustness2.robustBufferAccess2, features.robustness2.robustImageAccess2);
     extensions.robustness_2 = features.robustness2.nullDescriptor;
 
     const char* robustness2_extension_name =

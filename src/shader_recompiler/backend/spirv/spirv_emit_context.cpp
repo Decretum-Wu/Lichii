@@ -7,6 +7,7 @@
 #include <array>
 #include <bit>
 #include <climits>
+#include <cstdlib>
 
 #include <boost/container/static_vector.hpp>
 
@@ -607,7 +608,11 @@ void EmitContext::DefineLocalMemory(const IR::Program& program) {
     const Id element_type{TypeStruct(U32[1])};
     const Id type{TypeArray(element_type, Const(num_elements))};
     const Id pointer{TypePointer(spv::StorageClass::Private, type)};
-    local_memory = AddGlobalVariable(pointer, spv::StorageClass::Private);
+    // Test (EGLA-175): local memory starts at zero instead of undefined.
+    static const bool test_local_zero{std::getenv("EDEN_NX2_TEST_LOCAL_ZERO") != nullptr};
+    local_memory = test_local_zero
+                       ? AddGlobalVariable(pointer, spv::StorageClass::Private, ConstantNull(type))
+                       : AddGlobalVariable(pointer, spv::StorageClass::Private);
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(local_memory);
     }
