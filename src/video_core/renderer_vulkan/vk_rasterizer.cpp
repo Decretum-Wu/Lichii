@@ -79,6 +79,7 @@
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_list_grid.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_test_micro.h"
 
 namespace Vulkan {
 
@@ -967,7 +968,8 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
     // The prepare time per draw (a fenced time stamp at each end): ReportFastDraws logs it only
     // with the profile or the verify on.
-    const bool time_fast_draw = fast_draw_on && (Profile::Enabled() || fast_draw_verify);
+    const bool time_fast_draw = fast_draw_on && (!VideoCommon::TestMicro::On(4) ||
+                                                 Profile::Enabled() || fast_draw_verify);
     const u64 fast_draw_start = time_fast_draw ? Profile::Now() : 0;
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
@@ -2975,6 +2977,16 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
 }
 
 void RasterizerVulkan::OnCacheInvalidations(std::span<const std::pair<DAddr, u64>> ranges) {
+    if (!VideoCommon::TestMicro::On(1)) {
+        {
+            std::scoped_lock lock{buffer_cache.mutex};
+            buffer_cache.ClaimCpuWrites(ranges);
+        }
+        for (const auto& [addr, size] : ranges) {
+            OnCacheInvalidation(addr, size);
+        }
+        return;
+    }
     // Each cache's lock is taken once for all the writes, not once a write (jpkto/Lichii
     // f5edeabdbb): guest CPU write traps hold the buffer cache's for long. The caches are
     // independent (TextureCache::WriteMemory reads and changes only texture state, and the page
@@ -3921,7 +3933,7 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
         }
         return false;
     };
-    const bool lock_free = defer && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+    const bool lock_free = VideoCommon::TestMicro::On(1) && defer && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
                            !Tegra::Nx2MayBeGpuWritten(page_begin, page_end - page_begin) &&
                            !reaches_list_page();
     if (lock_free) {
@@ -5091,6 +5103,17 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) 
         dirty[Dirty::VertexBinding0 + index] = false;
     }
 
+    if (!VideoCommon::TestMicro::On(2)) {
+        VertexInputState built;
+        BuildVertexInput(regs, max_attributes, max_bindings, built);
+        if (fast_draw_verify) {
+            recorded_vertex_input = built;
+            vertex_input_recorded = true;
+        }
+        scheduler.Record([bindings = built.bindings, attributes = built.attributes](
+                             vk::CommandBuffer cmdbuf) { cmdbuf.SetVertexInputEXT(bindings, attributes); });
+        return;
+    }
     // The state these registers built before, recorded by reference instead of built and copied
     // into the command again (jpkto/Lichii e7581fa9f6): converting every attribute's format and
     // copying both arrays into the command was ~0.5 ms a frame of Mario Kart World's back.

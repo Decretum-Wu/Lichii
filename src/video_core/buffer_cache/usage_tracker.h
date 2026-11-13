@@ -17,6 +17,7 @@
 #include "common/logging.h"
 #include "video_core/nx2_backx.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_test_micro.h"
 
 namespace VideoCommon {
 
@@ -38,8 +39,12 @@ public:
         tracked = false;
         // Only Track sets words, and only in [set_begin, set_end): a buffer of hundreds of MiB
         // bound in part cleared all its words (8 bytes a 4 KiB page) every frame.
-        std::fill(pages.begin() + static_cast<std::ptrdiff_t>(set_begin),
-                  pages.begin() + static_cast<std::ptrdiff_t>(set_end), 0ULL);
+        if (TestMicro::On(1)) {
+            std::fill(pages.begin() + static_cast<std::ptrdiff_t>(set_begin),
+                      pages.begin() + static_cast<std::ptrdiff_t>(set_end), 0ULL);
+        } else {
+            std::ranges::fill(pages, 0ULL);
+        }
         if (BackX::g_verify && std::ranges::any_of(pages, [](u64 word) { return word != 0; })) {
             BackX::Mismatch("usage tracker word set outside the tracked extent", set_begin,
                             set_end);

@@ -45,6 +45,7 @@
 #include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_backx.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_test_micro.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
 
@@ -127,7 +128,8 @@ struct GPU::Impl {
             return sum;
         };
         const u64 collects_before = VideoCommon::BackX::g_verify ? collects() : 0;
-        if (std::ranges::none_of(managers, &Core::GPUDirtyMemoryManager::MayHavePending)) {
+        if (VideoCommon::TestMicro::On(1) &&
+            std::ranges::none_of(managers, &Core::GPUDirtyMemoryManager::MayHavePending)) {
             if (VideoCommon::BackX::g_verify) {
                 const auto first_write = ApplyCollectedWrites();
                 VideoCommon::BackX::SkippedGather(first_write.has_value(),
