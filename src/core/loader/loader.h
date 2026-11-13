@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -179,8 +178,8 @@ ResultStatus GetContainerProgramStatus(FileSys::VirtualFile file, FileType type)
 /// Interface for loading an application
 class AppLoader {
 public:
-    YUZU_NON_COPYABLE(AppLoader);
-    YUZU_NON_MOVEABLE(AppLoader);
+    LICHII_NON_COPYABLE(AppLoader);
+    LICHII_NON_MOVEABLE(AppLoader);
 
     struct LoadParameters {
         s32 main_thread_priority;

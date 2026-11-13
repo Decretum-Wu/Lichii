@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <mutex>
@@ -23,7 +22,7 @@
 #include "core/internal_network/network.h"
 #include "core/internal_network/sockets.h"
 
-#ifdef YUZU_BUNDLED_OPENSSL
+#ifdef LICHII_BUNDLED_OPENSSL
 #include <openssl/cert.h>
 #endif
 
@@ -49,7 +48,7 @@ void OneTimeInit();
 void OneTimeInitLogFile();
 bool OneTimeInitBIO();
 
-#ifdef YUZU_BUNDLED_OPENSSL
+#ifdef LICHII_BUNDLED_OPENSSL
 // This is ported from httplib
 struct scope_exit {
   explicit scope_exit(std::function<void(void)> &&f)
@@ -137,7 +136,7 @@ X509_STORE* TestCaStore(const std::vector<u8>& der_data) {
     store = nullptr;
     built_for = der_data;
     // The same roots as the context's store (OneTimeInit).
-#ifdef YUZU_BUNDLED_OPENSSL
+#ifdef LICHII_BUNDLED_OPENSSL
     X509_STORE* roots = CreateCaCertStore(kCert, sizeof(kCert));
 #else
     X509_STORE* roots = X509_STORE_new();
@@ -522,7 +521,7 @@ void OneTimeInit() {
 
     // Bundled OpenSSL: the bundled CA certificates, before the default verify paths are added
     // to the same store.
-#ifdef YUZU_BUNDLED_OPENSSL
+#ifdef LICHII_BUNDLED_OPENSSL
     LoadCaCertStore(ssl_ctx, kCert, sizeof(kCert));
 #endif
 

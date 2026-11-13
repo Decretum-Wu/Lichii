@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -270,7 +269,7 @@ std::string GetUpdateVersionStringFromSlot(const ContentProvider* provider, u64 
     NACP nacp{nacp_file};
     return nacp.GetVersionString();
 }
-YUZU_NO_INLINE std::optional<u64> GetParentApplicationId(const ContentProvider* provider, u64 title_id) {
+LICHII_NO_INLINE std::optional<u64> GetParentApplicationId(const ContentProvider* provider, u64 title_id) {
     return provider == nullptr ? std::nullopt : provider->GetParentApplicationId(title_id);
 }
 } // Anonymous namespace

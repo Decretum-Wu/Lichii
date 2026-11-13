@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -381,8 +380,8 @@ void ShaderCache::Register(std::unique_ptr<ShaderInfo> data, VAddr addr, size_t 
     Entry* const entry = NewEntry(addr, addr_end, data.get());
     page_filter.Mark(addr, size);
 
-    const u64 page_end = (addr_end + YUZU_PAGESIZE - 1) >> YUZU_PAGEBITS;
-    for (u64 page = addr >> YUZU_PAGEBITS; page < page_end; ++page) {
+    const u64 page_end = (addr_end + LICHII_PAGESIZE - 1) >> LICHII_PAGEBITS;
+    for (u64 page = addr >> LICHII_PAGEBITS; page < page_end; ++page) {
         invalidation_cache[page].push_back(entry);
     }
 
@@ -402,8 +401,8 @@ void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
             return rejected.first >= addr && rejected.first < addr_end;
         });
     }
-    const u64 page_end = (addr_end + YUZU_PAGESIZE - 1) >> YUZU_PAGEBITS;
-    for (u64 page = addr >> YUZU_PAGEBITS; page < page_end; ++page) {
+    const u64 page_end = (addr_end + LICHII_PAGESIZE - 1) >> LICHII_PAGEBITS;
+    for (u64 page = addr >> LICHII_PAGEBITS; page < page_end; ++page) {
         auto it = invalidation_cache.find(page);
         if (it == invalidation_cache.end()) {
             continue;
@@ -463,8 +462,8 @@ void ShaderCache::InvalidatePageEntries(std::vector<Entry*>& entries, VAddr addr
 }
 
 void ShaderCache::RemoveEntryFromInvalidationCache(const Entry* entry) {
-    const u64 page_end = (entry->addr_end + YUZU_PAGESIZE - 1) >> YUZU_PAGEBITS;
-    for (u64 page = entry->addr_start >> YUZU_PAGEBITS; page < page_end; ++page) {
+    const u64 page_end = (entry->addr_end + LICHII_PAGESIZE - 1) >> LICHII_PAGEBITS;
+    for (u64 page = entry->addr_start >> LICHII_PAGEBITS; page < page_end; ++page) {
         const auto entries_it = invalidation_cache.find(page);
         ASSERT(entries_it != invalidation_cache.end());
         std::vector<Entry*>& entries = entries_it->second;

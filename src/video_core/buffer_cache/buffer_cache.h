@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
@@ -47,7 +46,7 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
     void(slot_buffers.insert(runtime, NullBufferParams{}));
     gpu_modified_ranges.Clear();
     inline_buffer_id = NULL_BUFFER_ID;
-#ifdef YUZU_LEGACY
+#ifdef LICHII_LEGACY
     immediately_free = (Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive);
 #endif
     if (!runtime.CanReportMemoryUsage()) {
@@ -109,6 +108,10 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
         }
     }
     for (const BufferId buffer_id : evicted) {
+        if (create_trace.enabled) {
+            ++create_trace.collected;
+            create_trace.collected_bytes += slot_buffers[buffer_id].SizeBytes();
+        }
         DeleteBuffer(buffer_id);
     }
 }
@@ -126,6 +129,19 @@ void BufferCache<P>::TickFrame() {
         if (const auto now = std::chrono::steady_clock::now(); now - last >= std::chrono::seconds{2}) {
             last = now;
             LOG_INFO(HW_GPU, "Memory trace: buffer cache {} MiB", buffer_bytes >> 20);
+        }
+    }
+    if (CreateTrace& trace = create_trace; trace.enabled) {
+        if (const auto now = std::chrono::steady_clock::now(); now - trace.last >= std::chrono::seconds{10}) {
+            trace.last = now;
+            LOG_INFO(HW_GPU,
+                     "Buffer trace: {} MiB in buffers; in 10 s {} created ({} MiB), {} joined into "
+                     "them ({} MiB copied), {} stream leaps, {} collected ({} MiB)",
+                     buffer_bytes >> 20, trace.creates, trace.created_bytes >> 20, trace.joins,
+                     trace.joined_bytes >> 20, trace.leaps, trace.collected,
+                     trace.collected_bytes >> 20);
+            trace.creates = trace.created_bytes = trace.joins = trace.joined_bytes = trace.leaps =
+                trace.collected = trace.collected_bytes = 0;
         }
     }
     if (const GeometryStats& stats = geometry_stats; frame_tick % 600 == 0 && stats.syncs != 0) {
@@ -907,6 +923,8 @@ void BufferCache<P>::NoteReadBack(DAddr begin, DAddr end, bool gpu_modified) {
                     it = std::ranges::lower_bound(read_back_pages, page, {}, &ReadBackPage::page);
                 }
                 it = read_back_pages.insert(it, ReadBackPage{.page = page, .written = true});
+                read_back_first.store(read_back_pages.front().page, std::memory_order_release);
+                read_back_last.store(read_back_pages.back().page, std::memory_order_release);
             }
             if (!it->written) {
                 // Nothing new since its last read.
@@ -1437,6 +1455,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
 
     ClearDownload(*cpu_dest_address, amount);
     MarkVertexBuffersStale(*cpu_dest_address, amount);
+    NoteUniformWrite(*cpu_dest_address, amount);
 
     BufferId buffer_a;
     BufferId buffer_b;
@@ -1483,7 +1502,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
-        NoteUniformWrite(*cpu_dest_address, amount);
         const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
         if (should_sync) {
             runtime.Finish();
@@ -1510,6 +1528,7 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     const size_t size = amount * sizeof(u32);
     ClearDownload(*cpu_dst_address, size);
     gpu_modified_ranges.Subtract(*cpu_dst_address, size);
+    NoteUniformWrite(*cpu_dst_address, size);
 
     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
     Buffer& dest_buffer = slot_buffers[buffer];
@@ -1705,10 +1724,12 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
     UniformKeep& keep = uniform_keep;
     const u64 sync_serial = Nx2FastDraw::SyncSerial();
     const u64 host_serial = gpu_memory != nullptr ? gpu_memory->HostPointerSerial() : 0;
-    const bool known = delta != nullptr && !delta->overflow && !keep.memory_writes_lost &&
+    const bool known = delta != nullptr && !delta->no_uniform_keeps && !keep.memory_writes_lost &&
                        keep.draw_deletions == buffer_deletions &&
-                       keep.sync_serial == sync_serial && keep.host_serial == host_serial;
+                       keep.sync_serial == sync_serial && keep.host_serial == host_serial &&
+                       keep.gpu_memory == gpu_memory;
     keep.draw_deletions = buffer_deletions;
+    keep.gpu_memory = gpu_memory;
     keep.sync_serial = sync_serial;
     keep.host_serial = host_serial;
     if (!known) {
@@ -2542,15 +2563,18 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         // Unnoticed writes would reach a kept bank too: those stream as before.
         if (!native_bank && UniformRangeKept(stage, index, device_addr, size)) {
             if (ubo_keep_verify) {
-                ++uniform_keep.verified;
-                verify_kept = true;
-                if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
-                                                             device_addr, size)) {
-                    if (uniform_keep.mismatches++ < 16) {
-                        LOG_ERROR(HW_GPU,
-                                  "Uniform keep verify: stage {} slot {} at {:#x}+{:#x} changed "
-                                  "since the previous draw",
-                                  stage, index, device_addr, size);
+                // Only the ranges RebindKeptUniform would bind again: the others are streamed.
+                if (VideoCommon::KeptUniformMatches(runtime, stage, index, device_addr, size)) {
+                    ++uniform_keep.verified;
+                    verify_kept = true;
+                    if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
+                                                                 device_addr, size)) {
+                        if (uniform_keep.mismatches++ < 16) {
+                            LOG_ERROR(HW_GPU,
+                                      "Uniform keep verify: stage {} slot {} at {:#x}+{:#x} "
+                                      "changed since the previous draw",
+                                      stage, index, device_addr, size);
+                        }
                     }
                 }
             } else if (VideoCommon::RebindKeptUniform(runtime, stage, index, device_addr, size)) {
@@ -3514,7 +3538,8 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size) {
 }
 
 template <class P>
-BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible) {
+BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible,
+                                    std::source_location caller) {
     const u64 page = device_addr >> CACHING_PAGEBITS;
     if (device_addr == 0 || page >= page_table.size()) {
         return NULL_BUFFER_ID;
@@ -3538,7 +3563,7 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
             }
         }
     }
-    return CreateBuffer(device_addr, size, sparse_compatible);
+    return CreateBuffer(device_addr, size, sparse_compatible, caller);
 }
 
 template <class P>
@@ -3646,7 +3671,7 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
     });
     new_buffer.MarkUsage(copies[0].dst_offset, copies[0].size);
     runtime.CopyBuffer(new_buffer, overlap, copies, true);
-#ifdef YUZU_LEGACY
+#ifdef LICHII_LEGACY
     if (immediately_free)
         runtime.Finish();
 #endif
@@ -3654,14 +3679,35 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
 }
 
 template <class P>
-BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
-                                      bool sparse_compatible) {
+BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size, bool sparse_compatible,
+                                      std::source_location caller) {
     const StutterTrace::SiteScope site{StutterTrace::Site::BufferCreate};
+    const DAddr asked_addr = device_addr;
+    const u32 asked_size = wanted_size;
     DAddr device_addr_end = Common::AlignUp(device_addr + wanted_size, CACHING_PAGESIZE);
     device_addr = Common::AlignDown(device_addr, CACHING_PAGESIZE);
     wanted_size = static_cast<u32>(device_addr_end - device_addr);
     const OverlapResult overlap = ResolveOverlaps(device_addr, wanted_size);
     const u32 size = static_cast<u32>(overlap.end - overlap.begin);
+    if (CreateTrace& trace = create_trace; trace.enabled) {
+        u64 joined{};
+        for (const BufferId overlap_id : overlap.ids) {
+            joined += slot_buffers[overlap_id].SizeBytes();
+        }
+        ++trace.creates;
+        trace.created_bytes += size;
+        trace.joins += overlap.ids.size();
+        trace.joined_bytes += joined;
+        trace.leaps += overlap.has_stream_leap ? 1 : 0;
+        if (size >= 64_MiB && trace.large_logged < 256) {
+            ++trace.large_logged;
+            LOG_INFO(HW_GPU,
+                     "Buffer trace: created {:#x}+{:#x} ({} MiB) for {:#x}+{:#x} at line {}, joining "
+                     "{} buffers ({} MiB){}",
+                     overlap.begin, size, size >> 20, asked_addr, asked_size, caller.line(),
+                     overlap.ids.size(), joined >> 20, overlap.has_stream_leap ? ", stream leap" : "");
+        }
+    }
     const BufferId new_buffer_id =
         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
     auto& new_buffer = slot_buffers[new_buffer_id];
@@ -3906,6 +3952,7 @@ bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
         return false;
     }
 
+    NoteUniformWrite(dest_address, copy_size);
     InlineMemoryImplementation(dest_address, copy_size, inlined_buffer);
 
     return true;
@@ -4158,7 +4205,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 
     Unregister(buffer_id);
 
-#ifdef YUZU_LEGACY
+#ifdef LICHII_LEGACY
     if (!do_not_mark || !immediately_free)
 #endif
         delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
