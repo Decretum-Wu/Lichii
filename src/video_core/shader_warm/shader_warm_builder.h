@@ -73,6 +73,11 @@ std::optional<WarmStamp> ReadWarmMarker(const std::filesystem::path& warm_file);
 /// Writes the marker of `warm_file`. Returns false when it cannot be written.
 bool WriteWarmMarker(const std::filesystem::path& warm_file, const WarmStamp& stamp);
 
+/// Removes the marker of `warm_file` before `new_file` replaces it, unless the marker was written
+/// for the same contents: a rebuild that comes out identical stays done.
+void DropStaleWarmMarker(const std::filesystem::path& warm_file,
+                         const std::filesystem::path& new_file);
+
 /// True when the title's precache has never finished: no precache file yet, or no marker next
 /// to it. A marker that no longer matches (new driver) is not seen here: the emulator checks that
 /// at boot.
