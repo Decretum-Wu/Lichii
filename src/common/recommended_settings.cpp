@@ -21,9 +21,9 @@ std::map<std::string, std::string> ParseRecommendedSettingsBackup(const std::str
     return saved;
 }
 
-std::string FormatRecommendedSettingsBackup(const std::map<std::string, std::string>& values) {
+std::string FormatRecommendedSettingsBackup(const std::map<std::string, std::string>& entries) {
     std::string backup;
-    for (const auto& [label, value] : values) {
+    for (const auto& [label, value] : entries) {
         if (!backup.empty()) {
             backup += ',';
         }

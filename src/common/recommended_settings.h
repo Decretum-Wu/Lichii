@@ -110,6 +110,6 @@ std::vector<RecommendedSettingChange> RestorePreviousSettings(Values& settings);
 std::map<std::string, std::string> ParseRecommendedSettingsBackup(const std::string& backup);
 
 /// Writes values back in the form ParseRecommendedSettingsBackup reads.
-std::string FormatRecommendedSettingsBackup(const std::map<std::string, std::string>& values);
+std::string FormatRecommendedSettingsBackup(const std::map<std::string, std::string>& entries);
 
 } // namespace Settings
