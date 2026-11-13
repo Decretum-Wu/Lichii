@@ -22,6 +22,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/div_ceil.h"
+#include "common/memory_detect.h"
 #include "common/paged_scalar.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -250,6 +251,12 @@ DeviceMemoryManager<Traits>::~DeviceMemoryManager() = default;
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
+    // The hint takes the pages out of the working set at once (VirtualUnlock), whether or not
+    // the host needs the RAM, and an image made again over them faults them all back in during
+    // its upload (Ocarina of Time: 1% lows). Only when RAM is short.
+    if (!Common::IsHostLowOnMemory()) {
+        return;
+    }
     struct Run {
         u64 physical_offset;
         VAddr virtual_address; ///< 0: no CPU mapping known
