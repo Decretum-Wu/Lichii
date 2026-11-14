@@ -7,13 +7,19 @@ version: 2.1
 # or the trigger "PR opened or pushed to, default branch and tag pushes" (GitHub App) gives pull
 # requests and pushes to nx2. Tag pushes start no workflow because no job has a tag filter.
 #
-# Linux runs on the open-source allowance (400,000 credits a month). Windows and macOS draw from
-# the free plan's 30,000, so macOS only runs when a pipeline is triggered with macos: true.
+# Linux runs on every pull request and nx2 push, from the open-source allowance (400,000 credits
+# a month). Windows and macOS draw from the free plan's 30,000. A warm Windows run takes about 11
+# minutes at 40 credits a minute (~460 credits), so the pool covers about 65 a month, and a cold
+# Windows build needs two runs (~3,500 credits). So Windows runs only on pushes to nx2; GitHub
+# Actions builds it on pull requests. macOS (200 credits a minute) runs only when a pipeline is
+# triggered with macos: true.
 #
 # Each job saves its cache after every build that stopped early, so a cold build continues where
 # it stopped, and after every complete build that compiled over 100 objects, such as after an nx2
 # change. Other complete builds save once a day. Caches live three days. Every run restores the
-# newest one; ccache keys objects by content, so a cache from another branch still helps.
+# newest one; ccache keys objects by content, so a cache from another branch still helps. A cache
+# is about 220 MiB, so storage reaches roughly 4 GB, an estimated 840 credits a month beyond the
+# free 2 GB at 420 credits per GB-month.
 
 parameters:
   macos:
@@ -486,7 +492,10 @@ workflows:
           qt_arch: linux_gcc_arm64
           # The arm64 backend aborts on some of the random blocks this test compares (ZOR-274).
           catch2_exclude: "[jit_codegen_options]"
-      - windows-clang-cl
+      - windows-clang-cl:
+          filters:
+            branches:
+              only: nx2
 
   macos:
     when: << pipeline.parameters.macos >>
