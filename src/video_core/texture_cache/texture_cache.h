@@ -473,7 +473,9 @@ void TextureCache<P>::TickFrame() {
                         // all before raising the margin.
                         const u64 since = frame_tick + 1 - spill_collect_tick;
                         if (spill_forced_collects < MaxSpillCollects) {
-                            if (since >= spill_forced_collects * SpillCollectSpacing) {
+                            if (spill_forced_collects == 0 ||
+                                frame_tick >= spill_last_collect + SpillCollectSpacing) {
+                                spill_last_collect = frame_tick;
                                 ++spill_forced_collects;
                                 ++spill_log_collects;
                                 spill_collect = true;

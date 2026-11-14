@@ -193,6 +193,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 spill_quiet_frames{};     ///< Frames since the last spill
     u64 spill_collect_tick{};     ///< frame_tick of the first forced collect of this episode + 1
     u32 spill_forced_collects{};  ///< Forced collects in this episode
+    u64 spill_last_collect{};     ///< frame_tick of the last forced collect
     u64 spill_log_bytes{};        ///< Spilled since the last spill log line
     u32 spill_log_collects{};     ///< Forced collects since the last spill log line
     std::chrono::steady_clock::time_point spill_log_time{};
