@@ -8,11 +8,13 @@ version: 2.1
 # requests and pushes to nx2. Tag pushes start no workflow because no job has a tag filter.
 #
 # Linux runs on every pull request and nx2 push, from the open-source allowance (400,000 credits
-# a month). Windows and macOS draw from the free plan's 30,000. A warm Windows run takes about 11
-# minutes at 40 credits a minute (~460 credits), so the pool covers about 65 a month, and a cold
-# Windows build needs two runs (~3,500 credits). So Windows runs only on pushes to nx2; GitHub
-# Actions builds it on pull requests. macOS (200 credits a minute) runs only when a pipeline is
-# triggered with macos: true.
+# a month). Windows and macOS draw from the free plan's 30,000, so they run only in pipelines
+# triggered with windows: true or macos: true. A schedule created through the CircleCI API
+# triggers windows: true on nx2 every night at 01:00 UTC (02:00 in Amsterdam in winter); GitHub
+# Actions builds Windows on pull requests. Windows costs 40 credits a minute: about 460 credits a
+# run on a warm cache and about 1,100 after three hours of nx2 changes, so 30 nightly runs take
+# roughly 15,000 to 33,000 credits. A cold Windows build needs two runs (~3,500 credits). macOS
+# costs 200 credits a minute.
 #
 # Each job saves its cache after every build that stopped early, so a cold build continues where
 # it stopped, and after every complete build that compiled over 100 objects, such as after an nx2
@@ -22,6 +24,9 @@ version: 2.1
 # free 2 GB at 420 credits per GB-month.
 
 parameters:
+  windows:
+    type: boolean
+    default: false
   macos:
     type: boolean
     default: false
@@ -477,6 +482,8 @@ jobs:
 
 workflows:
   build-check:
+    when:
+      not: << pipeline.parameters.windows >>
     jobs:
       - linux-gcc:
           name: linux-gcc13-x86_64
@@ -492,10 +499,11 @@ workflows:
           qt_arch: linux_gcc_arm64
           # The arm64 backend aborts on some of the random blocks this test compares (ZOR-274).
           catch2_exclude: "[jit_codegen_options]"
-      - windows-clang-cl:
-          filters:
-            branches:
-              only: nx2
+
+  windows:
+    when: << pipeline.parameters.windows >>
+    jobs:
+      - windows-clang-cl
 
   macos:
     when: << pipeline.parameters.macos >>
