@@ -249,6 +249,15 @@ jobs:
             if ($LASTEXITCODE) { throw 'Qt install failed' }
             'C:\Qt\6.8.3\msvc2022_64\bin' | Out-File -Append -Encoding ascii $env:GITHUB_PATH
             'QT_ROOT_DIR=C:/Qt/6.8.3/msvc2022_64' | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+            'QT_PLUGIN_PATH=C:/Qt/6.8.3/msvc2022_64/plugins' | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+            # tests.exe and lichii.exe import wlanapi.dll from the Wireless LAN Service. GitHub's image
+            # installs that feature; here it needs a reboot, so the DLL is copied from WinSxS.
+            $wlan = Get-ChildItem C:\Windows\WinSxS -Directory -Filter 'amd64_microsoft-windows-onecoreuap-wlansvc_*' |
+                ForEach-Object { Get-ChildItem $_.FullName -Filter wlanapi.dll } | Sort-Object LastWriteTime | Select-Object -Last 1
+            if (-not $wlan) { throw 'No wlanapi.dll in WinSxS' }
+            New-Item -ItemType Directory -Force C:\ci\wlan | Out-Null
+            Copy-Item $wlan.FullName C:\ci\wlan
+            'C:\ci\wlan' | Out-File -Append -Encoding ascii $env:GITHUB_PATH
 
       # What ilammy/msvc-dev-cmd does on GitHub: keep the variables vcvars64.bat adds or changes.
       # The image also carries VS 18 Build Tools, whose MSVC 14.51 STL the source does not build
