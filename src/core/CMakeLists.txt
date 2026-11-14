@@ -45,10 +45,14 @@ add_library(core STATIC
     debugger/gdbstub.h
     debugger/gdbstub_arch.cpp
     debugger/gdbstub_arch.h
+    debugger/nx2_bug_bundle.cpp
+    debugger/nx2_bug_bundle.h
     debugger/nx2_debug_server.cpp
     debugger/nx2_debug_server.h
     debugger/nx2_debug_tools.cpp
     debugger/nx2_debug_tools.h
+    debugger/nx2_zip.cpp
+    debugger/nx2_zip.h
     device_memory.cpp
     device_memory.h
     device_memory_manager.h
@@ -1105,6 +1109,8 @@ add_library(core STATIC
     hle/service/sockets/nsd.h
     hle/service/sockets/nextendo_redirect.cpp
     hle/service/sockets/nextendo_redirect.h
+    hle/service/sockets/numeric_name_info.cpp
+    hle/service/sockets/numeric_name_info.h
     hle/service/sockets/sfdnsres.cpp
     hle/service/sockets/sfdnsres.h
     hle/service/sockets/sockets.cpp
@@ -1231,6 +1237,10 @@ if (WIN32)
         target_link_libraries(core PRIVATE iw)
         message(STATUS "Linking 'core' with iw on Linux.")
     endif()
+endif()
+
+if (APPLE)
+    target_link_libraries(core PRIVATE "-framework SystemConfiguration" "-framework CoreFoundation")
 endif()
 
 if (MSVC)
