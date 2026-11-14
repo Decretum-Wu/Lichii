@@ -399,7 +399,7 @@ struct System::Impl {
     }
 
     SystemResultStatus InitializeForGpuReplay(System& system, Frontend::EmuWindow& emu_window,
-                                              u64 program_id) {
+                                              u64 replay_program_id) {
         if (const auto result = InitializeKernel(system); result != SystemResultStatus::Success) {
             return result;
         }
@@ -409,7 +409,7 @@ struct System::Impl {
             return SystemResultStatus::ErrorVideoCore;
         }
         is_powered_on = true;
-        perf_stats.emplace(program_id);
+        perf_stats.emplace(replay_program_id);
         return SystemResultStatus::Success;
     }
 
