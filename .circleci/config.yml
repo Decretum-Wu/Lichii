@@ -11,9 +11,9 @@ version: 2.1
 # the free plan's 30,000, so macOS only runs when a pipeline is triggered with macos: true.
 #
 # Each job saves its cache after every build that stopped early, so a cold build continues where
-# it stopped, and after the first complete build of the day. Caches live three days, which keeps
-# storage near the free plan's 2 GB. Every run restores the newest one; ccache keys objects by
-# content, so a cache from another branch still helps.
+# it stopped, and after every complete build that compiled over 100 objects, such as after an nx2
+# change. Other complete builds save once a day. Caches live three days. Every run restores the
+# newest one; ccache keys objects by content, so a cache from another branch still helps.
 
 parameters:
   macos:
@@ -153,7 +153,12 @@ jobs:
           command: |
             ccache --zero-stats
             timeout 48m cmake --build build --parallel "$(nproc)"
-            echo complete > .circleci-build-state
+            misses=$(ccache --print-stats | awk '$1 == "cache_miss" { print $2 }')
+            if [ "${misses:-0}" -gt 100 ]; then
+              echo "complete $(date -u +%s)" > .circleci-build-state
+            else
+              echo complete > .circleci-build-state
+            fi
             ccache --show-stats
 
       - save-objects:
@@ -345,7 +350,12 @@ jobs:
             export CCACHE_COMPILERCHECK="string:$(sha256sum tools/windows/install-llvm.ps1 | cut -c1-64)"
             ccache --zero-stats
             /usr/bin/timeout 48m cmake --build build --parallel
-            echo complete > .circleci-build-state
+            misses=$(ccache --print-stats | awk '$1 == "cache_miss" { print $2 }')
+            if [ "${misses:-0}" -gt 100 ]; then
+              echo "complete $(date -u +%s)" > .circleci-build-state
+            else
+              echo complete > .circleci-build-state
+            fi
             ccache --show-stats -v
 
       - save-objects:
@@ -441,7 +451,12 @@ jobs:
           command: |
             ccache --zero-stats
             gtimeout 48m cmake --build build --parallel "$(sysctl -n hw.ncpu)"
-            echo complete > .circleci-build-state
+            misses=$(ccache --print-stats | awk '$1 == "cache_miss" { print $2 }')
+            if [ "${misses:-0}" -gt 100 ]; then
+              echo "complete $(date -u +%s)" > .circleci-build-state
+            else
+              echo complete > .circleci-build-state
+            fi
             ccache --show-stats
 
       - save-objects:
