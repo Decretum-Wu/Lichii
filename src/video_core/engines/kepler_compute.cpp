@@ -815,10 +815,17 @@ bool KeplerCompute::ProcessGameDlss(u64 program_id, u64 native_key) {
     if (dlss_chain.spatial_only) {
         return false;
     }
+    const auto blocker = GameDlssBlocker();
     const bool replacement = dlss_chain.failure != VideoCore::GameDlssReason::None ||
-                             GameDlssBlocker() != VideoCore::GameDlssReason::None;
+                             blocker != VideoCore::GameDlssReason::None;
+    // While the network recovers from mismatched output, its output pass runs, so the recheck in
+    // FinishDlssEvaluation (after the dispatch) sees this frame's network output; the replacement
+    // upscale then draws over it.
+    const bool recheck_after_dispatch =
+        dlss_chain.failure == VideoCore::GameDlssReason::OutputMismatch &&
+        blocker == VideoCore::GameDlssReason::None && !DlssNetworkDroppedForGood();
     if (dlss_chain.output_pass) {
-        return replacement && FinishDlssEvaluation();
+        return replacement && !recheck_after_dispatch && FinishDlssEvaluation();
     }
     return DlssNetworkDroppedForGood() && !passes->IsPrepass(native_key) &&
            dlss_chain.programs.contains(native_key);
