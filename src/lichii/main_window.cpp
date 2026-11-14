@@ -2491,8 +2491,9 @@ void MainWindow::UndoSessionSpeedChanges() {
     // changed is put back, in the scope (global or per-game) it was changed in: forcing the
     // limit on here saved "Limit Speed Percent" as checked after every game, whatever the user
     // had chosen.
-    if (speed_limit_before_hotkeys && Settings::values.use_speed_limit.UsingGlobal() ==
-                                          speed_limit_before_hotkeys->using_global) {
+    // A configuration applied in a dialog that is still open replaces the hotkeys' change too.
+    if (speed_limit_before_hotkeys && !UISettings::values.configuration_applied &&
+        Settings::values.use_speed_limit.UsingGlobal() == speed_limit_before_hotkeys->using_global) {
         Settings::values.use_speed_limit.SetValue(speed_limit_before_hotkeys->value);
     }
     speed_limit_before_hotkeys.reset();
