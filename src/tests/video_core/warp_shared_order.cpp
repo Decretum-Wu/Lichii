@@ -120,3 +120,30 @@ TEST_CASE("Shared loads with no store before them stay unordered", "[shader][war
     CHECK(test.Barriers() == 0);
     CHECK_FALSE(test.program.info.orders_warp_shared_memory);
 }
+
+TEST_CASE("A shared atomic after a store is ordered for the warp", "[shader][warp_shared_order]") {
+    TestProgram test;
+    IR::Block& block{test.Block()};
+    IR::IREmitter ir{block};
+    ir.WriteShared(32, ir.Imm32(4), ir.LaneId());
+    static_cast<void>(ir.SharedAtomicIAdd(ir.Imm32(8), ir.Imm32(1)));
+    test.Run();
+    CHECK(test.Opcodes(block) ==
+          std::vector{IR::Opcode::LaneId, IR::Opcode::WriteSharedU32,
+                      IR::Opcode::WarpSharedMemoryBarrier, IR::Opcode::SharedAtomicIAdd32});
+    CHECK(test.program.info.orders_warp_shared_memory);
+}
+
+TEST_CASE("Consecutive shared atomics need no warp barrier, a load after them does",
+          "[shader][warp_shared_order]") {
+    TestProgram test;
+    IR::Block& block{test.Block()};
+    IR::IREmitter ir{block};
+    static_cast<void>(ir.SharedAtomicIAdd(ir.Imm32(0), ir.Imm32(1)));
+    static_cast<void>(ir.SharedAtomicIAdd(ir.Imm32(4), ir.Imm32(1)));
+    static_cast<void>(ir.LoadShared(32, false, ir.Imm32(8)));
+    test.Run();
+    CHECK(test.Opcodes(block) ==
+          std::vector{IR::Opcode::SharedAtomicIAdd32, IR::Opcode::SharedAtomicIAdd32,
+                      IR::Opcode::WarpSharedMemoryBarrier, IR::Opcode::LoadSharedU32});
+}

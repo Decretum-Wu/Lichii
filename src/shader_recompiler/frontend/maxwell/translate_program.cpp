@@ -505,7 +505,6 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         Optimization::ConditionalBarrierPass(program,
                                              normalized_host_info.max_compute_shared_memory_size);
     }
-    Optimization::WarpSharedOrderPass(program);
 
     Optimization::PositionPass(env, program);
     Optimization::BlitConstantsPass(env, program);
@@ -518,6 +517,8 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         Optimization::RescalingPass(program);
     }
     Optimization::DeadCodeEliminationPass(program);
+    // After dead code elimination, so loads it removes get no barrier
+    Optimization::WarpSharedOrderPass(program);
     TightenOutputVertices(program);
     if (Settings::values.renderer_debug) {
         Optimization::VerificationPass(program);
