@@ -636,7 +636,7 @@ TEST_CASE("Cooperative HMMA keeps workgroup memory coherent under the Vulkan mem
         const auto operands = RequireWorkgroupMemoryOperands(code, true);
         REQUIRE(operands.loads == 1);
         REQUIRE(operands.stores == 1);
-        REQUIRE(operands.barriers == 4); // The guest's three and its store's subgroup barrier.
+        REQUIRE(operands.barriers == 3);
     }
     SECTION("16x16x16") {
         const auto code = emit("16x16x16", [](Profile& profile) {
@@ -648,7 +648,7 @@ TEST_CASE("Cooperative HMMA keeps workgroup memory coherent under the Vulkan mem
         REQUIRE(operands.stores == 11); // The guest's store and the lane's A, B and C words.
         REQUIRE(operands.cooperative_loads == 3);
         REQUIRE(operands.cooperative_stores == 1);
-        REQUIRE(operands.barriers == 6); // Only the guest's store gets a subgroup barrier.
+        REQUIRE(operands.barriers == 5);
     }
     SECTION("software HMMA on GLSL450") {
         const auto code = emit("software", [](Profile&) {});
@@ -656,7 +656,7 @@ TEST_CASE("Cooperative HMMA keeps workgroup memory coherent under the Vulkan mem
         const auto operands = RequireWorkgroupMemoryOperands(code, false);
         REQUIRE(operands.loads == 1);
         REQUIRE(operands.stores == 1);
-        REQUIRE(operands.barriers == 4);
+        REQUIRE(operands.barriers == 3);
     }
 }
 

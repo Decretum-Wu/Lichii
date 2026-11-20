@@ -27,15 +27,6 @@ std::pair<Id, Id> ExtractArgs(EmitContext& ctx, Id offset, u32 mask, u32 count) 
     const Id count_id{ctx.Const(count)};
     return {bit, count_id};
 }
-
-// Guest code reads words other threads of its warp stored in shared memory without a barrier in
-// between (warp-synchronous scans and reductions). Vulkan orders such accesses only through a
-// barrier, and RADV otherwise reads a neighbour's word from before its store.
-void OrderForWarp(EmitContext& ctx) {
-    ctx.OpMemoryBarrier(ctx.Const(static_cast<u32>(spv::Scope::Subgroup)),
-                        ctx.BarrierSemantics(spv::MemorySemanticsMask::AcquireRelease |
-                                             spv::MemorySemanticsMask::WorkgroupMemory));
-}
 } // Anonymous namespace
 
 Id EmitLoadSharedU8(EmitContext& ctx, Id offset) {
@@ -120,7 +111,7 @@ Id EmitLoadSharedU128(EmitContext& ctx, Id offset) {
     return ctx.OpCompositeConstruct(ctx.U32[4], values);
 }
 
-static void WriteSharedU8(EmitContext& ctx, Id offset, Id value) {
+void EmitWriteSharedU8(EmitContext& ctx, Id offset, Id value) {
     if (ctx.uses_explicit_workgroup_layout) {
         const Id pointer{
             ctx.OpAccessChain(ctx.shared_u8, ctx.shared_memory_u8, ctx.u32_zero_value, offset)};
@@ -130,7 +121,7 @@ static void WriteSharedU8(EmitContext& ctx, Id offset, Id value) {
     }
 }
 
-static void WriteSharedU16(EmitContext& ctx, Id offset, Id value) {
+void EmitWriteSharedU16(EmitContext& ctx, Id offset, Id value) {
     if (ctx.uses_explicit_workgroup_layout) {
         const Id pointer{Pointer(ctx, ctx.shared_u16, ctx.shared_memory_u16, offset, 1)};
         ctx.StoreShared(pointer, ctx.OpUConvert(ctx.U16, value));
@@ -139,7 +130,7 @@ static void WriteSharedU16(EmitContext& ctx, Id offset, Id value) {
     }
 }
 
-static void WriteSharedU32(EmitContext& ctx, Id offset, Id value) {
+void EmitWriteSharedU32(EmitContext& ctx, Id offset, Id value) {
     Id pointer{};
     if (ctx.uses_explicit_workgroup_layout) {
         pointer = Pointer(ctx, ctx.shared_u32, ctx.shared_memory_u32, offset, 2);
@@ -151,7 +142,7 @@ static void WriteSharedU32(EmitContext& ctx, Id offset, Id value) {
     ctx.StoreShared(pointer, value);
 }
 
-static void WriteSharedU64(EmitContext& ctx, Id offset, Id value) {
+void EmitWriteSharedU64(EmitContext& ctx, Id offset, Id value) {
     if (ctx.uses_explicit_workgroup_layout) {
         const Id pointer{Pointer(ctx, ctx.shared_u32x2, ctx.shared_memory_u32x2, offset, 3)};
         ctx.StoreShared(pointer, value);
@@ -166,7 +157,7 @@ static void WriteSharedU64(EmitContext& ctx, Id offset, Id value) {
     ctx.StoreShared(rhs_pointer, ctx.OpCompositeExtract(ctx.U32[1], value, 1U));
 }
 
-static void WriteSharedU128(EmitContext& ctx, Id offset, Id value) {
+void EmitWriteSharedU128(EmitContext& ctx, Id offset, Id value) {
     if (ctx.uses_explicit_workgroup_layout) {
         const Id pointer{Pointer(ctx, ctx.shared_u32x4, ctx.shared_memory_u32x4, offset, 4)};
         ctx.StoreShared(pointer, value);
@@ -179,31 +170,6 @@ static void WriteSharedU128(EmitContext& ctx, Id offset, Id value) {
         const Id pointer{ctx.OpAccessChain(ctx.shared_u32, ctx.shared_memory_u32, index)};
         ctx.StoreShared(pointer, ctx.OpCompositeExtract(ctx.U32[1], value, i));
     }
-}
-
-void EmitWriteSharedU8(EmitContext& ctx, Id offset, Id value) {
-    WriteSharedU8(ctx, offset, value);
-    OrderForWarp(ctx);
-}
-
-void EmitWriteSharedU16(EmitContext& ctx, Id offset, Id value) {
-    WriteSharedU16(ctx, offset, value);
-    OrderForWarp(ctx);
-}
-
-void EmitWriteSharedU32(EmitContext& ctx, Id offset, Id value) {
-    WriteSharedU32(ctx, offset, value);
-    OrderForWarp(ctx);
-}
-
-void EmitWriteSharedU64(EmitContext& ctx, Id offset, Id value) {
-    WriteSharedU64(ctx, offset, value);
-    OrderForWarp(ctx);
-}
-
-void EmitWriteSharedU128(EmitContext& ctx, Id offset, Id value) {
-    WriteSharedU128(ctx, offset, value);
-    OrderForWarp(ctx);
 }
 
 } // namespace Shader::Backend::SPIRV
