@@ -1525,7 +1525,7 @@ void KeplerCompute::CaptureFireEmblemJitter() {
     const GPUVAddr address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
     const u32 color_offset = dlss_chain.adjacent_handles ? OutputColorInputOffset : PrepassColorOffset;
     const u32 jitter_offset = dlss_chain.adjacent_handles ? FastFusionJitterOffset : JitterOffset;
-    const u32 needed = std::max(color_offset, jitter_offset + 8);
+    const u32 needed = std::max(color_offset + 4, jitter_offset + 8);
     if (!(launch_description.const_buffer_enable_mask & 1) || cbuf.size.Value() < needed ||
         !memory_manager.IsFullyMappedRange(address, needed)) {
         return;
