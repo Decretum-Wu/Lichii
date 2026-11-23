@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cstring>
+#include <memory>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -223,4 +225,94 @@ TEST_CASE("Compute pipelines without local accesses serve every local layout",
     other.unique_hash ^= 1;
     CHECK(Vulkan::FindComputePipeline(cache, ComputePipelineLookupKey{other, 576, 576}) ==
           cache.end());
+}
+
+namespace {
+/// The fields of a compute pipeline cache entry that publishing a rebuild reads and writes.
+struct FakeEntry {
+    std::unique_ptr<int> pipeline;
+    bool uses_local_memory{};
+    Vulkan::ComputePipelineLookupKey dispatch_key{};
+    u32 rebuilds{};
+    bool used{};
+};
+
+struct FakeCache {
+    std::unordered_map<Vulkan::ComputePipelineLookupKey, FakeEntry> map;
+    std::vector<int> retired;
+
+    /// What the dispatch path finds for a layout, the translation's id or 0
+    int Dispatch(const Vulkan::ComputePipelineLookupKey& lookup) {
+        const auto it{Vulkan::FindComputePipeline(map, lookup)};
+        return it != map.end() && it->second.pipeline ? *it->second.pipeline : 0;
+    }
+
+    /// Publishes `rebuilt` over the entry dispatch `lookup` finds, as CurrentComputePipeline does,
+    /// and returns whether that entry still serves the dispatch.
+    bool Publish(const Vulkan::ComputePipelineLookupKey& lookup, FakeEntry&& rebuilt) {
+        auto it{Vulkan::FindComputePipeline(map, lookup)};
+        REQUIRE(it != map.end());
+        it = Vulkan::PublishComputeRebuild(map, it, std::move(rebuilt),
+                                           [&](std::unique_ptr<int>&& pipeline) {
+                                               retired.push_back(*pipeline);
+                                           });
+        return Vulkan::ServesLookup(it->first, lookup);
+    }
+};
+
+FakeEntry Translation(int id, bool uses_local_memory,
+                      const Vulkan::ComputePipelineLookupKey& dispatch_key) {
+    return {.pipeline = std::make_unique<int>(id),
+            .uses_local_memory = uses_local_memory,
+            .dispatch_key = dispatch_key};
+}
+} // namespace
+
+TEST_CASE("A rebuild with local accesses leaves the layout-free key for its own layout",
+          "[video_core][native_local_memory]") {
+    using Vulkan::ComputePipelineLookupKey;
+    const Vulkan::ComputePipelineCacheKey key{
+        .unique_hash = 0xd037c025142cc326ULL, .shared_memory_size = 0, .workgroup_size{64, 1, 1}};
+    const ComputePipelineLookupKey a{key, 592, 592};
+    const ComputePipelineLookupKey b{key, 608, 608};
+    FakeCache cache;
+    // The first translation dropped its local accesses with a null pointer: it serves any layout.
+    cache.map.emplace(Vulkan::AnyLayoutKey(key), Translation(1, false, a));
+    REQUIRE(cache.Dispatch(a) == 1);
+    REQUIRE(cache.Dispatch(b) == 1);
+
+    SECTION("Immediate rebuild by the dispatch it was translated for") {
+        CHECK(cache.Publish(a, Translation(2, true, a)));
+        CHECK(cache.Dispatch(a) == 2);
+        CHECK(cache.Dispatch(b) == 0); // B translates its own
+        CHECK(cache.retired == std::vector<int>{1});
+        CHECK(cache.map.at(a).rebuilds == 1);
+    }
+    SECTION("A queues the rebuild, B finds it built") {
+        CHECK_FALSE(cache.Publish(b, Translation(2, true, a)));
+        // B's dispatch looks up again: neither lookup path hands it A's translation.
+        CHECK(cache.Dispatch(b) == 0);
+        CHECK(cache.Dispatch(a) == 2);
+        cache.map.emplace(b, Translation(3, true, b));
+        CHECK(cache.Dispatch(b) == 3);
+        CHECK(cache.Dispatch(a) == 2);
+        CHECK(cache.retired == std::vector<int>{1});
+    }
+    SECTION("A rebuild without local accesses keeps serving every layout") {
+        CHECK(cache.Publish(b, Translation(2, false, a)));
+        CHECK(cache.Dispatch(a) == 2);
+        CHECK(cache.Dispatch(b) == 2);
+    }
+    SECTION("A layout's own translation is replaced, not kept beside the rebuild") {
+        cache.map.emplace(a, Translation(4, true, a));
+        auto it{cache.map.find(Vulkan::AnyLayoutKey(key))};
+        it = Vulkan::PublishComputeRebuild(cache.map, it, Translation(2, true, a),
+                                           [&](std::unique_ptr<int>&& pipeline) {
+                                               cache.retired.push_back(*pipeline);
+                                           });
+        CHECK(it->first == a);
+        CHECK(cache.Dispatch(a) == 2);
+        CHECK(cache.Dispatch(b) == 0);
+        CHECK(cache.retired == std::vector<int>{1, 4});
+    }
 }

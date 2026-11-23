@@ -1202,25 +1202,12 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
     }
     ComputePipelineCacheEntry* entry{&it->second};
     const auto replace = [&](ComputePipelineCacheEntry&& rebuilt) {
-        if (entry->pipeline) {
-            retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
-                                                   std::move(entry->pipeline));
-        }
-        rebuilt.rebuilds = entry->rebuilds + 1;
-        rebuilt.used = entry->used;
-        if (rebuilt.uses_local_memory && it->first == AnyLayoutKey(key)) {
-            // The rebuild keeps local accesses the first translation dropped (their only use was
-            // through the null pointer): from now on it serves its own layout alone.
-            compute_cache.erase(it);
-            bool inserted{};
-            std::tie(it, inserted) = compute_cache.try_emplace(rebuilt.dispatch_key);
-            entry = &it->second;
-            if (!inserted && entry->pipeline) {
-                retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
-                                                       std::move(entry->pipeline));
-            }
-        }
-        *entry = std::move(rebuilt);
+        it = PublishComputeRebuild(compute_cache, it, std::move(rebuilt),
+                                   [&](std::unique_ptr<ComputePipeline>&& pipeline) {
+                                       retired_compute_pipelines.emplace_back(
+                                           scheduler.CurrentTick(), std::move(pipeline));
+                                   });
+        entry = &it->second;
     };
     if (is_new) {
         // Built above
@@ -1264,7 +1251,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
             entry->rebuilds = MaxComputeRebuilds;
         }
     }
-    if (it->first != lookup && it->first != AnyLayoutKey(key)) {
+    if (!ServesLookup(it->first, lookup)) {
         // A rebuild for another dispatch's layout finished: this one needs its own.
         return CurrentComputePipeline(native_key);
     }
@@ -2214,10 +2201,12 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::stop_token stop_loading,
                     ++in_cache;
                     continue;
                 }
-                if (built_before.contains(key.Hash())) {
+                // Two layouts of one key are two programs (old progress entries match neither)
+                const u64 progress_key{RecordLookupKey(key, env).Hash()};
+                if (built_before.contains(progress_key)) {
                     continue;
                 }
-                job_keys.push_back(key.Hash());
+                job_keys.push_back(progress_key);
                 const u64 cpu_bytes = TranslationBytes(env.MemorySize());
                 jobs.push_back({
                     .translate = [this, key,

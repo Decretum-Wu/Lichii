@@ -18,6 +18,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include "common/container/unordered_map.h"
 #include <vector>
@@ -140,6 +141,37 @@ template <typename Map>
 [[nodiscard]] auto FindComputePipeline(Map& cache, const ComputePipelineLookupKey& lookup) {
     const auto it{cache.find(lookup)};
     return it != cache.end() ? it : cache.find(AnyLayoutKey(lookup.key));
+}
+
+/// Whether a pipeline stored under `stored` serves a dispatch looking up `lookup`.
+[[nodiscard]] inline bool ServesLookup(const ComputePipelineLookupKey& stored,
+                                       const ComputePipelineLookupKey& lookup) {
+    return stored == lookup || stored == AnyLayoutKey(lookup.key);
+}
+
+/// Replaces the entry at `it` with its rebuild and returns where the rebuild is now. A rebuild can
+/// keep local accesses the first translation dropped (their only use was through a null pointer):
+/// it then leaves the layout-free key for the layout it was translated for, which need not be the
+/// layout of the dispatch that finds it built. `retire` takes the pipelines replaced.
+template <typename Map, typename Retire>
+typename Map::iterator PublishComputeRebuild(Map& cache, typename Map::iterator it,
+                                             typename Map::mapped_type&& rebuilt, Retire&& retire) {
+    if (it->second.pipeline) {
+        retire(std::move(it->second.pipeline));
+    }
+    rebuilt.rebuilds = it->second.rebuilds + 1;
+    rebuilt.used = it->second.used;
+    if (rebuilt.uses_local_memory && it->first == AnyLayoutKey(it->first.key)) {
+        const ComputePipelineLookupKey layout{rebuilt.dispatch_key};
+        cache.erase(it);
+        bool inserted{};
+        std::tie(it, inserted) = cache.try_emplace(layout);
+        if (!inserted && it->second.pipeline) {
+            retire(std::move(it->second.pipeline));
+        }
+    }
+    it->second = std::move(rebuilt);
+    return it;
 }
 
 class ComputePipeline;
