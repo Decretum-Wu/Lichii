@@ -2076,6 +2076,14 @@ bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageVie
     if (fsr3_unsupported) {
         return false;
     }
+    // Reversed D32 depth (Fire Emblem, The Duskbloods) or standard D24 depth (Fast Fusion).
+    const auto fsr3_profile = depth.format == PixelFormat::D32_FLOAT
+                                  ? Fsr3Upscaler::Profile::HdrReversedDepth
+                                  : Fsr3Upscaler::Profile::HdrStandardDepth;
+    if (fsr3_upscaler && fsr3_upscaler->GetProfile() != fsr3_profile) {
+        scheduler.Finish(); // its images may still be in use
+        fsr3_upscaler.reset();
+    }
     if (!fsr3_upscaler) {
         if (!Fsr3Upscaler::IsSupported(device)) {
             LOG_WARNING(Render_Vulkan, "FSR 3.1 needs formats or features this device lacks; "
@@ -2086,7 +2094,8 @@ bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageVie
         try {
             fsr3_upscaler = std::make_unique<Fsr3Upscaler>(device, scheduler, memory_allocator,
                                                            staging_buffer_pool, descriptor_pool,
-                                                           compute_pass_descriptor_queue);
+                                                           compute_pass_descriptor_queue,
+                                                           fsr3_profile);
         } catch (const vk::Exception& exception) {
             LOG_ERROR(Render_Vulkan, "FSR 3.1 failed to start ({}); using the temporal stand-in",
                       exception.what());
