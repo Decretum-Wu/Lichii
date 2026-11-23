@@ -117,6 +117,9 @@ struct ComputePipelineCacheEntry {
     std::vector<std::pair<u32, u32>> null_pointer_slots;
     /// Constant buffer slots bound as storage buffer pointers (see MappedStoragePointerKeys)
     std::vector<u64> mapped_pointers;
+    /// The local memory its translation addresses: the total and native compute's high allocation
+    /// (see LocalMemoryHighSize). None without local accesses. The key doesn't hold them.
+    std::optional<std::array<u32, 2>> local_layout;
     u32 rebuilds{};
     /// Whether a dispatch looked it up yet (kept only with EDEN_NX2_STUTTER_TRACE)
     bool used{};

@@ -1125,6 +1125,15 @@ void OrderComputeTranslations(std::vector<CachedComputeTranslation>& candidates)
     }
     candidates = std::move(ordered);
 }
+
+/// Whether this dispatch's local memory differs from the one the entry's translation addresses.
+bool LocalLayoutChanged(const ComputePipelineCacheEntry& entry,
+                        const Tegra::Engines::KeplerCompute& compute) {
+    const auto& qmd{compute.launch_description};
+    const u32 total{qmd.local_pos_alloc + qmd.local_crs_alloc};
+    const u32 high{compute.IsNativeMode() ? static_cast<u32>(qmd.local_crs_alloc.Value()) : 0U};
+    return entry.local_layout && *entry.local_layout != std::array<u32, 2>{total, high};
+}
 } // Anonymous namespace
 
 bool PipelineCache::StaleNullPointerSlot(const ComputePipelineCacheEntry& entry) const {
@@ -1221,6 +1230,18 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
             }
             entry.rebuilds = MaxComputeRebuilds;
         }
+    } else if (entry.pipeline && entry.rebuilds < MaxComputeRebuilds &&
+               LocalLayoutChanged(entry, *kepler_compute)) {
+        // The same program with another local allocation: its local addresses land elsewhere.
+        auto rebuilt{CreateComputePipeline(key, shader, entry.mapped_pointers)};
+        if (rebuilt.pipeline) {
+            replace(std::move(rebuilt));
+        } else {
+            LOG_WARNING(Render_Vulkan,
+                        "Keeping compute shader {:016x}: rebuild for its local memory failed: {}",
+                        key.unique_hash, rebuilt.failure);
+            entry.rebuilds = MaxComputeRebuilds;
+        }
     }
     if (VideoCommon::StutterTrace::Enabled() && !std::exchange(entry.used, true)) {
         VideoCommon::StutterTrace::CountLookup(
@@ -1251,6 +1272,7 @@ ComputePipeline* PipelineCache::UnlentComputePipeline(u64& native_key) {
     if (!entry.pipeline || entry.pending_rebuild ||
         (!entry.null_pointer_slots.empty() && entry.rebuilds < MaxComputeRebuilds &&
          StaleNullPointerSlot(entry)) ||
+        (entry.rebuilds < MaxComputeRebuilds && LocalLayoutChanged(entry, *kepler_compute)) ||
         !KnownComputeShaderChecks(shader)) {
         return nullptr;
     }
@@ -3783,6 +3805,12 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         throw Shader::RuntimeError("Compute program reads constant buffer mask {:#x}",
                                    program.info.constant_buffer_mask);
     }
+    // Only local loads and stores read the layout, so their translation has it (no throw here).
+    std::optional<std::array<u32, 2>> local_layout;
+    if (program.info.uses_local_memory) {
+        local_layout = {env.LocalMemorySize(),
+                        env.IsNativeProgram() ? env.LocalMemoryHighSize() : 0U};
+    }
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
@@ -3846,7 +3874,8 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
             .null_pointer_slots = env.IsNativeProgram() ? env.NullStoragePointerSlots()
                                                         : std::vector<std::pair<u32, u32>>{},
             .mapped_pointers =
-                env.IsNativeProgram() ? env.MappedStoragePointerKeys() : std::vector<u64>{}};
+                env.IsNativeProgram() ? env.MappedStoragePointerKeys() : std::vector<u64>{},
+            .local_layout = local_layout};
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "Compute pipeline compilation failed shader={:#016x} pipeline={:#016x}: {}",
