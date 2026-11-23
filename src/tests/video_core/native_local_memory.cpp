@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "shader_recompiler/frontend/maxwell/translate/impl/impl.h"
+#include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/shader_environment.h"
 
 namespace {
@@ -135,34 +136,91 @@ TEST_CASE("Native local memory without a high allocation translates as before",
     CHECK(opcodes(true) == opcodes(false));
 }
 
-TEST_CASE("Recorded local layouts round trip and old incomplete layouts request recapture",
-          "[video_core][native_local_memory]") {
-    LocalEnvironment env{16, 656};
+namespace {
+std::string Record(u32 low, u32 high) {
+    LocalEnvironment env{low, high};
     std::ostringstream out{std::ios::binary};
     env.Serialize(out, 783);
-    const auto read = [](const std::string& bytes) {
-        std::istringstream input{bytes, std::ios::binary};
-        VideoCommon::FileEnvironment result;
-        result.Deserialize(input, static_cast<std::streamoff>(bytes.size()));
-        return result;
-    };
-    auto recorded = read(out.str());
+    return out.str();
+}
+
+/// The record as builds before the high allocation key wrote it.
+std::string WithoutHighKey(std::string record) {
+    const u64 key = 0xffffffff00000003ULL;
+    const std::string key_bytes{reinterpret_cast<const char*>(&key), sizeof(key)};
+    const auto position = record.find(key_bytes);
+    REQUIRE(position != std::string::npos);
+    record.erase(position, 12);
+    u64 count;
+    std::memcpy(&count, record.data() + 24, sizeof(count));
+    --count;
+    std::memcpy(record.data() + 24, &count, sizeof(count));
+    return record;
+}
+
+VideoCommon::FileEnvironment Read(const std::string& bytes) {
+    std::istringstream input{bytes, std::ios::binary};
+    VideoCommon::FileEnvironment result;
+    result.Deserialize(input, static_cast<std::streamoff>(bytes.size()));
+    return result;
+}
+} // namespace
+
+TEST_CASE("Recorded local layouts round trip and old incomplete layouts request recapture",
+          "[video_core][native_local_memory]") {
+    auto recorded = Read(Record(16, 656));
     REQUIRE(recorded.LocalMemorySize() == 672);
     REQUIRE(recorded.LocalMemoryHighSize() == 656);
     REQUIRE_FALSE(recorded.LacksRecordedValue(783));
 
-    auto old = out.str();
-    const u64 key = 0xffffffff00000003ULL;
-    const std::string key_bytes{reinterpret_cast<const char*>(&key), sizeof(key)};
-    const auto position = old.find(key_bytes);
-    REQUIRE(position != std::string::npos);
-    old.erase(position, 12);
-    u64 count;
-    std::memcpy(&count, old.data() + 24, sizeof(count));
-    --count;
-    std::memcpy(old.data() + 24, &count, sizeof(count));
-    auto incomplete = read(old);
+    auto incomplete = Read(WithoutHighKey(Record(16, 656)));
     REQUIRE_THROWS_AS(incomplete.LocalMemoryHighSize(), Shader::LogicError);
     REQUIRE(incomplete.LacksRecordedValue(783));
     REQUIRE(incomplete.LacksRecordedValue(0));
+}
+
+TEST_CASE("One compute shader under two local layouts keeps two pipelines",
+          "[video_core][native_local_memory]") {
+    using Vulkan::ComputePipelineLookupKey;
+    const Vulkan::ComputePipelineCacheKey key{
+        .unique_hash = 0xd037c025142cc326ULL, .shared_memory_size = 0, .workgroup_size{64, 1, 1}};
+    const ComputePipelineLookupKey high_only{key, 592, 592};
+    const ComputePipelineLookupKey low_only{key, 592, 0};
+    std::unordered_map<ComputePipelineLookupKey, int> cache;
+    cache.emplace(high_only, 1);
+    cache.emplace(low_only, 2);
+    CHECK(cache.size() == 2);
+    // Any number of alternations finds each layout's own translation.
+    for (int i = 0; i < 10; ++i) {
+        CHECK(Vulkan::FindComputePipeline(cache, high_only)->second == 1);
+        CHECK(Vulkan::FindComputePipeline(cache, low_only)->second == 2);
+    }
+    CHECK(Vulkan::FindComputePipeline(cache, ComputePipelineLookupKey{key, 672, 656}) ==
+          cache.end());
+
+    // A record's pipeline is found under the layout it was translated for.
+    CHECK(Vulkan::RecordLookupKey(key, Read(Record(16, 656))) ==
+          ComputePipelineLookupKey{key, 672, 656});
+    CHECK(Vulkan::RecordLookupKey(key, Read(Record(32, 0))) ==
+          ComputePipelineLookupKey{key, 32, 0});
+    // Only Maxwell compute translates local accesses from a record without the high allocation.
+    CHECK(Vulkan::RecordLookupKey(key, Read(WithoutHighKey(Record(32, 0)))) ==
+          ComputePipelineLookupKey{key, 32, 0});
+}
+
+TEST_CASE("Compute pipelines without local accesses serve every local layout",
+          "[video_core][native_local_memory]") {
+    using Vulkan::ComputePipelineLookupKey;
+    const Vulkan::ComputePipelineCacheKey key{
+        .unique_hash = 0x143a3470b3d02c14ULL, .shared_memory_size = 0, .workgroup_size{32, 1, 1}};
+    std::unordered_map<ComputePipelineLookupKey, int> cache;
+    cache.emplace(Vulkan::AnyLayoutKey(key), 1);
+    // Xenoblade Chronicles 2 recorded it at 576 bytes and dispatches it at 592.
+    CHECK(Vulkan::FindComputePipeline(cache, ComputePipelineLookupKey{key, 576, 576})->second == 1);
+    CHECK(Vulkan::FindComputePipeline(cache, ComputePipelineLookupKey{key, 592, 592})->second == 1);
+    // Another shader's key does not match.
+    auto other{key};
+    other.unique_hash ^= 1;
+    CHECK(Vulkan::FindComputePipeline(cache, ComputePipelineLookupKey{other, 576, 576}) ==
+          cache.end());
 }

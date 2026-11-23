@@ -293,6 +293,10 @@ public:
     [[nodiscard]] u32 LocalMemorySize() const override;
 
     [[nodiscard]] u32 LocalMemoryHighSize() override;
+    /// The recorded high allocation, which records from before it was recorded lack.
+    [[nodiscard]] std::optional<u32> RecordedLocalMemoryHighSize() const noexcept {
+        return local_memory_high_size;
+    }
 
     [[nodiscard]] u32 SharedMemorySize() const override;
 

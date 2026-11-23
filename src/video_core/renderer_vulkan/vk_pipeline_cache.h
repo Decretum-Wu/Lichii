@@ -84,6 +84,35 @@ static_assert(std::has_unique_object_representations_v<ComputePipelineCacheKey>)
 static_assert(std::is_trivially_copyable_v<ComputePipelineCacheKey>);
 static_assert(std::is_trivially_constructible_v<ComputePipelineCacheKey>);
 
+/// The layout of a compute pipeline whose translation has no local accesses: it serves every local
+/// memory layout. Games change the allocation (Xenoblade Chronicles 2: 576 bytes, later 592).
+inline constexpr u32 AnyLocalMemory = ~0U;
+
+/// A compute pipeline in memory: the recorded key and the local memory its translation addresses,
+/// the total and native compute's high allocation (see LocalMemoryHighSize), or AnyLocalMemory for
+/// both. Records hold only the key, so their layout stays as it is.
+struct ComputePipelineLookupKey {
+    ComputePipelineCacheKey key;
+    u32 local_memory_size;
+    u32 local_memory_high_size;
+
+    size_t Hash() const noexcept;
+
+    bool operator==(const ComputePipelineLookupKey& rhs) const noexcept;
+};
+static_assert(std::has_unique_object_representations_v<ComputePipelineLookupKey>);
+static_assert(std::is_trivially_copyable_v<ComputePipelineLookupKey>);
+
+/// The key of a pipeline whose translation has no local accesses.
+[[nodiscard]] constexpr ComputePipelineLookupKey AnyLayoutKey(const ComputePipelineCacheKey& key) {
+    return {key, AnyLocalMemory, AnyLocalMemory};
+}
+
+/// The key of a pipeline with local accesses translated from a record. Only Maxwell compute
+/// translates them from a record without the high allocation (native compute asks for it).
+[[nodiscard]] ComputePipelineLookupKey RecordLookupKey(const ComputePipelineCacheKey& key,
+                                                       const VideoCommon::FileEnvironment& env);
+
 } // namespace Vulkan
 
 namespace std {
@@ -95,9 +124,23 @@ struct hash<Vulkan::ComputePipelineCacheKey> {
     }
 };
 
+template <>
+struct hash<Vulkan::ComputePipelineLookupKey> {
+    size_t operator()(const Vulkan::ComputePipelineLookupKey& k) const noexcept {
+        return k.Hash();
+    }
+};
+
 } // namespace std
 
 namespace Vulkan {
+
+/// The pipeline translated for this layout, else one without local accesses.
+template <typename Map>
+[[nodiscard]] auto FindComputePipeline(Map& cache, const ComputePipelineLookupKey& lookup) {
+    const auto it{cache.find(lookup)};
+    return it != cache.end() ? it : cache.find(AnyLayoutKey(lookup.key));
+}
 
 class ComputePipeline;
 class DescriptorPool;
@@ -117,9 +160,8 @@ struct ComputePipelineCacheEntry {
     std::vector<std::pair<u32, u32>> null_pointer_slots;
     /// Constant buffer slots bound as storage buffer pointers (see MappedStoragePointerKeys)
     std::vector<u64> mapped_pointers;
-    /// The local memory its translation addresses: the total and native compute's high allocation
-    /// (see LocalMemoryHighSize). None without local accesses. The key doesn't hold them.
-    std::optional<std::array<u32, 2>> local_layout;
+    /// Whether its translation has local accesses, which puts its layout in its key
+    bool uses_local_memory{};
     u32 rebuilds{};
     /// Whether a dispatch looked it up yet (kept only with EDEN_NX2_STUTTER_TRACE)
     bool used{};
@@ -230,6 +272,9 @@ private:
     void ReturnPools(std::shared_ptr<ShaderPools> pools);
 
     [[nodiscard]] bool StaleNullPointerSlot(const ComputePipelineCacheEntry& entry) const;
+    /// The lookup key of the current dispatch's pipeline.
+    [[nodiscard]] ComputePipelineLookupKey DispatchLookupKey(
+        const ComputePipelineCacheKey& key) const;
 
     /// Translates the current compute program, binding the pointers in keep_pointers whatever
     /// their slots hold now (see GenericEnvironment::KeepStoragePointers)
@@ -357,7 +402,7 @@ private:
     u64 rebuilt_from_kept{};  ///< Since the last eviction
     u64 translated_again{};   ///< Evicted pipelines translated again since the last eviction
 
-    ::Common::unordered_map<ComputePipelineCacheKey, ComputePipelineCacheEntry> compute_cache;
+    ::Common::unordered_map<ComputePipelineLookupKey, ComputePipelineCacheEntry> compute_cache;
     /// Replaced compute pipelines, destroyed once the GPU and their queued build are done with
     /// them (tick, pipeline)
     std::deque<std::pair<u64, std::unique_ptr<ComputePipeline>>> retired_compute_pipelines;

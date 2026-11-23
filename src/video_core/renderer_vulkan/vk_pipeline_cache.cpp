@@ -544,6 +544,20 @@ bool ComputePipelineCacheKey::operator==(const ComputePipelineCacheKey& rhs) con
     return std::memcmp(&rhs, this, sizeof *this) == 0;
 }
 
+size_t ComputePipelineLookupKey::Hash() const noexcept {
+    const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(this), sizeof *this);
+    return static_cast<size_t>(hash);
+}
+
+bool ComputePipelineLookupKey::operator==(const ComputePipelineLookupKey& rhs) const noexcept {
+    return std::memcmp(&rhs, this, sizeof *this) == 0;
+}
+
+ComputePipelineLookupKey RecordLookupKey(const ComputePipelineCacheKey& key,
+                                         const VideoCommon::FileEnvironment& env) {
+    return {key, env.LocalMemorySize(), env.RecordedLocalMemoryHighSize().value_or(0U)};
+}
+
 size_t GraphicsPipelineCacheKey::Hash() const noexcept {
     const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(this), Size());
     return static_cast<size_t>(hash);
@@ -1125,15 +1139,6 @@ void OrderComputeTranslations(std::vector<CachedComputeTranslation>& candidates)
     }
     candidates = std::move(ordered);
 }
-
-/// Whether this dispatch's local memory differs from the one the entry's translation addresses.
-bool LocalLayoutChanged(const ComputePipelineCacheEntry& entry,
-                        const Tegra::Engines::KeplerCompute& compute) {
-    const auto& qmd{compute.launch_description};
-    const u32 total{qmd.local_pos_alloc + qmd.local_crs_alloc};
-    const u32 high{compute.IsNativeMode() ? static_cast<u32>(qmd.local_crs_alloc.Value()) : 0U};
-    return entry.local_layout && *entry.local_layout != std::array<u32, 2>{total, high};
-}
 } // Anonymous namespace
 
 bool PipelineCache::StaleNullPointerSlot(const ComputePipelineCacheEntry& entry) const {
@@ -1164,6 +1169,14 @@ bool PipelineCache::StaleNullPointerSlot(const ComputePipelineCacheEntry& entry)
     return false;
 }
 
+ComputePipelineLookupKey PipelineCache::DispatchLookupKey(
+    const ComputePipelineCacheKey& key) const {
+    const auto& qmd{kepler_compute->launch_description};
+    const u32 high{kepler_compute->IsNativeMode() ? static_cast<u32>(qmd.local_crs_alloc.Value())
+                                                  : 0U};
+    return {key, qmd.local_pos_alloc + qmd.local_crs_alloc, high};
+}
+
 ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
     VideoCommon::GpuSplit::BackOwned("PipelineCache::CurrentComputePipeline");
 
@@ -1178,8 +1191,16 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
         .shared_memory_size = qmd.shared_alloc,
         .workgroup_size{qmd.block_dim_x, qmd.block_dim_y, qmd.block_dim_z},
     };
-    const auto [pair, is_new]{compute_cache.try_emplace(key)};
-    auto& entry{pair->second};
+    const ComputePipelineLookupKey lookup{DispatchLookupKey(key)};
+    auto it{FindComputePipeline(compute_cache, lookup)};
+    const bool is_new{it == compute_cache.end()};
+    if (is_new) {
+        auto created{CreateComputePipeline(key, shader)};
+        const bool any_layout{created.pipeline && !created.uses_local_memory};
+        it = compute_cache.try_emplace(any_layout ? AnyLayoutKey(key) : lookup).first;
+        it->second = std::move(created);
+    }
+    auto& entry{it->second};
     const auto replace = [&](ComputePipelineCacheEntry&& rebuilt) {
         if (entry.pipeline) {
             retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
@@ -1190,7 +1211,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
         entry = std::move(rebuilt);
     };
     if (is_new) {
-        entry = CreateComputePipeline(key, shader);
+        // Built above
     } else if (entry.pending_rebuild) {
         if (entry.pending_rebuild->pipeline->IsBuilt()) {
             auto rebuilt{std::move(*entry.pending_rebuild)};
@@ -1230,18 +1251,6 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
             }
             entry.rebuilds = MaxComputeRebuilds;
         }
-    } else if (entry.pipeline && entry.rebuilds < MaxComputeRebuilds &&
-               LocalLayoutChanged(entry, *kepler_compute)) {
-        // The same program with another local allocation: its local addresses land elsewhere.
-        auto rebuilt{CreateComputePipeline(key, shader, entry.mapped_pointers)};
-        if (rebuilt.pipeline) {
-            replace(std::move(rebuilt));
-        } else {
-            LOG_WARNING(Render_Vulkan,
-                        "Keeping compute shader {:016x}: rebuild for its local memory failed: {}",
-                        key.unique_hash, rebuilt.failure);
-            entry.rebuilds = MaxComputeRebuilds;
-        }
     }
     if (VideoCommon::StutterTrace::Enabled() && !std::exchange(entry.used, true)) {
         VideoCommon::StutterTrace::CountLookup(
@@ -1264,7 +1273,7 @@ ComputePipeline* PipelineCache::UnlentComputePipeline(u64& native_key) {
         .shared_memory_size = qmd.shared_alloc,
         .workgroup_size{qmd.block_dim_x, qmd.block_dim_y, qmd.block_dim_z},
     };
-    const auto it{compute_cache.find(key)};
+    const auto it{FindComputePipeline(compute_cache, DispatchLookupKey(key))};
     if (it == compute_cache.end()) {
         return nullptr;
     }
@@ -1272,7 +1281,6 @@ ComputePipeline* PipelineCache::UnlentComputePipeline(u64& native_key) {
     if (!entry.pipeline || entry.pending_rebuild ||
         (!entry.null_pointer_slots.empty() && entry.rebuilds < MaxComputeRebuilds &&
          StaleNullPointerSlot(entry)) ||
-        (entry.rebuilds < MaxComputeRebuilds && LocalLayoutChanged(entry, *kepler_compute)) ||
         !KnownComputeShaderChecks(shader)) {
         return nullptr;
     }
@@ -1826,6 +1834,10 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                             break;
                         }
                     }
+                    const ComputePipelineLookupKey lookup{
+                        !entry.pipeline              ? ComputePipelineLookupKey{}
+                        : entry.uses_local_memory ? RecordLookupKey(key, candidates[chosen].env)
+                                                  : AnyLayoutKey(key)};
                     std::scoped_lock lock{state.mutex};
                     AddUnchosenComputeTranslations(candidates, chosen, read_properties,
                                                    state.incomplete, state.copies);
@@ -1833,14 +1845,14 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                         built_one();
                         return {};
                     }
-                    return [this, &state, &built_one, key, entry = std::move(entry)]() mutable {
+                    return [this, &state, &built_one, lookup, entry = std::move(entry)]() mutable {
                         const auto begin = std::chrono::steady_clock::now();
                         entry.pipeline->Build();
                         const auto elapsed = std::chrono::steady_clock::now() - begin;
                         std::scoped_lock driver_lock{state.mutex};
                         state.driver_builds.Add(elapsed);
                         state.compute_built += entry.pipeline->IsBound() ? 1 : 0;
-                        compute_cache.emplace(key, std::move(entry));
+                        compute_cache.emplace(lookup, std::move(entry));
                         built_one();
                     };
                 },
@@ -2181,7 +2193,8 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::stop_token stop_loading,
                 ++file_entries;
                 // Programs already in the disk cache were built above, and those an earlier
                 // precache built before it was skipped are in the driver's cache; leave them out.
-                if (compute_cache.contains(key)) {
+                if (FindComputePipeline(compute_cache, RecordLookupKey(key, env)) !=
+                    compute_cache.end()) {
                     ++in_cache;
                     continue;
                 }
@@ -3805,12 +3818,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         throw Shader::RuntimeError("Compute program reads constant buffer mask {:#x}",
                                    program.info.constant_buffer_mask);
     }
-    // Only local loads and stores read the layout, so their translation has it (no throw here).
-    std::optional<std::array<u32, 2>> local_layout;
-    if (program.info.uses_local_memory) {
-        local_layout = {env.LocalMemorySize(),
-                        env.IsNativeProgram() ? env.LocalMemoryHighSize() : 0U};
-    }
+    const bool uses_local_memory{program.info.uses_local_memory};
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
@@ -3875,7 +3883,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
                                                         : std::vector<std::pair<u32, u32>>{},
             .mapped_pointers =
                 env.IsNativeProgram() ? env.MappedStoragePointerKeys() : std::vector<u64>{},
-            .local_layout = local_layout};
+            .uses_local_memory = uses_local_memory};
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "Compute pipeline compilation failed shader={:#016x} pipeline={:#016x}: {}",
