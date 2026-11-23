@@ -1200,22 +1200,34 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
         it = compute_cache.try_emplace(any_layout ? AnyLayoutKey(key) : lookup).first;
         it->second = std::move(created);
     }
-    auto& entry{it->second};
+    ComputePipelineCacheEntry* entry{&it->second};
     const auto replace = [&](ComputePipelineCacheEntry&& rebuilt) {
-        if (entry.pipeline) {
+        if (entry->pipeline) {
             retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
-                                                   std::move(entry.pipeline));
+                                                   std::move(entry->pipeline));
         }
-        rebuilt.rebuilds = entry.rebuilds + 1;
-        rebuilt.used = entry.used;
-        entry = std::move(rebuilt);
+        rebuilt.rebuilds = entry->rebuilds + 1;
+        rebuilt.used = entry->used;
+        if (rebuilt.uses_local_memory && it->first == AnyLayoutKey(key)) {
+            // The rebuild keeps local accesses the first translation dropped (their only use was
+            // through the null pointer): from now on it serves its own layout alone.
+            compute_cache.erase(it);
+            bool inserted{};
+            std::tie(it, inserted) = compute_cache.try_emplace(rebuilt.dispatch_key);
+            entry = &it->second;
+            if (!inserted && entry->pipeline) {
+                retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
+                                                       std::move(entry->pipeline));
+            }
+        }
+        *entry = std::move(rebuilt);
     };
     if (is_new) {
         // Built above
-    } else if (entry.pending_rebuild) {
-        if (entry.pending_rebuild->pipeline->IsBuilt()) {
-            auto rebuilt{std::move(*entry.pending_rebuild)};
-            entry.pending_rebuild.reset();
+    } else if (entry->pending_rebuild) {
+        if (entry->pending_rebuild->pipeline->IsBuilt()) {
+            auto rebuilt{std::move(*entry->pending_rebuild)};
+            entry->pending_rebuild.reset();
             if (rebuilt.pipeline->IsBound()) {
                 replace(std::move(rebuilt));
             } else {
@@ -1223,20 +1235,20 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
                             key.unique_hash);
                 retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
                                                        std::move(rebuilt.pipeline));
-                entry.rebuilds = MaxComputeRebuilds;
+                entry->rebuilds = MaxComputeRebuilds;
             }
         }
-    } else if (!entry.null_pointer_slots.empty() && entry.rebuilds < MaxComputeRebuilds &&
-               StaleNullPointerSlot(entry)) {
+    } else if (!entry->null_pointer_slots.empty() && entry->rebuilds < MaxComputeRebuilds &&
+               StaleNullPointerSlot(*entry)) {
         // The translation dropped accesses through a pointer that was null back then. Which slots
         // the game fills depends on the area, so the new one keeps binding every pointer this one
         // binds, null now or not: a null pointer binds nothing.
-        auto rebuilt{CreateComputePipeline(key, shader, entry.mapped_pointers)};
+        auto rebuilt{CreateComputePipeline(key, shader, entry->mapped_pointers)};
         // The current translation keeps running until the new one's driver compile is done.
-        if (rebuilt.pipeline && entry.pipeline && !rebuilt.pipeline->IsBuilt()) {
-            entry.pending_rebuild =
+        if (rebuilt.pipeline && entry->pipeline && !rebuilt.pipeline->IsBuilt()) {
+            entry->pending_rebuild =
                 std::make_unique<ComputePipelineCacheEntry>(std::move(rebuilt));
-        } else if (rebuilt.pipeline && (!entry.pipeline || rebuilt.pipeline->IsBound())) {
+        } else if (rebuilt.pipeline && (!entry->pipeline || rebuilt.pipeline->IsBound())) {
             replace(std::move(rebuilt));
         } else {
             // Keep the working translation when the new one cannot be built (for example a
@@ -1249,16 +1261,20 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
                 retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
                                                        std::move(rebuilt.pipeline));
             }
-            entry.rebuilds = MaxComputeRebuilds;
+            entry->rebuilds = MaxComputeRebuilds;
         }
     }
-    if (VideoCommon::StutterTrace::Enabled() && !std::exchange(entry.used, true)) {
+    if (it->first != lookup && it->first != AnyLayoutKey(key)) {
+        // A rebuild for another dispatch's layout finished: this one needs its own.
+        return CurrentComputePipeline(native_key);
+    }
+    if (VideoCommon::StutterTrace::Enabled() && !std::exchange(entry->used, true)) {
         VideoCommon::StutterTrace::CountLookup(
             is_new ? VideoCommon::StutterTrace::Lookup::ComputeNew
                    : VideoCommon::StutterTrace::Lookup::ComputePrebuilt);
     }
-    return entry.Get(kepler_compute->IsNativeMode(),
-                     kepler_compute->regs.code_loc.Address() + qmd.program_start, key);
+    return entry->Get(kepler_compute->IsNativeMode(),
+                      kepler_compute->regs.code_loc.Address() + qmd.program_start, key);
 }
 
 ComputePipeline* PipelineCache::UnlentComputePipeline(u64& native_key) {
@@ -3759,6 +3775,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(const ComputePipe
     std::shared_ptr<ShaderPools> emit_pools = TakeSparePools();
     ShaderPools& pools = *emit_pools;
     auto entry{CreateComputePipeline(pools, key, env, nullptr, true, std::move(emit_pools))};
+    entry.dispatch_key = DispatchLookupKey(key);
     if (const char* directory = std::getenv("EDEN_NX2_SHADER_DUMP");
         directory && !entry.pipeline && env.CanBeSerialized()) {
         const auto path = std::filesystem::path{directory} /

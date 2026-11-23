@@ -162,6 +162,8 @@ struct ComputePipelineCacheEntry {
     std::vector<u64> mapped_pointers;
     /// Whether its translation has local accesses, which puts its layout in its key
     bool uses_local_memory{};
+    /// The layout of the dispatch it was translated for, when translated from the game
+    ComputePipelineLookupKey dispatch_key{};
     u32 rebuilds{};
     /// Whether a dispatch looked it up yet (kept only with EDEN_NX2_STUTTER_TRACE)
     bool used{};
