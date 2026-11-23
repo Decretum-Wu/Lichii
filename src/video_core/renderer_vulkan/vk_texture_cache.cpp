@@ -2248,6 +2248,9 @@ bool TextureCacheRuntime::UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageVie
             .motion_vector_scale = {motion_scale[0] * static_cast<f32>(render_size[0]),
                                     motion_scale[1] * static_cast<f32>(render_size[1])},
             .reset = reset,
+            // Reversed D32 depth (Fire Emblem, The Duskbloods) or standard D24 (Fast Fusion), as
+            // in UpscaleWithFsr3.
+            .depth_inverted = depth.format == PixelFormat::D32_FLOAT,
         });
     } catch (const vk::Exception& exception) {
         LOG_WARNING(Render_Vulkan, "NVIDIA DLSS evaluation unavailable ({}); using FSR 3.1",
