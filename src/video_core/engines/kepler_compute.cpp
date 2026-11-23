@@ -967,10 +967,15 @@ void KeplerCompute::CheckDlssNetwork() {
     if (!dlss_chain.checked) {
         return;
     }
+    using VideoCommon::FireEmblemUpscale::FastFusionOutputInputOffset;
+    using VideoCommon::FireEmblemUpscale::FastFusionOutputOffset;
+    const u32 input_offset = dlss_chain.adjacent_handles ? FastFusionOutputInputOffset : 0x328;
+    const u32 output_offset = dlss_chain.adjacent_handles ? FastFusionOutputOffset : 0x348;
+    const u32 needed = std::max(input_offset, output_offset) + 4;
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
-    if (!(launch_description.const_buffer_enable_mask & 1) || cbuf.size.Value() < 0x34c ||
-        !memory_manager.IsFullyMappedRange(cbuf_address, 0x34c)) {
+    if (!(launch_description.const_buffer_enable_mask & 1) || cbuf.size.Value() < needed ||
+        !memory_manager.IsFullyMappedRange(cbuf_address, needed)) {
         return;
     }
     const auto surface = [&](u32 offset) -> std::optional<Fermi2D::Surface> {
@@ -1013,8 +1018,8 @@ void KeplerCompute::CheckDlssNetwork() {
         result.addr_lower = static_cast<u32>(tic.Address());
         return result;
     };
-    const auto input = surface(0x328);
-    const auto output = surface(0x348);
+    const auto input = surface(input_offset);
+    const auto output = surface(output_offset);
     if (!input || !output) {
         return;
     }
