@@ -115,7 +115,7 @@ jobs:
         include:
           - platform: linux-x86_64
             runner: ubuntu-24.04
-          # The Linux -pgo builds are the same programs compiled by clang against the repo's
+          # Linux x86-64 PGO builds the same programs with clang against the repo's
           # eglantine.profdata. Eden's profile (Eden-CI/PGO) comes from Switch 1 games: with it Mario
           # Kart World ran at about half the speed of the normal build, with eglantine.profdata at
           # about the same speed. Both Windows builds are clang-cl with ThinLTO; windows-x86_64-pgo
@@ -132,9 +132,6 @@ jobs:
             profile: lichii-windows.profdata
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
-          - platform: linux-aarch64-pgo
-            runner: ubuntu-24.04-arm
-            pgo: true
           - platform: macos-arm64
             runner: macos-15
 
@@ -878,9 +875,11 @@ jobs:
 
           Linux packages come as an AppImage and a tar.gz. Both are self-contained and need glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch). The tar.gz holds the same files unpacked, for systems without FUSE: extract it and run \`lichii/lichii\`.
 
+          Linux ARM64 now ships only the standard build. If you use ARM64 PGO, the in-app updater in build 116 or newer offers the standard package of the same type. If no update appears on an older build, download the standard ARM64 package below.
+
           $({
             row amd64 "$(appimage_tar lichii-linux-x86_64)" "$(appimage_tar lichii-linux-x86_64-pgo)" "Make the AppImage executable (\`chmod +x\`) and run it"
-            row "ARM (aarch64)" "$(appimage_tar lichii-linux-aarch64)" "$(appimage_tar lichii-linux-aarch64-pgo)" ""
+            row "ARM (aarch64)" "$(appimage_tar lichii-linux-aarch64)" "" ""
           } | table)
 
           ## Windows
