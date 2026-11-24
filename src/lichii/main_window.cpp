@@ -2509,7 +2509,8 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     speed_limit_before_hotkeys.reset();
     Settings::LogSettings();
 
-    if (UISettings::values.select_user_on_boot && !user_flag_cmd_line) {
+    if (UISettings::values.select_user_on_boot && !user_flag_cmd_line &&
+        params.preselected_user_parameters.empty()) {
         const Core::Frontend::ProfileSelectParameters parameters{
             .mode = Service::AM::Frontend::UiMode::UserSelector,
             .invalid_uid_list = {},
