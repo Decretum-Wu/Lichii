@@ -318,13 +318,14 @@ private:
 
     /// Builds the pipeline as CreateGraphicsPipeline does. With `emit_pools`, which `pools` must
     /// be, the SPIR-V is emitted by the CPU stage of the pipeline's job, which takes the pools and
-    /// the program.
+    /// the program. A shared-layout boot probe defers layout-dependent programs after flow analysis.
     ComputePipelineCacheEntry CreateComputePipeline(ShaderPools& pools,
                                                      const ComputePipelineCacheKey& key,
                                                      Shader::Environment& env,
                                                      PipelineStatistics* statistics,
                                                      bool build_in_parallel,
-                                                     std::shared_ptr<ShaderPools> emit_pools = nullptr);
+                                                     std::shared_ptr<ShaderPools> emit_pools = nullptr,
+                                                     bool defer_local_memory = false);
 
     /// Where CreateGraphicsPipeline and CreateComputePipeline build; `cpu_bytes` estimates the
     /// IR a deferred emission holds

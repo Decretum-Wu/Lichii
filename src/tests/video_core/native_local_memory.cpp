@@ -2,18 +2,23 @@
 
 #include <array>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "shader_recompiler/frontend/maxwell/translate/impl/impl.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vk_pipeline_cache_records.h"
+#include "video_core/renderer_vulkan/vk_shader_cache_v2.h"
+#include "video_core/shader_cache_v2/cache_format.h"
 #include "video_core/shader_environment.h"
 
 namespace {
@@ -41,6 +46,10 @@ public:
         code.push_back(MaxwellExit);
         Shader::Ampere::AppendNativeAddressMap(code, std::array{0U, 1U});
         cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
+    }
+
+    void AddPointer(u32 offset) {
+        storage_pointer_types.emplace((u64{3} << 32) | offset, u8{1});
     }
 
     bool IsNativeProgram() const override { return native; }
@@ -262,6 +271,90 @@ TEST_CASE("Native immediate local stores check bounds after rotating the address
         env.SetProgram(ImmediateLocalStore(address));
         CHECK(TranslateLocalProgram(env, lookup).stored_words == words);
     }
+}
+
+TEST_CASE("Vulkan boot restores the recorded layouts that a compute shader needs",
+          "[video_core][native_local_memory]") {
+    namespace V2 = VideoCommon::ShaderCacheV2;
+    constexpr u32 read_properties = 783;
+    constexpr u64 pointer_bank = u64{3} << 32;
+    const bool uses_local_memory = GENERATE(true, false);
+    CAPTURE(uses_local_memory);
+    const Vulkan::ComputePipelineCacheKey key{.unique_hash = 1, .shared_memory_size = 0,
+                                              .workgroup_size{1, 1, 1}};
+    const Vulkan::ComputePipelineLookupKey low_only{key, 48, 0};
+    const Vulkan::ComputePipelineLookupKey split{key, 48, 32};
+    const auto header = V2::EncodeFileHeader(1);
+    std::vector<u8> bytes(header.begin(), header.end());
+    const auto append = [&](u32 high, std::initializer_list<u32> pointers) {
+        LocalEnvironment env{48 - high, high};
+        env.SetProgram(uses_local_memory ? ImmediateLocalStore(12) : MaxwellExit);
+        for (const u32 offset : pointers) {
+            env.AddPointer(offset);
+        }
+        const std::array<const VideoCommon::GenericEnvironment*, 1> envs{&env};
+        const auto payload = VideoCommon::SerializePipelinePayload(
+            {reinterpret_cast<const char*>(&key), sizeof(key)}, envs, read_properties);
+        REQUIRE_FALSE(payload.empty());
+        V2::EncodeRecord(bytes, V2::RecordKind::Compute, Vulkan::ComputeRecordKey(payload), payload);
+    };
+    append(0, {0x10});
+    append(32, {0x20});
+    append(32, {0x10, 0x18, 0x38});
+    append(0, {0x10, 0x18});
+    append(32, {0x20, 0x28});
+
+    const auto log = V2::ParseLog(bytes);
+    REQUIRE(log.live.size() == 5);
+    std::vector<Vulkan::CachedComputeTranslation> candidates;
+    for (const auto& record : log.live) {
+        const size_t index = candidates.size();
+        candidates.push_back(Vulkan::ReadCachedComputeTranslation(
+            record.payload, {.begin = index, .end = index + 1, .hash = record.key}, key));
+    }
+    struct Restored {
+        std::vector<u32> words;
+        std::vector<u64> pointers;
+    };
+    std::unordered_map<Vulkan::ComputePipelineLookupKey, Restored> restored;
+    const auto load = Vulkan::RestoreCachedComputeLayouts(
+        key, std::move(candidates), read_properties,
+        [&](const Vulkan::ComputePipelineLookupKey& lookup, VideoCommon::FileEnvironment& env,
+            Vulkan::CachedComputeScope scope) {
+            auto translation = TranslateLocalProgram(env, lookup);
+            const bool layout_dependent = translation.key == lookup;
+            if (scope == Vulkan::CachedComputeScope::AnyLayoutOnly && layout_dependent) {
+                return Vulkan::CachedComputeResult::ExactLayout;
+            }
+            const auto stored_key =
+                scope == Vulkan::CachedComputeScope::ExactLayoutOnly ? lookup : translation.key;
+            REQUIRE(restored.emplace(stored_key, Restored{std::move(translation.stored_words),
+                                                          env.MappedStoragePointerKeys()})
+                        .second);
+            return layout_dependent ? Vulkan::CachedComputeResult::ExactLayout
+                                    : Vulkan::CachedComputeResult::AnyLayout;
+        });
+    CHECK(load.incomplete.empty());
+    CHECK(load.copies.empty());
+    const auto low_pipeline = Vulkan::FindComputePipeline(restored, low_only);
+    const auto split_pipeline = Vulkan::FindComputePipeline(restored, split);
+    REQUIRE(low_pipeline != restored.end());
+    REQUIRE(split_pipeline != restored.end());
+    if (!uses_local_memory) {
+        CHECK(load.layouts == 1);
+        REQUIRE(restored.size() == 1);
+        CHECK(low_pipeline == split_pipeline);
+        CHECK(low_pipeline->first == Vulkan::AnyLayoutKey(key));
+        CHECK(low_pipeline->second.words.empty());
+        CHECK(low_pipeline->second.pointers ==
+              std::vector<u64>{pointer_bank | 0x10, pointer_bank | 0x18, pointer_bank | 0x38});
+        return;
+    }
+    REQUIRE(load.layouts == 2);
+    CHECK(low_pipeline->second.words == std::vector<u32>{3});
+    CHECK(split_pipeline->second.words == std::vector<u32>{11});
+    CHECK(low_pipeline->second.pointers == std::vector<u64>{pointer_bank | 0x10, pointer_bank | 0x18});
+    CHECK(split_pipeline->second.pointers == std::vector<u64>{pointer_bank | 0x20, pointer_bank | 0x28});
 }
 
 TEST_CASE("One compute shader under two local layouts keeps two pipelines",
