@@ -40,6 +40,8 @@ class NupDialogTest : public QObject {
 
 private slots:
     void renamePreservesBuildIds();
+    void publisherEdits_data();
+    void publisherEdits();
 };
 
 void NupDialogTest::renamePreservesBuildIds() {
@@ -68,12 +70,58 @@ void NupDialogTest::renamePreservesBuildIds() {
              error.c_str());
     QCOMPARE(ReadRecord(path, 0, 0x0006), base_id);
     QCOMPARE(ReadRecord(path, 1, 0x0006), update_id);
+}
 
+void NupDialogTest::publisherEdits_data() {
+    QTest::addColumn<bool>("shifted");
+    QTest::addColumn<bool>("clear");
+
+    QTest::newRow("shifted-replace") << true << false;
+    QTest::newRow("shifted-clear") << true << true;
+    QTest::newRow("spec-replace") << false << false;
+    QTest::newRow("spec-clear") << false << true;
+}
+
+void NupDialogTest::publisherEdits() {
+    QFETCH(bool, shifted);
+    QFETCH(bool, clear);
+    const auto fixture =
+        QFINDTESTDATA(shifted ? "shifted_base_update.nup" : "spec_base_update.nup");
+    QVERIFY(!fixture.isEmpty());
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const auto path = temp.filePath(QStringLiteral("edited.nup"));
+    QVERIFY(QFile::copy(fixture, path));
+    const auto archive = std::filesystem::path(path.toStdU16String());
+    QCOMPARE(ReadRecord(fixture, 0, 0x0006).size(), 40);
+
+    NupEditDialog dialog(archive);
     auto* publisher = dialog.findChild<QLineEdit*>(QStringLiteral("nupEditPublisher"));
     QVERIFY(publisher);
     publisher->selectAll();
-    QTest::keyClicks(publisher, QStringLiteral("Edited publisher"));
-    QVERIFY(dialog.Edit().publisher == std::string("Edited publisher"));
+    const auto text = clear ? QString{} : QStringLiteral("Edited publisher");
+    if (clear) {
+        QTest::keyClick(publisher, Qt::Key_Backspace);
+    } else {
+        QTest::keyClicks(publisher, text);
+    }
+    const auto edit = dialog.Edit();
+    QVERIFY(edit.publisher == text.toStdString());
+    std::string error;
+    const auto result = FileSys::Nup::EditNupMetadata(archive, edit, &error);
+    if (shifted) {
+        QFile edited(path);
+        QFile original(fixture);
+        QVERIFY(edited.open(QIODevice::ReadOnly));
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        QCOMPARE(edited.readAll(), original.readAll());
+        QCOMPARE(result, FileSys::Nup::EditResult::InvalidSource);
+    } else {
+        QVERIFY2(result == FileSys::Nup::EditResult::Success, error.c_str());
+        QCOMPARE(ReadRecord(path, 0, 0x0006).mid(8), text.toUtf8());
+        QCOMPARE(ReadRecord(path, 0, 0x0007), ReadRecord(fixture, 0, 0x0007));
+        QCOMPARE(ReadRecord(path, 1, 0x0007), ReadRecord(fixture, 1, 0x0007));
+    }
 }
 
 } // namespace
