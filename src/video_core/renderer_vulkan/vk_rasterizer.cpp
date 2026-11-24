@@ -595,13 +595,11 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
         [this](const std::function<void(DAddr, size_t)>& callback) {
             gpu.ForEachPendingCpuWrite(callback);
         });
-    if (const char* value = std::getenv("EDEN_NX2_READ_RUNS"); value && value[0] == '1') {
-        buffer_cache.SetReadRunPageFilter([this](DAddr addr, u64 size) {
-            return !texture_cache.page_filter.Any(addr, size) &&
-                   !query_cache.page_filter.Any(addr, size) &&
-                   !buffer_cache_runtime.Nx2Slots().HasOwed();
-        });
-    }
+    buffer_cache.SetReadRunPageFilter([this](DAddr addr, u64 size) {
+        return !texture_cache.page_filter.Any(addr, size) &&
+               !query_cache.page_filter.Any(addr, size) &&
+               !buffer_cache_runtime.Nx2Slots().HasOwed();
+    });
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) {
             auto* const rasterizer = static_cast<RasterizerVulkan*>(argument);
