@@ -42,7 +42,9 @@ size_t CountRoundEven(const std::vector<u32>& code) {
     return count;
 }
 
-std::vector<u32> EmitFragDepth(bool quantize, bool from_frag_coord) {
+enum class Depth { Constant, FragCoordZ, MinFragCoordZ };
+
+std::vector<u32> EmitFragDepth(bool quantize, Depth source) {
     Shader::ObjectPool<IR::Inst> pool;
     IR::Block block{pool};
     IR::Program program;
@@ -52,11 +54,18 @@ std::vector<u32> EmitFragDepth(bool quantize, bool from_frag_coord) {
     program.syntax_list = {{{.block = &block}, IR::AbstractSyntaxNode::Type::Block},
                            {{}, IR::AbstractSyntaxNode::Type::Return}};
     IR::IREmitter ir{block};
-    if (from_frag_coord) {
+    switch (source) {
+    case Depth::Constant:
+        ir.SetFragDepth(ir.Imm32(0.25f));
+        break;
+    case Depth::FragCoordZ:
         ir.SetFragDepth(ir.GetAttribute(IR::Attribute::PositionZ));
         program.info.loads.Set(IR::Attribute::PositionZ, true);
-    } else {
-        ir.SetFragDepth(ir.Imm32(0.25f));
+        break;
+    case Depth::MinFragCoordZ:
+        ir.SetFragDepth(ir.FPMin(ir.GetAttribute(IR::Attribute::PositionZ), ir.Imm32(0.25f)));
+        program.info.loads.Set(IR::Attribute::PositionZ, true);
+        break;
     }
     program.info.stores_frag_depth = true;
     Shader::Profile profile{};
@@ -70,10 +79,15 @@ std::vector<u32> EmitFragDepth(bool quantize, bool from_frag_coord) {
 
 TEST_CASE("SPIR-V FragDepth is rounded to D24 only when the host emulates D24",
           "[video_core][spirv][frag_depth_d24]") {
-    for (const bool from_frag_coord : {false, true}) {
-        CAPTURE(from_frag_coord);
-        CHECK(CountRoundEven(EmitFragDepth(false, from_frag_coord)) == 0);
-        // Without a FragCoord load of its own the shader still declares FragCoord to compare.
-        CHECK(CountRoundEven(EmitFragDepth(true, from_frag_coord)) == 1);
+    for (const Depth source : {Depth::Constant, Depth::FragCoordZ, Depth::MinFragCoordZ}) {
+        CAPTURE(source);
+        CHECK(CountRoundEven(EmitFragDepth(false, source)) == 0);
     }
+    CHECK(CountRoundEven(EmitFragDepth(true, Depth::Constant)) == 1);
+    CHECK(CountRoundEven(EmitFragDepth(true, Depth::MinFragCoordZ)) == 1);
+}
+
+TEST_CASE("SPIR-V FragDepth that stores FragCoord.z as it is stays unrounded",
+          "[video_core][spirv][frag_depth_d24]") {
+    CHECK(CountRoundEven(EmitFragDepth(true, Depth::FragCoordZ)) == 0);
 }

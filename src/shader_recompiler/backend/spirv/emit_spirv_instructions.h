@@ -81,7 +81,7 @@ void EmitMeshPrologue(EmitContext& ctx);
 void EmitMeshEpilogue(EmitContext& ctx);
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, Id value);
 void EmitSetSampleMask(EmitContext& ctx, Id value);
-void EmitSetFragDepth(EmitContext& ctx, Id value);
+void EmitSetFragDepth(EmitContext& ctx, IR::Inst* inst, Id value);
 void EmitGetZFlag(EmitContext& ctx);
 void EmitGetSFlag(EmitContext& ctx);
 void EmitGetCFlag(EmitContext& ctx);
