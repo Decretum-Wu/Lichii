@@ -1196,8 +1196,10 @@ ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
     const bool is_new{it == compute_cache.end()};
     if (is_new) {
         auto created{CreateComputePipeline(key, shader)};
-        const bool any_layout{created.pipeline && !created.uses_local_memory};
-        it = compute_cache.try_emplace(any_layout ? AnyLayoutKey(key) : lookup).first;
+        const auto stored_key =
+            created.pipeline ? TranslatedComputeKey(lookup, created.depends_on_local_memory_layout)
+                             : lookup;
+        it = compute_cache.try_emplace(stored_key).first;
         it->second = std::move(created);
     }
     ComputePipelineCacheEntry* entry{&it->second};
@@ -1837,10 +1839,6 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                             break;
                         }
                     }
-                    const ComputePipelineLookupKey lookup{
-                        !entry.pipeline              ? ComputePipelineLookupKey{}
-                        : entry.uses_local_memory ? RecordLookupKey(key, candidates[chosen].env)
-                                                  : AnyLayoutKey(key)};
                     std::scoped_lock lock{state.mutex};
                     AddUnchosenComputeTranslations(candidates, chosen, read_properties,
                                                    state.incomplete, state.copies);
@@ -1848,6 +1846,9 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                         built_one();
                         return {};
                     }
+                    const auto lookup = TranslatedComputeKey(
+                        RecordLookupKey(key, candidates[chosen].env),
+                        entry.depends_on_local_memory_layout);
                     return [this, &state, &built_one, lookup, entry = std::move(entry)]() mutable {
                         const auto begin = std::chrono::steady_clock::now();
                         entry.pipeline->Build();
@@ -3824,7 +3825,6 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         throw Shader::RuntimeError("Compute program reads constant buffer mask {:#x}",
                                    program.info.constant_buffer_mask);
     }
-    const bool uses_local_memory{program.info.uses_local_memory};
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
@@ -3889,7 +3889,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
                                                         : std::vector<std::pair<u32, u32>>{},
             .mapped_pointers =
                 env.IsNativeProgram() ? env.MappedStoragePointerKeys() : std::vector<u64>{},
-            .uses_local_memory = uses_local_memory};
+            .depends_on_local_memory_layout = cfg.HasLocalMemoryAccesses()};
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "Compute pipeline compilation failed shader={:#016x} pipeline={:#016x}: {}",

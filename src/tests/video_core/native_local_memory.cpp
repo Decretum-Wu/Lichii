@@ -9,12 +9,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "shader_recompiler/frontend/maxwell/translate/impl/impl.h"
+#include "shader_recompiler/frontend/maxwell/translate_program.h"
+#include "shader_recompiler/host_translate_info.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/shader_environment.h"
 
 namespace {
 namespace IR = Shader::IR;
+constexpr u64 MaxwellExit = 0xe30000000007000fULL;
 
 class LocalEnvironment final : public VideoCommon::GenericEnvironment {
 public:
@@ -29,6 +33,16 @@ public:
         cached_highest = 8;
         workgroup_size = {1, 1, 1};
     }
+
+    void SetProgram(u64 instruction) {
+        start_address = sizeof(sph);
+        code.assign(start_address / sizeof(u64), 0);
+        code.push_back(instruction);
+        code.push_back(MaxwellExit);
+        Shader::Ampere::AppendNativeAddressMap(code, std::array{0U, 1U});
+        cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
+    }
+
     bool IsNativeProgram() const override { return native; }
     u32 ReadCbufValue(u32, u32) override { throw Shader::LogicError("Unexpected cbuf read"); }
     Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
@@ -166,6 +180,33 @@ VideoCommon::FileEnvironment Read(const std::string& bytes) {
     result.Deserialize(input, static_cast<std::streamoff>(bytes.size()));
     return result;
 }
+
+constexpr u64 ImmediateLocalStore(u32 address) {
+    return 0xef5400000007ff02ULL | (u64{address} << 20);
+}
+
+struct LocalTranslation {
+    Vulkan::ComputePipelineLookupKey key;
+    std::vector<u32> stored_words;
+};
+
+LocalTranslation TranslateLocalProgram(Shader::Environment& env,
+                                       const Vulkan::ComputePipelineLookupKey& lookup) {
+    VideoCommon::ShaderPools pools;
+    Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
+    const auto program = Shader::Maxwell::TranslateProgram(pools.inst, pools.block, env, cfg, {});
+    LocalTranslation result{.key = Vulkan::TranslatedComputeKey(lookup, cfg.HasLocalMemoryAccesses()),
+                            .stored_words = {}};
+    for (const auto* block : program.blocks) {
+        for (const auto& inst : block->Instructions()) {
+            if (inst.GetOpcode() == IR::Opcode::WriteLocal) {
+                REQUIRE(inst.Arg(0).IsImmediate());
+                result.stored_words.push_back(inst.Arg(0).U32());
+            }
+        }
+    }
+    return result;
+}
 } // namespace
 
 TEST_CASE("Recorded local layouts round trip and old incomplete layouts request recapture",
@@ -179,6 +220,48 @@ TEST_CASE("Recorded local layouts round trip and old incomplete layouts request 
     REQUIRE_THROWS_AS(incomplete.LocalMemoryHighSize(), Shader::LogicError);
     REQUIRE(incomplete.LacksRecordedValue(783));
     REQUIRE(incomplete.LacksRecordedValue(0));
+}
+
+TEST_CASE("Pruned local stores still select a layout-specific compute cache key",
+          "[video_core][native_local_memory]") {
+    const Vulkan::ComputePipelineCacheKey key{.unique_hash = 1, .shared_memory_size = 0,
+                                              .workgroup_size{1, 1, 1}};
+    const Vulkan::ComputePipelineLookupKey small_lookup{key, 16, 0};
+    const Vulkan::ComputePipelineLookupKey large_lookup{key, 32, 0};
+    LocalEnvironment small{16, 0};
+    LocalEnvironment large{32, 0};
+    small.SetProgram(ImmediateLocalStore(20));
+    large.SetProgram(ImmediateLocalStore(20));
+
+    const auto small_translation = TranslateLocalProgram(small, small_lookup);
+    CHECK(small_translation.stored_words.empty());
+    CHECK(small_translation.key == small_lookup);
+
+    std::ostringstream out{std::ios::binary};
+    small.Serialize(out, 0);
+    auto recorded = Read(out.str());
+    REQUIRE(recorded.IsNativeProgram());
+    const auto cached_translation =
+        TranslateLocalProgram(recorded, Vulkan::RecordLookupKey(key, recorded));
+    CHECK(cached_translation.key == small_lookup);
+    std::unordered_map<Vulkan::ComputePipelineLookupKey, int> cache{{cached_translation.key, 1}};
+    CHECK(Vulkan::FindComputePipeline(cache, large_lookup) == cache.end());
+
+    const auto large_translation = TranslateLocalProgram(large, large_lookup);
+    CHECK(large_translation.stored_words == std::vector<u32>{5});
+    CHECK(large_translation.key == large_lookup);
+}
+
+TEST_CASE("Native immediate local stores check bounds after rotating the address",
+          "[video_core][native_local_memory]") {
+    const Vulkan::ComputePipelineLookupKey lookup{{1, 0, {1, 1, 1}}, 48, 32};
+    for (const auto& [address, words] : std::array<std::pair<u32, std::vector<u32>>, 3>{
+             {{4096, {}}, {0xffffe0, {0}}, {12, {11}}}}) {
+        CAPTURE(address);
+        LocalEnvironment env{16, 32};
+        env.SetProgram(ImmediateLocalStore(address));
+        CHECK(TranslateLocalProgram(env, lookup).stored_words == words);
+    }
 }
 
 TEST_CASE("One compute shader under two local layouts keeps two pipelines",
@@ -215,8 +298,11 @@ TEST_CASE("Compute pipelines without local accesses serve every local layout",
     using Vulkan::ComputePipelineLookupKey;
     const Vulkan::ComputePipelineCacheKey key{
         .unique_hash = 0x143a3470b3d02c14ULL, .shared_memory_size = 0, .workgroup_size{32, 1, 1}};
+    LocalEnvironment env{0, 576};
+    env.SetProgram(MaxwellExit);
+    const auto translation = TranslateLocalProgram(env, {key, 576, 576});
     std::unordered_map<ComputePipelineLookupKey, int> cache;
-    cache.emplace(Vulkan::AnyLayoutKey(key), 1);
+    cache.emplace(translation.key, 1);
     // Xenoblade Chronicles 2 recorded it at 576 bytes and dispatches it at 592.
     CHECK(Vulkan::FindComputePipeline(cache, ComputePipelineLookupKey{key, 576, 576})->second == 1);
     CHECK(Vulkan::FindComputePipeline(cache, ComputePipelineLookupKey{key, 592, 592})->second == 1);
@@ -231,7 +317,7 @@ namespace {
 /// The fields of a compute pipeline cache entry that publishing a rebuild reads and writes.
 struct FakeEntry {
     std::unique_ptr<int> pipeline;
-    bool uses_local_memory{};
+    bool depends_on_local_memory_layout{};
     Vulkan::ComputePipelineLookupKey dispatch_key{};
     u32 rebuilds{};
     bool used{};
@@ -260,10 +346,10 @@ struct FakeCache {
     }
 };
 
-FakeEntry Translation(int id, bool uses_local_memory,
+FakeEntry Translation(int id, bool depends_on_local_memory_layout,
                       const Vulkan::ComputePipelineLookupKey& dispatch_key) {
     return {.pipeline = std::make_unique<int>(id),
-            .uses_local_memory = uses_local_memory,
+            .depends_on_local_memory_layout = depends_on_local_memory_layout,
             .dispatch_key = dispatch_key};
 }
 } // namespace
@@ -276,7 +362,7 @@ TEST_CASE("A rebuild with local accesses leaves the layout-free key for its own 
     const ComputePipelineLookupKey a{key, 592, 592};
     const ComputePipelineLookupKey b{key, 608, 608};
     FakeCache cache;
-    // The first translation dropped its local accesses with a null pointer: it serves any layout.
+    // The first translation did not depend on the layout.
     cache.map.emplace(Vulkan::AnyLayoutKey(key), Translation(1, false, a));
     REQUIRE(cache.Dispatch(a) == 1);
     REQUIRE(cache.Dispatch(b) == 1);

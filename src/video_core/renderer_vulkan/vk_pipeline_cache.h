@@ -85,8 +85,7 @@ static_assert(std::has_unique_object_representations_v<ComputePipelineCacheKey>)
 static_assert(std::is_trivially_copyable_v<ComputePipelineCacheKey>);
 static_assert(std::is_trivially_constructible_v<ComputePipelineCacheKey>);
 
-/// The layout of a compute pipeline whose translation has no local accesses: it serves every local
-/// memory layout. Games change the allocation (Xenoblade Chronicles 2: 576 bytes, later 592).
+/// The layout of a compute pipeline whose translation does not depend on local memory.
 inline constexpr u32 AnyLocalMemory = ~0U;
 
 /// A compute pipeline in memory: the recorded key and the local memory its translation addresses,
@@ -104,13 +103,16 @@ struct ComputePipelineLookupKey {
 static_assert(std::has_unique_object_representations_v<ComputePipelineLookupKey>);
 static_assert(std::is_trivially_copyable_v<ComputePipelineLookupKey>);
 
-/// The key of a pipeline whose translation has no local accesses.
 [[nodiscard]] constexpr ComputePipelineLookupKey AnyLayoutKey(const ComputePipelineCacheKey& key) {
     return {key, AnyLocalMemory, AnyLocalMemory};
 }
 
-/// The key of a pipeline with local accesses translated from a record. Only Maxwell compute
-/// translates them from a record without the high allocation (native compute asks for it).
+[[nodiscard]] constexpr ComputePipelineLookupKey TranslatedComputeKey(
+    const ComputePipelineLookupKey& lookup, bool depends_on_local_memory_layout) {
+    return depends_on_local_memory_layout ? lookup : AnyLayoutKey(lookup.key);
+}
+
+/// The layout recorded with a pipeline. Older records can lack the native high allocation.
 [[nodiscard]] ComputePipelineLookupKey RecordLookupKey(const ComputePipelineCacheKey& key,
                                                        const VideoCommon::FileEnvironment& env);
 
@@ -136,7 +138,7 @@ struct hash<Vulkan::ComputePipelineLookupKey> {
 
 namespace Vulkan {
 
-/// The pipeline translated for this layout, else one without local accesses.
+/// The pipeline translated for this layout, else one that serves every layout.
 template <typename Map>
 [[nodiscard]] auto FindComputePipeline(Map& cache, const ComputePipelineLookupKey& lookup) {
     const auto it{cache.find(lookup)};
@@ -149,10 +151,9 @@ template <typename Map>
     return stored == lookup || stored == AnyLayoutKey(lookup.key);
 }
 
-/// Replaces the entry at `it` with its rebuild and returns where the rebuild is now. A rebuild can
-/// keep local accesses the first translation dropped (their only use was through a null pointer):
-/// it then leaves the layout-free key for the layout it was translated for, which need not be the
-/// layout of the dispatch that finds it built. `retire` takes the pipelines replaced.
+/// Replaces the entry at `it` with its rebuild and returns where the rebuild is now. A rebuild
+/// that depends on a layout uses the layout it was translated for, which need not be the layout
+/// of the dispatch that finds it built. `retire` takes the pipelines replaced.
 template <typename Map, typename Retire>
 typename Map::iterator PublishComputeRebuild(Map& cache, typename Map::iterator it,
                                              typename Map::mapped_type&& rebuilt, Retire&& retire) {
@@ -161,7 +162,7 @@ typename Map::iterator PublishComputeRebuild(Map& cache, typename Map::iterator 
     }
     rebuilt.rebuilds = it->second.rebuilds + 1;
     rebuilt.used = it->second.used;
-    if (rebuilt.uses_local_memory && it->first == AnyLayoutKey(it->first.key)) {
+    if (rebuilt.depends_on_local_memory_layout && it->first == AnyLayoutKey(it->first.key)) {
         const ComputePipelineLookupKey layout{rebuilt.dispatch_key};
         cache.erase(it);
         bool inserted{};
@@ -192,8 +193,7 @@ struct ComputePipelineCacheEntry {
     std::vector<std::pair<u32, u32>> null_pointer_slots;
     /// Constant buffer slots bound as storage buffer pointers (see MappedStoragePointerKeys)
     std::vector<u64> mapped_pointers;
-    /// Whether its translation has local accesses, which puts its layout in its key
-    bool uses_local_memory{};
+    bool depends_on_local_memory_layout{};
     /// The layout of the dispatch it was translated for, when translated from the game
     ComputePipelineLookupKey dispatch_key{};
     u32 rebuilds{};
