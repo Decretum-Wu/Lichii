@@ -106,6 +106,7 @@
 #include <QInputDialog>
 #include <QMimeData>
 #include <QPalette>
+#include <QPointer>
 #include <QProgressDialog>
 #include <QScreen>
 #include <QSet>
@@ -2670,11 +2671,17 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     QtCommon::system->RegisterExecuteProgramCallback(
         [this](std::size_t program_index_) { render_window->ExecuteProgram(program_index_); });
 
-    QtCommon::system->RegisterLaunchInNewSessionCallback([this](u64 program_id) {
-        QMetaObject::invokeMethod(
-            this, [this, program_id] { OnLaunchInNewSession(program_id); },
-            Qt::QueuedConnection);
-    });
+    QtCommon::system->RegisterLaunchInNewSessionCallback(
+        [this, source = QPointer{QtCommon::emu_thread.get()}](u64 program_id) {
+            QMetaObject::invokeMethod(
+                this,
+                [this, source, program_id] {
+                    if (source && source.data() == QtCommon::emu_thread.get()) {
+                        OnLaunchInNewSession(program_id);
+                    }
+                },
+                Qt::QueuedConnection);
+        });
 
     QtCommon::system->RegisterExitCallback([this] {
         QtCommon::emu_thread->ForceStop();

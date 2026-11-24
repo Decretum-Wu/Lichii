@@ -3,6 +3,7 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "core/file_sys/control_metadata.h"
 #include "core/hle/result.h"
 #include "core/hle/service/am/am_results.h"
 #include "core/hle/service/am/am_types.h"
@@ -10,12 +11,14 @@
 #include "core/hle/service/am/applet_data_broker.h"
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/frontend/applets.h"
+#include "core/hle/service/am/process_creation.h"
 #include "core/hle/service/am/service/application_accessor.h"
 #include "core/hle/service/am/service/library_applet_accessor.h"
 #include "core/hle/service/am/service/storage.h"
 #include "core/hle/service/am/window_system.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/glue/glue_manager.h"
+#include "core/hle/service/ns/game_list_applications.h"
 
 namespace Service::AM {
 
@@ -57,16 +60,46 @@ IApplicationAccessor::IApplicationAccessor(Core::System& system_, std::shared_pt
     RegisterHandlers(functions);
 }
 
+IApplicationAccessor::IApplicationAccessor(Core::System& system_, u64 program_id,
+                                           WindowSystem& window_system)
+    : IApplicationAccessor{system_,
+                           std::make_shared<Applet>(system_, std::make_unique<Process>(system_), true),
+                           window_system} {
+    m_forwarder = true;
+    m_applet->program_id = program_id;
+    m_applet->applet_id = AppletId::Application;
+    m_applet->type = AppletType::Application;
+    m_applet->library_applet_mode = LibraryAppletMode::AllForeground;
+}
+
 IApplicationAccessor::~IApplicationAccessor() = default;
 
 Result IApplicationAccessor::Start() {
     LOG_INFO(Service_AM, "called");
+    if (m_forwarder) {
+        std::scoped_lock lk{m_applet->lock};
+        R_SUCCEED_IF(m_forwarder_started);
+        R_UNLESS(!m_applet->is_completed && !system.IsShuttingDown(), ResultUnknown);
+        const u64 program_id = m_applet->program_id;
+        if (!system.LaunchInNewSession(program_id)) {
+            LOG_ERROR(Service_AM,
+                      "{:016X} needs a session of its own, which this frontend can't start",
+                      program_id);
+            R_THROW(ResultUnknown);
+        }
+        m_forwarder_started = true;
+        LOG_INFO(Service_AM, "{:016X}: booting it in a new session", program_id);
+        R_SUCCEED();
+    }
     m_applet->process->Run();
     R_SUCCEED();
 }
 
 Result IApplicationAccessor::RequestExit() {
     LOG_INFO(Service_AM, "called");
+    if (m_forwarder) {
+        R_SUCCEED();
+    }
 
     std::scoped_lock lk{m_applet->lock};
     if (m_applet->exit_locked) {
@@ -81,6 +114,13 @@ Result IApplicationAccessor::RequestExit() {
 
 Result IApplicationAccessor::Terminate() {
     LOG_INFO(Service_AM, "called");
+    if (m_forwarder) {
+        std::scoped_lock lk{m_applet->lock};
+        if (!m_forwarder_started && !m_applet->is_completed) {
+            m_applet->OnProcessTerminatedLocked();
+        }
+        R_SUCCEED();
+    }
     m_applet->process->Terminate();
     R_SUCCEED();
 }
@@ -123,7 +163,13 @@ Result IApplicationAccessor::GetApplicationControlProperty(
     LOG_INFO(Service_AM, "called");
 
     std::vector<u8> nacp;
-    R_TRY(system.GetARPManager().GetControlProperty(&nacp, m_applet->program_id));
+    if (m_forwarder) {
+        const auto metadata = NS::GetApplicationControlMetadata(system, m_applet->program_id, false);
+        nacp = metadata.first != nullptr ? metadata.first->GetRawBytes()
+                                         : std::vector<u8>(sizeof(FileSys::RawNACP));
+    } else {
+        R_TRY(system.GetARPManager().GetControlProperty(&nacp, m_applet->program_id));
+    }
 
     std::memcpy(out_control_property.data(), nacp.data(),
                 (std::min)(out_control_property.size(), nacp.size()));
@@ -180,6 +226,16 @@ Result IApplicationAccessor::GetApplicationId(Out<u64> out_application_id) {
 Result IApplicationAccessor::GetApplicationLaunchProperty(
     Out<Glue::ApplicationLaunchProperty> out_launch_property) {
     LOG_DEBUG(Service_AM, "called");
+    if (m_forwarder) {
+        const u64 program_id = m_applet->program_id;
+        auto launch = BuildApplicationLaunchProperty(system, program_id);
+        if (launch.base_game_storage_id == FileSys::StorageId::None &&
+            NS::GetGameListApplicationPath(system, program_id)) {
+            launch.base_game_storage_id = FileSys::StorageId::Host;
+        }
+        *out_launch_property = launch;
+        R_SUCCEED();
+    }
     R_RETURN(system.GetARPManager().GetLaunchProperty(out_launch_property.Get(),
                                                       m_applet->program_id));
 }
@@ -206,7 +262,9 @@ Result IApplicationAccessor::HasSaveDataAccessPermission(Out<bool> out_has_permi
 
 Result IApplicationAccessor::RequestForApplicationToGetForeground() {
     LOG_INFO(Service_AM, "called");
-    m_window_system.RequestApplicationToGetForeground();
+    if (!m_forwarder) {
+        m_window_system.RequestApplicationToGetForeground();
+    }
     R_SUCCEED();
 }
 
