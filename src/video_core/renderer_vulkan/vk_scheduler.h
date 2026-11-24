@@ -189,6 +189,11 @@ public:
         return state.renderpass != VK_NULL_HANDLE;
     }
 
+    bool IsBetweenRenderPasses() const {
+        JoinRecorders();
+        return state.renderpass == VK_NULL_HANDLE && deferred_clear.framebuffer == nullptr;
+    }
+
     /// Changes whenever a render pass begins or ends.
     u64 RenderPassSerial() const {
         JoinRecorders();

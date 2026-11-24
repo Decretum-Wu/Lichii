@@ -479,6 +479,8 @@ public:
     /// Whether CommitAsyncFlushes would commit anything (downloads or their buffers).
     [[nodiscard]] bool HasAsyncFlushWork() const noexcept;
 
+    [[nodiscard]] bool RenderTargetsDirty() const noexcept;
+
     /// Return true when the caller should wait for async downloads
     [[nodiscard]] bool ShouldWaitAsyncFlushes() const noexcept;
 
@@ -957,6 +959,21 @@ private:
     std::deque<GpuSentencedImage> gpu_sentenced_images;
     u64 gpu_sentenced_bytes{};
 
+    /// Queued downloads can land before later GPU work using the image completes.
+    struct RetainedImageKeeper {
+        u64 tick;
+        std::shared_ptr<Image> image;
+    };
+    std::deque<RetainedImageKeeper> retained_image_keepers;
+    struct FreeGuardStats {
+        u64 retained_held{};
+        u64 landed_early{};
+        u64 freed_early{};
+        u64 unswizzle_dropped{};
+        u64 logged_total{};
+    };
+    FreeGuardStats free_guard{};
+
     /// Bytes of images per device memory block, for the collector (refreshed every 60 frames).
     std::unordered_map<u64, u64> block_image_bytes;
     u64 block_image_bytes_frame{~0ULL};
@@ -989,7 +1006,7 @@ private:
     std::vector<std::pair<DAddr, u64>> uploaded_ranges;
 
     std::deque<PendingUnswizzle> unswizzle_queue;
-    u8 current_unswizzle_frame;
+    u8 current_unswizzle_frame{};
 
     // Join caching
     boost::container::small_vector<ImageId, 4> join_overlap_ids;

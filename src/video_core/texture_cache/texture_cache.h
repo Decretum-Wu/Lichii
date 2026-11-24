@@ -1363,6 +1363,25 @@ void TextureCache<P>::TickFrame() {
             gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
             gpu_sentenced_images.pop_front();
         }
+        while (!retained_image_keepers.empty() &&
+               runtime.IsFree(retained_image_keepers.front().tick)) {
+            retained_image_keepers.pop_front();
+        }
+        if (frame_tick % 600 == 0) {
+            const u64 total = free_guard.retained_held + free_guard.landed_early +
+                              free_guard.freed_early + free_guard.unswizzle_dropped;
+            if (total != free_guard.logged_total) {
+                free_guard.logged_total = total;
+                LOG_INFO(HW_GPU,
+                         "Free guard (session): {} images deleted with a download queued held "
+                         "until their delete tick completed, {} downloads landed before that "
+                         "tick was known complete, {} images held now, {} early frees "
+                         "(must be 0); {} async unswizzles dropped with their image",
+                         free_guard.retained_held, free_guard.landed_early,
+                         retained_image_keepers.size(), free_guard.freed_early,
+                         free_guard.unswizzle_dropped);
+            }
+        }
     }
     // If we can obtain the memory info, use it instead of the estimate. Read before the budget
     // check below, which counts what isn't images from it.
@@ -3261,6 +3280,11 @@ bool TextureCache<P>::HasAsyncFlushWork() const noexcept {
 }
 
 template <class P>
+bool TextureCache<P>::RenderTargetsDirty() const noexcept {
+    return maxwell3d != nullptr && maxwell3d->dirty.flags[VideoCommon::Dirty::RenderTargets];
+}
+
+template <class P>
 bool TextureCache<P>::ShouldWaitAsyncFlushes() const noexcept {
     return !committed_downloads.empty() && !committed_downloads.front().empty();
 }
@@ -3347,6 +3371,22 @@ void TextureCache<P>::PopAsyncFlushes() {
             auto& download_buffer = download_map[download_info.async_buffer_id];
             if (download_info.is_swizzle) {
                 const ImageBase& image = download_info.GetImage(slot_images);
+                if constexpr (requires { runtime.IsFree(u64{}); }) {
+                    if (download_info.retired_image &&
+                        !runtime.IsFree(download_info.retired_tick)) {
+                        if (download_info.retired_image.use_count() == 1) {
+                            ++free_guard.freed_early;
+                        }
+                        if (free_guard.landed_early++ < 8) {
+                            LOG_WARNING(HW_GPU,
+                                        "Free guard: image {:#x} ({}x{}) deleted with a download "
+                                        "queued; the download landed before the GPU passed the "
+                                        "delete (tick {}), kept until it does",
+                                        image.gpu_addr, image.info.size.width,
+                                        image.info.size.height, download_info.retired_tick);
+                        }
+                    }
+                }
                 const auto copies = FullDownloadCopies(image.info);
                 download_buffer.offset -= Common::AlignUp(image.unswizzled_size_bytes, 64);
                 std::span<u8> download_span =
@@ -3677,18 +3717,16 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         return;
     }
 
-    const bool gpu_unswizzle_enabled = Settings::values.gpu_unswizzle_enabled.GetValue();
-
-    if (gpu_unswizzle_enabled &&
-        IsPixelFormatBCn(image.info.format) &&
-        image.info.type == ImageType::e3D &&
-        image.info.resources.levels == 1 &&
-        image.info.resources.layers == 1 &&
-        MapSizeBytes(image) >= gpu_unswizzle_maxsize &&
-        False(image.flags & ImageFlagBits::GpuModified)) {
-
-        QueueAsyncUnswizzle(image, image_id);
-        return;
+    // OpenGL has no deferred upload staging and uploads the whole volume at once.
+    if constexpr (requires { runtime.CurrentTick(); }) {
+        if (Settings::values.gpu_unswizzle_enabled.GetValue() &&
+            IsPixelFormatBCn(image.info.format) && image.info.type == ImageType::e3D &&
+            image.info.resources.levels == 1 && image.info.resources.layers == 1 &&
+            MapSizeBytes(image) >= gpu_unswizzle_maxsize &&
+            False(image.flags & ImageFlagBits::GpuModified)) {
+            QueueAsyncUnswizzle(image, image_id);
+            return;
+        }
     }
     using TraceClock = std::chrono::steady_clock;
     const bool tc_trace = TextureCacheTrace();
@@ -5787,6 +5825,24 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
             async_decode->cancelled = true;
         }
     }
+    // The slot can be reused before the next chunk. Return any staging at the current GPU tick
+    // so already-recorded chunks can finish reading it.
+    for (auto it = unswizzle_queue.begin(); it != unswizzle_queue.end();) {
+        if (it->image_id != image_id) {
+            ++it;
+            continue;
+        }
+        if (it->initialized) {
+            runtime.FreeDeferredStagingBuffer(it->staging_buffer);
+        }
+        if (free_guard.unswizzle_dropped++ < 8) {
+            LOG_WARNING(HW_GPU,
+                        "Free guard: async unswizzle of image {:#x} dropped with the image ({} of "
+                        "{} bytes read)",
+                        image.gpu_addr, it->current_offset, it->total_size);
+        }
+        it = unswizzle_queue.erase(it);
+    }
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }
@@ -5853,14 +5909,22 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         }
         slot_image_views.erase(image_view_id);
     }
-    const bool retained = RetainPendingImageDownloads(image_id, slot_images[image_id],
-                                                       uncommitted_downloads, committed_downloads);
+    u64 delete_tick = 0;
+    if constexpr (requires { runtime.CurrentTick(); }) {
+        delete_tick = runtime.CurrentTick();
+    }
+    std::shared_ptr<Image> retained = RetainPendingImageDownloads(
+        image_id, slot_images[image_id], uncommitted_downloads, committed_downloads, delete_tick);
     if (retained) {
         LOG_INFO(Render_Vulkan, "Retained image for queued download: id={}", image_id.Value());
+        if constexpr (requires { runtime.CurrentTick(); }) {
+            retained_image_keepers.push_back({delete_tick, std::move(retained)});
+            ++free_guard.retained_held;
+        }
     } else if (!immediate_delete) {
         if constexpr (requires { runtime.CurrentTick(); }) {
             gpu_sentenced_images.push_back(
-                {runtime.CurrentTick(), freed_bytes, std::move(slot_images[image_id])});
+                {delete_tick, freed_bytes, std::move(slot_images[image_id])});
             gpu_sentenced_bytes += freed_bytes;
         } else {
             sentenced_images.Push(std::move(slot_images[image_id]));

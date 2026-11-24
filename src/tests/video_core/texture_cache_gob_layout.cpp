@@ -27,6 +27,7 @@ namespace {
 
 struct TestAsyncBuffer {
     std::span<u8> mapped_span;
+    size_t offset{};
 };
 
 struct TestRuntime {
@@ -38,8 +39,22 @@ struct TestRuntime {
     }
     void FreeDeferredStagingBuffer(TestAsyncBuffer&) {
         staging.clear();
+        freed_staging_tick = CurrentTick();
     }
-    u64 CurrentTick() const { return 1; }
+    TestAsyncBuffer UploadStagingBuffer(size_t size, bool deferred = false) {
+        REQUIRE(deferred);
+        staging.resize(size);
+        return {staging};
+    }
+    void AccelerateImageUpload(auto&, const TestAsyncBuffer&,
+                               std::span<const VideoCommon::SwizzleParameters>, u32, u32) {
+        ++unswizzle_uploads;
+    }
+    void InsertUploadMemoryBarrier() {}
+    bool CanReportMemoryUsage() const { return true; }
+    u64 GetDeviceMemoryUsage() const { return 0; }
+    void TickFrame() {}
+    u64 CurrentTick() const { return current_tick; }
     bool IsFree(u64 tick) const { return completed_tick >= tick; }
     void FlushDeferredClear() {}
     void Finish() { FAIL("A texture lookup must not wait for the GPU"); }
@@ -51,8 +66,11 @@ struct TestRuntime {
         return false;
     }
     std::vector<u8> staging;
+    u64 current_tick{1};
     u64 completed_tick{};
+    u64 freed_staging_tick{};
     u32 downloads{};
+    u32 unswizzle_uploads{};
 };
 
 struct TestImage : VideoCommon::ImageBase {
@@ -64,10 +82,15 @@ struct TestImage : VideoCommon::ImageBase {
     TestImage& operator=(TestImage&&) = default;
     void DownloadMemory(const TestAsyncBuffer& map,
                         std::span<const VideoCommon::BufferImageCopy>) {
-        REQUIRE(map.mapped_span.size() == gpu_bytes.size());
-        std::ranges::copy(gpu_bytes, map.mapped_span.begin());
+        auto dest = map.mapped_span.subspan(map.offset);
+        REQUIRE(dest.size() >= gpu_bytes.size());
+        std::ranges::copy(gpu_bytes, dest.begin());
+    }
+    void UploadMemory(const TestAsyncBuffer&, std::span<const VideoCommon::BufferImageCopy>) {
+        FAIL("Unexpected CPU decode upload");
     }
     std::vector<u8> gpu_bytes;
+    std::shared_ptr<int> lifetime;
 };
 
 struct TestImageView : VideoCommon::ImageViewBase {
@@ -110,7 +133,7 @@ struct Policy {
     static constexpr bool FRAMEBUFFER_BLITS = false;
     static constexpr bool HAS_EMULATED_COPIES = false;
     static constexpr bool HAS_DEVICE_MEMORY_INFO = false;
-    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = false;
+    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
     static constexpr bool HAS_MSAA_DOWNLOADS = false;
 };
 
@@ -184,6 +207,40 @@ struct TextureCacheTestAccess {
         cache.slot_images[left].overlapping_images.push_back(right);
         cache.slot_images[right].overlapping_images.push_back(left);
     }
+    template <class C>
+    static void Delete(C& cache, ImageId id) {
+        const auto alloc = cache.slot_image_allocs.insert();
+        cache.image_allocs_table.emplace(cache.slot_images[id].gpu_addr, alloc);
+        cache.slot_image_allocs[alloc].images.push_back(id);
+        cache.UnregisterImage(id);
+        cache.DeleteImage(id);
+    }
+    template <class C>
+    static auto& Image(C& cache, ImageId id) {
+        return cache.slot_images[id];
+    }
+    template <class C>
+    static void QueueDownload(C& cache, ImageId id) {
+        cache.uncommitted_downloads.push_back({.is_swizzle = true, .object_id = id});
+    }
+    template <class C>
+    static void QueueUnswizzle(C& cache, ImageId id) {
+        cache.QueueAsyncUnswizzle(cache.slot_images[id], id);
+    }
+    template <class C>
+    static void ProcessOneUnswizzleSlice(C& cache) {
+        cache.swizzle_chunk_size = 512;
+        cache.swizzle_slices_per_batch = 1;
+        cache.TickAsyncUnswizzle();
+    }
+    template <class C>
+    static std::vector<ImageId> QueuedUnswizzles(const C& cache) {
+        std::vector<ImageId> ids;
+        for (const auto& task : cache.unswizzle_queue) {
+            ids.push_back(task.image_id);
+        }
+        return ids;
+    }
 };
 
 } // namespace VideoCommon
@@ -243,6 +300,78 @@ struct Fixture {
 };
 
 } // namespace
+
+TEST_CASE("Async image downloads and the delete tick both hold the image alive",
+          "[video_core][texture_cache][image_lifetime]") {
+    Fixture f;
+    auto& cache = *f.cache;
+    const auto id = Access::Insert(cache, MakeInfo(), 0x100000, 0x10000);
+    auto& image = Access::Image(cache, id);
+    image.lifetime = std::make_shared<int>();
+    const std::weak_ptr<int> lifetime = image.lifetime;
+    Access::WriteGpu(cache, id, std::vector<u8>(image.unswizzled_size_bytes, 0xA5));
+    Access::QueueDownload(cache, id);
+
+    SECTION("An older download can finish before later GPU work") {
+        cache.CommitAsyncFlushes();
+        f.runtime.current_tick = 2;
+        Access::Delete(cache, id);
+        REQUIRE(Access::Insert(cache, MakeInfo(), 0x102000, 0x12000) == id);
+
+        f.runtime.completed_tick = 1;
+        cache.PopAsyncFlushes();
+        cache.TickFrame();
+        CHECK(f.bytes[0] == 0xA5);
+        CHECK_FALSE(lifetime.expired());
+
+        f.runtime.completed_tick = 2;
+        cache.TickFrame();
+        CHECK(lifetime.expired());
+    }
+    SECTION("A newer download can still be uncommitted when the delete tick completes") {
+        Access::Delete(cache, id);
+        REQUIRE(Access::Insert(cache, MakeInfo(), 0x102000, 0x12000) == id);
+
+        f.runtime.completed_tick = 1;
+        f.runtime.current_tick = 2;
+        cache.TickFrame();
+        REQUIRE_FALSE(lifetime.expired());
+        cache.CommitAsyncFlushes();
+        f.runtime.completed_tick = 2;
+        cache.PopAsyncFlushes();
+        CHECK(f.bytes[0] == 0xA5);
+        CHECK(lifetime.expired());
+    }
+}
+
+TEST_CASE("Deleting an image cancels only its queued unswizzle",
+          "[video_core][texture_cache][image_lifetime]") {
+    Fixture f;
+    auto& cache = *f.cache;
+    auto info = MakeInfo();
+    info.type = VideoCommon::ImageType::e3D;
+    info.format = VideoCore::Surface::PixelFormat::BC1_RGBA_UNORM;
+    info.size = {32, 32, 8};
+    const auto id = Access::Insert(cache, info, 0x100000, 0x10000);
+    const auto other = Access::Insert(cache, info, 0x104000, 0x14000);
+    Access::QueueUnswizzle(cache, id);
+    Access::QueueUnswizzle(cache, other);
+
+    bool initialized = false;
+    SECTION("Before processing starts") {}
+    SECTION("With deferred staging already in use") {
+        f.runtime.current_tick = 4;
+        Access::ProcessOneUnswizzleSlice(cache);
+        REQUIRE(f.runtime.unswizzle_uploads == 1);
+        initialized = true;
+    }
+    f.runtime.current_tick = 5;
+    Access::Delete(cache, id);
+
+    REQUIRE(Access::Insert(cache, MakeInfo(), 0x108000, 0x18000) == id);
+    CHECK(Access::QueuedUnswizzles(cache) == std::vector{other});
+    CHECK(f.runtime.freed_staging_tick == (initialized ? 5u : 0u));
+}
 
 TEST_CASE("Sparse texture iteration skips segments that cannot be translated",
           "[video_core][texture_cache][sparse_segments]") {

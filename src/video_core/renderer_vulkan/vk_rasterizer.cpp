@@ -628,6 +628,7 @@ RasterizerVulkan::~RasterizerVulkan() {
     state_tracker.ClearChannel();
     scheduler.WaitWorker();
     scheduler.Finish();
+    buffer_cache_runtime.ClearMultiRangeBuffers();
 }
 
 GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_indirect) {
@@ -1440,16 +1441,30 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     if (frame_dump.Capturing()) {
         FrameDumpPass(texture_cache.GetFramebuffer());
         frame_dump.NoteDraw(pipeline->ShaderHashes());
-        if (frame_dump.WantsShaders(pipeline)) {
+        if (frame_dump.IncludesGraphicsPass() && frame_dump.WantsShaders(pipeline)) {
             frame_dump.NoteGraphicsShaders(
                 *pipeline, pipeline_cache.CaptureGraphicsPrograms(pipeline->ShaderHashes()));
         }
         bool recorded = false;
-        if (frame_dump.CapturingSampled()) {
+        if (frame_dump.IncludesGraphicsPass() && frame_dump.CapturingSampled()) {
             boost::container::small_vector<FrameDump::Sampled, 16> sampled;
             for (const auto& image : pipeline->SampledImages()) {
-                sampled.push_back({image.stage, image.tic, &texture_cache.GetImageView(image.id),
-                                   &texture_cache.GetSampler(image.sampler)});
+                auto& sample = sampled.emplace_back(FrameDump::Sampled{
+                    image.stage, image.tic, &texture_cache.GetImageView(image.id),
+                    &texture_cache.GetSampler(image.sampler)});
+                if (frame_dump.Focused()) {
+                    const auto& header = maxwell3d->regs.tex_header;
+                    const u32 index = Tegra::Texture::TextureHeaderIndex(
+                        image.tic, header.limit,
+                        Tegra::Texture::UsesHeaderByteOffsetHandles(
+                            gpu_memory->UsesNativeTiling(), Settings::GetCurrentProgramID()));
+                    if (index <= header.limit) {
+                        Tegra::Texture::TICEntry tic{};
+                        gpu_memory->ReadBlockUnsafe(header.Address() + u64{index} * sizeof(tic),
+                                                    &tic, sizeof(tic));
+                        sample.tic_raw = tic.raw;
+                    }
+                }
             }
             recorded = frame_dump.NoteSampled(sampled);
         }
@@ -3370,7 +3385,7 @@ void RasterizerVulkan::PlayUnlentDispatch(UnlentDispatch& dispatch) {
         VideoCommon::GpuSplit::SetPlayingPosition(~u64{0});
     };
     Profile::Scope profile_scope{Profile::Zone::Compute};
-    FlushWork();
+    FlushWork(true);
     auto& slots = buffer_cache_runtime.Nx2Slots();
     if (dispatch.list_slot && !slots.Held(*dispatch.list_slot)) {
         split.NoteUnlentSlotUnheld();
@@ -3458,7 +3473,7 @@ void RasterizerVulkan::DispatchCompute() {
         return;
     }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Compute};
-    FlushWork();
+    FlushWork(true);
     gpu_memory->FlushCaching();
     if (frame_dump.Capturing()) {
         frame_dump.EndPass();
@@ -3520,13 +3535,13 @@ void RasterizerVulkan::DispatchCompute() {
         frame_dump.CaptureDispatch(pipeline->ShaderHash(), written);
     };
     TracePendingCpuWrites(true, std::array{pipeline->ShaderHash()});
-    if (frame_dump.WantsShaders(pipeline)) {
+    if (!frame_dump.Focused() && frame_dump.WantsShaders(pipeline)) {
         const auto& launch = kepler_compute->launch_description;
         frame_dump.NoteComputeShaders(
             *pipeline, pipeline_cache.CaptureComputeProgram(),
             std::span(reinterpret_cast<const u8*>(&launch), sizeof(launch)));
     }
-    if (frame_dump.CapturingSampled()) {
+    if (!frame_dump.Focused() && frame_dump.CapturingSampled()) {
         boost::container::small_vector<FrameDump::Sampled, 16> sampled;
         for (const auto& image : pipeline->SampledImages()) {
             sampled.push_back({5, image.tic, &texture_cache.GetImageView(image.id),
@@ -4417,8 +4432,8 @@ bool RasterizerVulkan::BackTakesInvalidation(std::span<const std::pair<DAddr, Si
         }
         return std::nullopt;
     };
-    const auto lend = [&split](Site site) {
-        split.NoteInvalidation(site);
+    const auto lend = [&split](Site lent) {
+        split.NoteInvalidation(lent);
         return false;
     };
     // Shaders are looked up on the back as well: their invalidation stays lent.
@@ -5702,6 +5717,7 @@ void RasterizerVulkan::TickFrame() {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.TickFrame();
     }
+    scheduler.JoinRecorders();
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.TickFrame();
@@ -6002,7 +6018,7 @@ void RasterizerVulkan::LoadDiskResources(u64 title_id, std::stop_token stop_load
     pipeline_cache.LoadDiskResources(title_id, stop_loading, callback);
 }
 
-void RasterizerVulkan::FlushWork() {
+void RasterizerVulkan::FlushWork(bool ends_pass) {
 #ifdef __ANDROID__
     static constexpr bool android = true;
 #else
@@ -6040,7 +6056,13 @@ void RasterizerVulkan::FlushWork() {
         }();
         legacy_budget = forced_draws != 0 ? forced_draws : (device.IsMoltenVK() ? 128U : 4096U);
     }
-    switch (SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget)) {
+    bool pass_boundary = false;
+    if (native && !android && draw_counter + 1 >= budget / 2 && draw_counter + 1 < budget) {
+        pass_boundary = ends_pass || scheduler.IsBetweenRenderPasses() ||
+                        (texture_cache.RenderTargetsDirty() && scheduler.IsRenderPassActive());
+    }
+    switch (SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget,
+                                      pass_boundary)) {
     case SubmissionPolicy::Action::None:
         break;
     case SubmissionPolicy::Action::Dispatch:
