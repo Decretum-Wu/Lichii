@@ -113,10 +113,6 @@ public:
 
     void TickFrame();
 
-    [[nodiscard]] bool HasImageReaper() const noexcept {
-        return image_reaper.has_value();
-    }
-
     void DrainImageReaper();
     void ReapImage(Image& image);
 
@@ -407,7 +403,7 @@ public:
         bool used_this_frame{};
     };
     std::vector<ColorFeedbackSnapshot> color_feedback_snapshots;
-    std::optional<ImageReaper> image_reaper;
+    ImageReaper image_reaper;
 };
 
 class Framebuffer {

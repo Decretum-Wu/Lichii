@@ -994,10 +994,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     functions.vkAllocateMemory = TimedAllocateMemory;
     functions.vkFreeMemory = TimedFreeMemory;
 
-    const char* reaper = std::getenv("EDEN_NX2_IMAGE_REAPER");
-    image_reaper_enabled = reaper != nullptr && std::string_view{reaper} == "1";
-    VmaAllocatorCreateFlags flags =
-        image_reaper_enabled ? 0 : VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
+    VmaAllocatorCreateFlags flags = 0;
     if (extensions.memory_budget) {
         flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     }

@@ -292,10 +292,6 @@ public:
         return allocator;
     }
 
-    [[nodiscard]] bool ImageReaperEnabled() const {
-        return image_reaper_enabled;
-    }
-
     /// Allocations kept out of the default blocks, which then hold images only: churned buffers
     /// and long-lived sparse pages left holes the texture cache's collector couldn't drain.
     enum class SeparatePool : u32 {
@@ -1425,7 +1421,6 @@ private:
 private:
     VkInstance instance;         ///< Vulkan instance.
     VmaAllocator allocator{};    ///< VMA allocator.
-    bool image_reaper_enabled{};
     mutable std::mutex separate_pools_mutex;
     mutable std::array<std::array<VmaPool, VK_MAX_MEMORY_TYPES>, 2> separate_pools{};
     vk::DeviceDispatch dld;      ///< Device function pointers.

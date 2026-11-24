@@ -60,6 +60,8 @@
 
 namespace Vulkan {
 
+using namespace Common::Literals;
+
 using Tegra::Engines::Fermi2D;
 using Tegra::Texture::SwizzleSource;
 using Tegra::Texture::TextureMipmapFilter;
@@ -1339,11 +1341,8 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
       staging_buffer_pool{staging_buffer_pool_}, blit_image_helper{blit_image_helper_},
       render_pass_cache{render_pass_cache_}, descriptor_pool{descriptor_pool_},
       compute_pass_descriptor_queue{compute_pass_descriptor_queue_},
-      resolution{Settings::values.resolution_info} {
-    if (device.ImageReaperEnabled()) {
-        using namespace Common::Literals;
-        image_reaper.emplace(std::clamp<u64>(device.GetDeviceLocalMemory() / 8, 128_MiB, 1_GiB));
-    }
+      resolution{Settings::values.resolution_info},
+      image_reaper{std::clamp<u64>(device.GetDeviceLocalMemory() / 8, 128_MiB, 1_GiB)} {
     // Before anything below reads astc_recompression (passes, view formats).
     UseBc3ForSwitch2OnSmallCards(device);
     // Huge ASTC arrays always decode on the GPU (IsHugeAstcArray), whatever the decode setting.
@@ -3188,11 +3187,11 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
 }
 
 void TextureCacheRuntime::DrainImageReaper() {
-    image_reaper->Drain();
+    image_reaper.Drain();
 }
 
 void TextureCacheRuntime::ReapImage(Image& image) {
-    image.ReleaseDedicatedImage(*image_reaper);
+    image.ReleaseDedicatedImage(image_reaper);
 }
 
 void TextureCacheRuntime::TickFrame() {

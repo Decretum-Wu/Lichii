@@ -1368,23 +1368,21 @@ void TextureCache<P>::TickFrame() {
     const bool reports_usage = runtime.CanReportMemoryUsage();
     std::optional<u64> reported_memory;
     bool reap_images = false;
-    if constexpr (requires { runtime.HasImageReaper(); }) {
-        if (runtime.HasImageReaper()) {
-            if (reports_usage) {
-                reported_memory = runtime.GetDeviceMemoryUsage();
-            }
-            const auto commit_room = Common::GetProcessCommitRoom();
-            const bool short_of_memory =
-                out_of_memory ||
-                (native_thresholds_applied && runtime.MemoryPressureEvents() != seen_pressure_events) ||
-                (reported_memory && *reported_memory >= critical_memory) ||
-                (commit_room && *commit_room < 1_GiB);
-            if (short_of_memory) {
-                runtime.DrainImageReaper();
-                reported_memory.reset();
-            } else {
-                reap_images = true;
-            }
+    if constexpr (requires { runtime.DrainImageReaper(); }) {
+        if (reports_usage) {
+            reported_memory = runtime.GetDeviceMemoryUsage();
+        }
+        const auto commit_room = Common::GetProcessCommitRoom();
+        const bool short_of_memory =
+            out_of_memory ||
+            (native_thresholds_applied && runtime.MemoryPressureEvents() != seen_pressure_events) ||
+            (reported_memory && *reported_memory >= critical_memory) ||
+            (commit_room && *commit_room < 1_GiB);
+        if (short_of_memory) {
+            runtime.DrainImageReaper();
+            reported_memory.reset();
+        } else {
+            reap_images = true;
         }
     }
     if constexpr (requires { runtime.CurrentTick(); }) {
