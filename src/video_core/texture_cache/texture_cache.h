@@ -1357,15 +1357,53 @@ void TextureCache<P>::TickFrame() {
             scratch->release();
         }
     }
+    // An image that could not be made at all: the driver is out of memory whatever the counts
+    // say, so collect as at the critical threshold.
+    bool out_of_memory = false;
+    if constexpr (requires { runtime.FailedImages(); }) {
+        const u32 failed = runtime.FailedImages();
+        out_of_memory = failed != seen_failed_images;
+        seen_failed_images = failed;
+    }
+    const bool reports_usage = runtime.CanReportMemoryUsage();
+    std::optional<u64> reported_memory;
+    bool reap_images = false;
+    if constexpr (requires { runtime.HasImageReaper(); }) {
+        if (runtime.HasImageReaper()) {
+            if (reports_usage) {
+                reported_memory = runtime.GetDeviceMemoryUsage();
+            }
+            const auto commit_room = Common::GetProcessCommitRoom();
+            const bool short_of_memory =
+                out_of_memory ||
+                (native_thresholds_applied && runtime.MemoryPressureEvents() != seen_pressure_events) ||
+                (reported_memory && *reported_memory >= critical_memory) ||
+                (commit_room && *commit_room < 1_GiB);
+            if (short_of_memory) {
+                runtime.DrainImageReaper();
+                reported_memory.reset();
+            } else {
+                reap_images = true;
+            }
+        }
+    }
     if constexpr (requires { runtime.CurrentTick(); }) {
         while (!gpu_sentenced_images.empty() &&
                runtime.IsFree(gpu_sentenced_images.front().tick)) {
-            gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+            auto& sentenced = gpu_sentenced_images.front();
+            gpu_sentenced_bytes -= sentenced.bytes;
+            if constexpr (requires { runtime.ReapImage(sentenced.image); }) {
+                if (reap_images) {
+                    runtime.ReapImage(sentenced.image);
+                }
+            }
             gpu_sentenced_images.pop_front();
+            reported_memory.reset();
         }
         while (!retained_image_keepers.empty() &&
                runtime.IsFree(retained_image_keepers.front().tick)) {
             retained_image_keepers.pop_front();
+            reported_memory.reset();
         }
         if (frame_tick % 600 == 0) {
             const u64 total = free_guard.retained_held + free_guard.landed_early +
@@ -1385,8 +1423,8 @@ void TextureCache<P>::TickFrame() {
     }
     // If we can obtain the memory info, use it instead of the estimate. Read before the budget
     // check below, which counts what isn't images from it.
-    if (runtime.CanReportMemoryUsage()) {
-        total_used_memory = runtime.GetDeviceMemoryUsage();
+    if (reports_usage) {
+        total_used_memory = reported_memory ? *reported_memory : runtime.GetDeviceMemoryUsage();
         // Images the collector deleted keep their memory for TICKS_TO_DESTROY frames: counting
         // it kept the collector in aggressive mode, deleting 40+ images a frame for frames after
         // it had freed enough (title 1: frames over 100 ms for seconds at a time).
@@ -1746,14 +1784,6 @@ void TextureCache<P>::TickFrame() {
         debug_stats = Common::Log::IsLevelEnabled(Common::Log::Class::HW_GPU, Common::Log::Level::Debug);
         gc_deletes = gc_costly_deletes = gc_download_deletes = async_decodes_queued = 0;
         images_created = images_deleted = 0;
-    }
-    // An image that could not be made at all: the driver is out of memory whatever the counts
-    // say, so collect as at the critical threshold.
-    bool out_of_memory = false;
-    if constexpr (requires { runtime.FailedImages(); }) {
-        const u32 failed = runtime.FailedImages();
-        out_of_memory = failed != seen_failed_images;
-        seen_failed_images = failed;
     }
     // A forced collect for memory spilled to host memory collects as at the critical threshold
     // for this frame: it stops once usage is under it and keeps the retention floor. Collecting as
