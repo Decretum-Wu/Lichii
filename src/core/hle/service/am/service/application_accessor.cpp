@@ -77,17 +77,32 @@ IApplicationAccessor::~IApplicationAccessor() = default;
 Result IApplicationAccessor::Start() {
     LOG_INFO(Service_AM, "called");
     if (m_forwarder) {
-        std::scoped_lock lk{m_applet->lock};
-        R_SUCCEED_IF(m_forwarder_started);
-        R_UNLESS(!m_applet->is_completed && !system.IsShuttingDown(), ResultUnknown);
         const u64 program_id = m_applet->program_id;
-        if (!system.LaunchInNewSession(program_id)) {
+        Core::System::NewSessionLaunch launch{
+            .program_id = program_id,
+            .on_rejected = [applet = std::weak_ptr{m_applet}] {
+                if (const auto locked = applet.lock()) {
+                    std::scoped_lock lk{locked->lock};
+                    locked->terminate_result = ResultUnknown;
+                    locked->OnProcessTerminatedLocked();
+                }
+            },
+        };
+        {
+            std::scoped_lock lk{m_applet->lock};
+            R_UNLESS(!m_applet->is_completed && !system.IsShuttingDown(), ResultUnknown);
+            R_SUCCEED_IF(m_forwarder_started);
+            launch.preselected_user_parameters = m_applet->preselected_user_launch_parameter;
+            m_forwarder_started = true;
+        }
+        if (!system.LaunchInNewSession(std::move(launch))) {
+            std::scoped_lock lk{m_applet->lock};
+            m_forwarder_started = false;
             LOG_ERROR(Service_AM,
                       "{:016X} needs a session of its own, which this frontend can't start",
                       program_id);
             R_THROW(ResultUnknown);
         }
-        m_forwarder_started = true;
         LOG_INFO(Service_AM, "{:016X}: booting it in a new session", program_id);
         R_SUCCEED();
     }
@@ -150,9 +165,11 @@ Result IApplicationAccessor::PushLaunchParameter(LaunchParameterKind kind,
     LOG_INFO(Service_AM, "called, kind={}", kind);
 
     switch (kind) {
-    case LaunchParameterKind::AccountPreselectedUser:
+    case LaunchParameterKind::AccountPreselectedUser: {
+        std::scoped_lock lk{m_applet->lock};
         m_applet->preselected_user_launch_parameter.push_back(storage->GetData());
         R_SUCCEED();
+    }
     default:
         R_THROW(ResultUnknown);
     }

@@ -34,6 +34,7 @@ struct FrontendAppletParameters {
     LaunchType launch_type{};
     s32 program_index{};
     s32 previous_program_index{-1};
+    std::vector<std::vector<u8>> preselected_user_parameters{};
 
     constexpr bool UsesNativeHomeBootstrap(ProgramId process_program_id,
                                             bool process_is_switch2) const {

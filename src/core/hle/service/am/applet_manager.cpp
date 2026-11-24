@@ -328,7 +328,9 @@ void AppletManager::SetWindowSystem(WindowSystem* window_system) {
 
     // TODO: Read whether we need a preselected user from NACP?
     // TODO: This can be done quite easily from loader
-    if (!native_home) {
+    if (!params.preselected_user_parameters.empty()) {
+        applet->preselected_user_launch_parameter = params.preselected_user_parameters;
+    } else if (!native_home) {
         LaunchParameterAccountPreselectedUser lp{};
 
         lp.magic = LaunchParameterAccountPreselectedUserMagic;

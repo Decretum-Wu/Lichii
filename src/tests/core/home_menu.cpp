@@ -32,6 +32,7 @@
 #include "core/hle/service/am/am_types.h"
 #include "core/hle/service/am/process_creation.h"
 #include "core/hle/service/am/service/application_creator.h"
+#include "core/hle/service/am/service/storage.h"
 #include "core/hle/service/am/window_system.h"
 #include "core/hle/service/ns/application_manager_interface.h"
 #include "core/hle/service/ns/game_list_applications.h"
@@ -186,11 +187,12 @@ TEST_CASE("A HOME Menu launch in a new session reaches the frontend that can boo
     Core::System system;
     constexpr u64 Switch2Title = 0x0400C3F00006E000ULL;
 
-    CHECK_FALSE(system.LaunchInNewSession(Switch2Title));
+    CHECK_FALSE(system.LaunchInNewSession({.program_id = Switch2Title}));
 
     std::optional<u64> launched;
-    system.RegisterLaunchInNewSessionCallback([&](u64 program_id) { launched = program_id; });
-    CHECK(system.LaunchInNewSession(Switch2Title));
+    system.RegisterLaunchInNewSessionCallback(
+        [&](Core::System::NewSessionLaunch launch) { launched = launch.program_id; });
+    CHECK(system.LaunchInNewSession({.program_id = Switch2Title}));
     CHECK(launched == Switch2Title);
 }
 
@@ -266,20 +268,25 @@ TEST_CASE("HOME forwards an application only after Start through its CMIF access
     Kernel::KServerSession session{kernel};
     auto& memory = owner->GetMemory();
     const auto tls = client->GetTlsAddress();
-    const auto request = [&](u32 object, u32 command, std::span<const u32> raw = {}) {
+    const auto request = [&](u32 object, u32 command, std::span<const u32> raw = {},
+                             u32 input_object = 0) {
         std::array<u32_le, IPC::COMMAND_BUFFER_LENGTH> words{};
         IPC::CommandHeader header{};
         header.type.Assign(IPC::CommandType::Request);
-        header.data_size.Assign(static_cast<u32>(12 + raw.size()));
+        header.data_size.Assign(static_cast<u32>(12 + raw.size() + (input_object != 0)));
         std::memcpy(words.data(), &header, sizeof(header));
         IPC::DomainMessageHeader domain{};
         domain.command.Assign(IPC::DomainMessageHeader::CommandType::SendMessage);
+        domain.input_object_count.Assign(input_object != 0);
         domain.size.Assign(static_cast<u32>((4 + raw.size()) * sizeof(u32)));
         domain.object_id = object;
         std::memcpy(words.data() + 4, &domain, sizeof(domain));
         words[8] = 0x49434653;
         words[10] = command;
         std::copy(raw.begin(), raw.end(), words.begin() + 12);
+        if (input_object != 0) {
+            words[12 + raw.size()] = input_object;
+        }
         memory.WriteBlock(tls, words.data(), sizeof(words));
         Service::HLERequestContext ctx{kernel, memory, &session, client};
         ctx.SetSessionRequestManager(manager);
@@ -292,6 +299,8 @@ TEST_CASE("HOME forwards an application only after Start through its CMIF access
     };
 
     std::vector<u64> launches;
+    std::vector<std::vector<u8>> launch_parameters;
+    std::function<void()> reject_launch;
     const std::array id{static_cast<u32>(Forwarder), static_cast<u32>(Forwarder >> 32)};
     const auto create = [&](std::span<const u32> title) {
         const auto reply = request(1, 0, title);
@@ -310,13 +319,27 @@ TEST_CASE("HOME forwards an application only after Start through its CMIF access
     CHECK(request(accessor, 20)[10] == ResultSuccess.raw);
     CHECK(launches.empty());
     CHECK(request(accessor, 10)[10] != ResultSuccess.raw);
-    system.RegisterLaunchInNewSessionCallback([&](u64 program_id) {
-        launches.push_back(program_id);
+    const std::vector<u8> account_parameter{0x1b, 0x27};
+    const auto storage = manager->AppendDomainHandler(
+        std::make_shared<Service::AM::IStorage>(system, std::vector<u8>{account_parameter}));
+    const std::array account_kind{static_cast<u32>(Service::AM::LaunchParameterKind::AccountPreselectedUser)};
+    CHECK(request(accessor, 121, account_kind, static_cast<u32>(storage))[10] ==
+          ResultSuccess.raw);
+    system.RegisterLaunchInNewSessionCallback([&](Core::System::NewSessionLaunch launch) {
+        launches.push_back(launch.program_id);
+        launch_parameters = std::move(launch.preselected_user_parameters);
+        reject_launch = std::move(launch.on_rejected);
     });
     CHECK(request(accessor, 10)[10] == ResultSuccess.raw);
     CHECK(request(accessor, 10)[10] == ResultSuccess.raw);
     CHECK(request(accessor, 20)[10] == ResultSuccess.raw);
     CHECK(launches == std::vector<u64>{Forwarder});
+    CHECK(launch_parameters == std::vector{account_parameter});
+    REQUIRE(reject_launch);
+    reject_launch();
+    CHECK(request(accessor, 1)[12] == 1);
+    CHECK(request(accessor, 30)[10] == ResultUnknown.raw);
+    CHECK(request(accessor, 10)[10] != ResultSuccess.raw);
 
     const u32 cancelled = create(id);
     CHECK(request(cancelled, 25)[10] == ResultSuccess.raw);
