@@ -30,9 +30,11 @@ add_executable(tests
     core/address_space.cpp
     core/nx2_streamplay.cpp
     core/nx2_gpu_only_regions.cpp
+    core/nx2_hdr_notifications.cpp
     core/nx2_video_ready.cpp
     core/general_channel.cpp
     core/home_menu.cpp
+    core/window_system.cpp
     core/native_home_bootstrap.cpp
     core/kernel_finish_termination.cpp
     core/nx2_thread_stats.cpp
@@ -219,6 +221,7 @@ add_executable(tests
     video_core/spirv_min_max_denorms.cpp
     video_core/spirv_nan_safe_min_max.cpp
     video_core/spirv_scalar_constants.cpp
+    video_core/spirv_emit_twice.cpp
     video_core/ssa_fixed_variables.cpp
     video_core/virtual_range_cache.cpp
     video_core/ocarina_upscale.cpp
@@ -349,7 +352,8 @@ target_link_libraries(ncz_tests PRIVATE common OpenSSL::Crypto zstd::zstd
 add_test(NAME ncz_tests COMMAND ncz_tests)
 
 if (TARGET dynarmic::dynarmic)
-    target_sources(tests PRIVATE core/jit_codegen_options.cpp core/jit_ordered_loads.cpp core/window_trace.cpp)
+    target_sources(tests PRIVATE core/jit_codegen_options.cpp core/jit_ordered_loads.cpp
+        core/jit_vector_round_int16.cpp core/window_trace.cpp)
     target_link_libraries(tests PRIVATE dynarmic::dynarmic)
 endif()
 
