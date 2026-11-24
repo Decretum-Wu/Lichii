@@ -430,7 +430,16 @@ template <u32 GOB_EXTENT>
         return std::nullopt;
     }
     const ImageInfo& info = overlap.info;
-    if (!IsBlockLinearSizeCompatible(new_info, info, base->level, 0, strict_size)) {
+    if (!IsBlockLinearSizeCompatible(info, new_info, base->level, 0, strict_size)) {
+        return std::nullopt;
+    }
+    if (base->level != 0 &&
+        (new_info.type != info.type || new_info.size != info.size || new_info.block != info.block ||
+         new_info.num_samples != info.num_samples ||
+         new_info.maxwell_gob_layout != info.maxwell_gob_layout ||
+         new_info.tile_width_spacing != info.tile_width_spacing ||
+         new_info.layer_stride != info.layer_stride ||
+         new_info.maybe_unaligned_layer_stride != info.maybe_unaligned_layer_stride)) {
         return std::nullopt;
     }
     if (new_info.block != MipBlockSize(info, base->level)) {
@@ -1751,6 +1760,15 @@ std::optional<OverlapResult> ResolveOverlap(const ImageInfo& new_info, GPUVAddr 
 }
 
 bool IsLayerStrideCompatible(const ImageInfo& lhs, const ImageInfo& rhs) {
+    if (lhs.type == ImageType::e2D && rhs.type == ImageType::e2D &&
+        lhs.resources.layers == 1 && rhs.resources.layers == 1 &&
+        ((lhs.resources.levels == 1 && rhs.resources.levels > 1) ||
+         (rhs.resources.levels == 1 && lhs.resources.levels > 1)) &&
+        lhs.format == rhs.format && lhs.block == rhs.block && lhs.block.depth == 0 &&
+        lhs.tile_width_spacing == rhs.tile_width_spacing && lhs.num_samples == rhs.num_samples &&
+        lhs.maxwell_gob_layout == rhs.maxwell_gob_layout) {
+        return true;
+    }
     // If either of the layer strides is zero, we can assume they are compatible
     // These images generally come from rendertargets
     if (lhs.layer_stride == 0) {

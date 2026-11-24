@@ -454,7 +454,8 @@ std::filesystem::path StaticPipelineCacheFilename() {
 // (title 1).
 u64 AllocatedUsage(VkDeviceSize driver_usage, const VmaBudget& vma_budget) {
     const VmaStatistics& statistics = vma_budget.statistics;
-    const u64 unused = statistics.blockBytes - statistics.allocationBytes;
+    const u64 unused = statistics.blockBytes -
+                       (std::min)(statistics.blockBytes, statistics.allocationBytes);
     return driver_usage - (std::min)(driver_usage, unused);
 }
 
@@ -636,6 +637,9 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     supports_d24_depth =
         IsFormatSupported(VK_FORMAT_D24_UNORM_S8_UINT,
                           VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, FormatType::Optimal);
+    if (!supports_d24_depth) {
+        LOG_INFO(Render_Vulkan, "No D24S8 depth attachments: Z24 depth is stored as a float");
+    }
 
     supports_conditional_barriers =
         !is_intel_windows && driver_id != VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
@@ -990,7 +994,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     functions.vkAllocateMemory = TimedAllocateMemory;
     functions.vkFreeMemory = TimedFreeMemory;
 
-    VmaAllocatorCreateFlags flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
+    VmaAllocatorCreateFlags flags = 0;
     if (extensions.memory_budget) {
         flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     }

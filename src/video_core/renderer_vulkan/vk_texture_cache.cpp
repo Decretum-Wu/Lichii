@@ -60,6 +60,8 @@
 
 namespace Vulkan {
 
+using namespace Common::Literals;
+
 using Tegra::Engines::Fermi2D;
 using Tegra::Texture::SwizzleSource;
 using Tegra::Texture::TextureMipmapFilter;
@@ -1339,7 +1341,8 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
       staging_buffer_pool{staging_buffer_pool_}, blit_image_helper{blit_image_helper_},
       render_pass_cache{render_pass_cache_}, descriptor_pool{descriptor_pool_},
       compute_pass_descriptor_queue{compute_pass_descriptor_queue_},
-      resolution{Settings::values.resolution_info} {
+      resolution{Settings::values.resolution_info},
+      image_reaper{std::clamp<u64>(device.GetDeviceLocalMemory() / 8, 128_MiB, 1_GiB)} {
     // Before anything below reads astc_recompression (passes, view formats).
     UseBc3ForSwitch2OnSmallCards(device);
     // Huge ASTC arrays always decode on the GPU (IsHugeAstcArray), whatever the decode setting.
@@ -3183,6 +3186,14 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
     }
 }
 
+void TextureCacheRuntime::DrainImageReaper() {
+    image_reaper.Drain();
+}
+
+void TextureCacheRuntime::ReapImage(Image& image) {
+    image.ReleaseDedicatedImage(image_reaper);
+}
+
 void TextureCacheRuntime::TickFrame() {
     // Descriptor allocation/capture can submit between the copy and the draw. Retire at the
     // frame boundary, after all consuming draws, rather than using the copy's submission tick.
@@ -3341,11 +3352,11 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
         static_cast<s32>(HostMipCount(info)) - static_cast<s32>(host_level_offset);
     storage_image_views.resize(host_levels);
     if (WillUseAcceleratedAstcDecode(runtime->device, info)) {
-        const auto& device = runtime->device.GetLogical();
+        const auto& logical = device.GetLogical();
         const VkFormat storage_format = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
         for (s32 level = 0; level < host_levels; ++level) {
             storage_image_views[level] =
-                MakeStorageView(device, level, *original_image, storage_format);
+                MakeStorageView(logical, level, *original_image, storage_format);
         }
     }
 }
@@ -3361,6 +3372,27 @@ Image::~Image() {
             runtime->EraseResolveShadow(*scaled_image);
         }
     }
+}
+
+void Image::ReleaseDedicatedImage(ImageReaper& reaper) {
+    if (!original_image || original_image.IsUnbacked() || sparse_layers.allocator != nullptr ||
+        scaled_image || compute_unswizzle_buffer || scale_framebuffer || normal_framebuffer ||
+        scale_view || normal_view) {
+        return;
+    }
+    const auto block = original_image.GetMemoryBlock();
+    if (block.block != 0 || block.size == 0) {
+        return;
+    }
+    const auto has_view = [](const vk::ImageView& view) { return static_cast<bool>(view); };
+    if (std::ranges::any_of(storage_image_views, has_view) ||
+        std::ranges::any_of(storage_layer_views, has_view)) {
+        return;
+    }
+    if (ENABLE_MSAA_RESOLVE_CONSUME) {
+        runtime->EraseResolveShadow(*original_image);
+    }
+    reaper.Push(std::move(original_image), block.size);
 }
 
 void Image::AllocateComputeUnswizzleBuffer(u32 max_slices) {

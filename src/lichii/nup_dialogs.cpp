@@ -1396,10 +1396,12 @@ ArchiveEditDialog::ArchiveEditDialog(Format format_, const std::filesystem::path
     auto* fields = new QVBoxLayout;
     fields->setSpacing(14);
     name_edit = new QLineEdit(QString::fromStdString(current.title_name), card);
+    name_edit->setObjectName(QStringLiteral("nupEditName"));
     name_edit->setPlaceholderText(tr("Game name"));
     name_edit->setClearButtonEnabled(true);
     fields->addLayout(LabeledField(tr("Name"), name_edit));
     publisher_edit = new QLineEdit(QString::fromStdString(current.publisher), card);
+    publisher_edit->setObjectName(QStringLiteral("nupEditPublisher"));
     publisher_edit->setPlaceholderText(tr("Publisher"));
     publisher_edit->setClearButtonEnabled(true);
     fields->addLayout(LabeledField(tr("Publisher"), publisher_edit));
@@ -1511,7 +1513,7 @@ FileSys::Nup::MetadataEdit ArchiveEditDialog::Edit() const {
         edit.title_name = name;
     }
     if (const auto publisher = publisher_edit->text().trimmed().toStdString();
-        publisher != current.publisher) {
+        publisher_edit->isModified() && publisher != current.publisher) {
         edit.publisher = publisher;
     }
     if (format == Format::Nx) {

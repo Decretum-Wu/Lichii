@@ -595,6 +595,11 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
         [this](const std::function<void(DAddr, size_t)>& callback) {
             gpu.ForEachPendingCpuWrite(callback);
         });
+    buffer_cache.SetReadRunPageFilter([this](DAddr addr, u64 size) {
+        return !texture_cache.page_filter.Any(addr, size) &&
+               !query_cache.page_filter.Any(addr, size) &&
+               !buffer_cache_runtime.Nx2Slots().HasOwed();
+    });
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) {
             auto* const rasterizer = static_cast<RasterizerVulkan*>(argument);
@@ -628,6 +633,7 @@ RasterizerVulkan::~RasterizerVulkan() {
     state_tracker.ClearChannel();
     scheduler.WaitWorker();
     scheduler.Finish();
+    buffer_cache_runtime.ClearMultiRangeBuffers();
 }
 
 GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_indirect) {
@@ -4431,8 +4437,8 @@ bool RasterizerVulkan::BackTakesInvalidation(std::span<const std::pair<DAddr, Si
         }
         return std::nullopt;
     };
-    const auto lend = [&split](Site site) {
-        split.NoteInvalidation(site);
+    const auto lend = [&split](Site lent) {
+        split.NoteInvalidation(lent);
         return false;
     };
     // Shaders are looked up on the back as well: their invalidation stays lent.
@@ -5716,6 +5722,7 @@ void RasterizerVulkan::TickFrame() {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.TickFrame();
     }
+    scheduler.JoinRecorders();
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.TickFrame();
@@ -6059,8 +6066,14 @@ void RasterizerVulkan::FlushWork(bool ends_pass) {
         pass_boundary = ends_pass || scheduler.IsBetweenRenderPasses() ||
                         (texture_cache.RenderTargetsDirty() && scheduler.IsRenderPassActive());
     }
-    switch (SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget,
-                                      pass_boundary)) {
+    auto action = SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget,
+                                            pass_boundary);
+    if (action != SubmissionPolicy::Action::Flush && native && !android &&
+        scheduler.IdleGpuAwaitsWork()) {
+        draw_counter = 0;
+        action = SubmissionPolicy::Action::Flush;
+    }
+    switch (action) {
     case SubmissionPolicy::Action::None:
         break;
     case SubmissionPolicy::Action::Dispatch:
