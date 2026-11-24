@@ -30,6 +30,7 @@
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/am/am_types.h"
+#include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/process_creation.h"
 #include "core/hle/service/am/service/application_creator.h"
 #include "core/hle/service/am/service/storage.h"
@@ -347,6 +348,22 @@ TEST_CASE("HOME forwards an application only after Start through its CMIF access
     CHECK(request(cancelled, 1)[12] == 1);
     CHECK(request(cancelled, 10)[10] != ResultSuccess.raw);
     CHECK(launches == std::vector<u64>{Forwarder});
+}
+
+TEST_CASE("A HOME account parameter identifies a selected user only with a valid payload",
+          "[core][am][home_menu]") {
+    const Common::UUID uid{std::array<u8, 16>{1, 2, 3}};
+    std::vector<u8> parameter(0x88);
+    Put(parameter, 0, u32_le{0xC79497CA});
+    Put(parameter, 4, u32_le{1});
+    Put(parameter, 8, uid);
+    CHECK(Service::AM::ReadPreselectedUser(parameter) == uid);
+    CHECK_FALSE(Service::AM::ReadPreselectedUser(std::span{parameter}.first(0x18)));
+    Put(parameter, 4, u32_le{0});
+    CHECK_FALSE(Service::AM::ReadPreselectedUser(parameter));
+    Put(parameter, 4, u32_le{1});
+    Put(parameter, 8, Common::UUID{});
+    CHECK_FALSE(Service::AM::ReadPreselectedUser(parameter));
 }
 
 TEST_CASE("The HOME Menu lists game list applications next to installed ones",

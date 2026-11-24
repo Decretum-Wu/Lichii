@@ -2509,6 +2509,16 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     speed_limit_before_hotkeys.reset();
     Settings::LogSettings();
 
+    if (!params.preselected_user_parameters.empty()) {
+        const auto uid = Service::AM::ReadPreselectedUser(params.preselected_user_parameters.back());
+        const auto index = uid ? Service::Account::ProfileManager{}.GetUserIndex(*uid)
+                               : std::nullopt;
+        if (index) {
+            Settings::values.current_user = static_cast<s32>(*index);
+        } else {
+            params.preselected_user_parameters.clear();
+        }
+    }
     if (UISettings::values.select_user_on_boot && !user_flag_cmd_line &&
         params.preselected_user_parameters.empty()) {
         const Core::Frontend::ProfileSelectParameters parameters{

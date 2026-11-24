@@ -7,7 +7,10 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <optional>
+#include <span>
 
+#include "common/uuid.h"
 #include "core/hle/service/am/am_types.h"
 
 namespace Core {
@@ -26,6 +29,8 @@ enum class LaunchType {
     FrontendInitiated,
     ApplicationInitiated,
 };
+
+std::optional<Common::UUID> ReadPreselectedUser(std::span<const u8> parameter);
 
 struct FrontendAppletParameters {
     ProgramId program_id{};
