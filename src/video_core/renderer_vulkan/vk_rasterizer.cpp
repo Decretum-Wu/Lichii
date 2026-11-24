@@ -6061,8 +6061,14 @@ void RasterizerVulkan::FlushWork(bool ends_pass) {
         pass_boundary = ends_pass || scheduler.IsBetweenRenderPasses() ||
                         (texture_cache.RenderTargetsDirty() && scheduler.IsRenderPassActive());
     }
-    switch (SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget,
-                                      pass_boundary)) {
+    auto action = SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget,
+                                            pass_boundary);
+    if (action != SubmissionPolicy::Action::Flush && native && !android &&
+        scheduler.IdleGpuAwaitsWork()) {
+        draw_counter = 0;
+        action = SubmissionPolicy::Action::Flush;
+    }
+    switch (action) {
     case SubmissionPolicy::Action::None:
         break;
     case SubmissionPolicy::Action::Dispatch:
