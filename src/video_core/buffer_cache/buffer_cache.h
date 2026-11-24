@@ -4471,9 +4471,6 @@ template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     const StutterTrace::SiteScope site{StutterTrace::Site::BufferDelete};
     ++buffer_deletions;
-    if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
-        runtime.OnBufferDeleted(slot_buffers[buffer_id]);
-    }
     read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(),
                                  slot_buffers[buffer_id].SizeBytes());
     cpu_read_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(), slot_buffers[buffer_id].SizeBytes());
@@ -4543,6 +4540,12 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
         inline_buffer_id = NULL_BUFFER_ID;
     }
 
+    if constexpr (requires { runtime.RetireBufferIfSparseSource(slot_buffers[buffer_id]); }) {
+        if (runtime.RetireBufferIfSparseSource(slot_buffers[buffer_id])) {
+            slot_buffers.erase(buffer_id);
+            return;
+        }
+    }
 #ifdef LICHII_LEGACY
     if (!do_not_mark || !immediately_free)
 #endif
