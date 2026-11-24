@@ -389,7 +389,7 @@ jobs:
           )
           if [ '${{ matrix.pgo }}' = 'true' ]; then
             # Same flags Eden's CI passes for its clang PGO build.
-            profile="-fprofile-use=$PWD/eglantine.profdata -Wno-backend-plugin \
+            profile="-fprofile-use=$PWD/eglantine.profdata -Wbackend-plugin -Wno-error=backend-plugin \
               -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
             flags+=(
               "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
@@ -493,7 +493,28 @@ jobs:
           start=$(date +%s)
           targets="lichii lichii-cmd"
           if [[ "${{ matrix.platform }}" == windows* ]]; then targets="$targets lichii-updater"; fi
-          cmake --build build/release --target $targets --parallel
+          if [[ '${{ matrix.pgo }}' == 'true' ]]; then
+            if cmake --build build/release --target $targets --parallel 2>&1 |
+                tee --output-error=warn "$RUNNER_TEMP/pgo-build.log"; then
+              awk -v platform='${{ matrix.platform }}' '
+                /function control flow change detected \(hash mismatch\).* up to [0-9]+ count discarded/ {
+                  total++
+                  if ($0 ~ / up to [1-9][0-9]* count discarded/) nonzero++
+                }
+                END {
+                  printf "### PGO profile mismatches: %s\n\n", platform
+                  printf "- Discarded profile warnings: %d\n- With nonzero counts: %d\n", total, nonzero
+                }
+              ' "$RUNNER_TEMP/pgo-build.log" >> "$GITHUB_STEP_SUMMARY" ||
+                echo "::warning::Could not write PGO mismatch summary"
+            else
+              build_status=${PIPESTATUS[0]}
+              if (( build_status != 0 )); then exit "$build_status"; fi
+              echo "::warning::Could not capture PGO build output for the job summary"
+            fi
+          else
+            cmake --build build/release --target $targets --parallel
+          fi
           ccache --show-stats
           ccache --evict-older-than "$(( $(date +%s) - start + 60 ))s"
           du -sh .ccache .lto-cache 2> /dev/null || true
