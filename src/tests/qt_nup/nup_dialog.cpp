@@ -128,3 +128,8 @@ void NupDialogTest::publisherEdits() {
 
 QTEST_MAIN(NupDialogTest)
 #include "nup_dialog.moc"
+
+#if !defined(QT_STATICPLUGIN) || defined(__APPLE__)
+#define VMA_IMPLEMENTATION
+#include "video_core/vulkan_common/vma.h"
+#endif
