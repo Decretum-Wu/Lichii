@@ -23,6 +23,7 @@
 #endif
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
+#include "video_core/texture_cache/depth_image_reuse.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -113,8 +114,10 @@ public:
 
     void TickFrame();
 
-    void DrainImageReaper();
-    void ReapImage(Image& image);
+    void DrainRetiredImages();
+    void RetireImage(Image& image);
+    bool DepthImageReuseEnabled() const;
+    vk::Image AcquireDepthImage(const VideoCommon::ImageInfo& info);
 
     void FlushDeferredClear();
 
@@ -404,6 +407,8 @@ public:
     };
     std::vector<ColorFeedbackSnapshot> color_feedback_snapshots;
     ImageReaper image_reaper;
+    std::optional<VideoCommon::DepthImageReusePool<vk::Image>> depth_image_pool;
+    u64 depth_image_pool_frames{};
 };
 
 class Framebuffer {
@@ -541,6 +546,7 @@ public:
     Image& operator=(Image&&) = default;
 
     void ReleaseDedicatedImage(ImageReaper& reaper);
+    bool RecycleDepthImage(VideoCommon::DepthImageReusePool<vk::Image>& pool);
 
     u32 HostMipLevels() const noexcept;
 
@@ -645,6 +651,7 @@ private:
     bool BlitScaleHelper(bool scale_up);
 
     bool NeedsScaleHelper() const;
+    bool CanReleaseOriginalImage() const;
 
     Scheduler* scheduler{};
     TextureCacheRuntime* runtime{};
