@@ -35,6 +35,7 @@ constexpr qint64 MaxPreviewBytes = 2 * 1024 * 1024;
 constexpr qint64 MaxArchiveBytes = 64 * 1024 * 1024;
 constexpr qint64 MaxUnpackedBytes = 256 * 1024 * 1024;
 constexpr qint64 ChunkBytes = 64 * 1024;
+constexpr qint64 MaxGitHubPatchBytes = 2 * 1024 * 1024;
 constexpr int MaxPreviewSide = 2048;
 constexpr int MaxOffset = 1'000'000;
 constexpr int MaxRequests = 8;
@@ -331,6 +332,108 @@ std::optional<External> ParseExternal(const QJsonObject& row, const Mod& mod) {
     return external;
 }
 
+bool IsGitHubPath(const QString& path) {
+    if (path.isEmpty() || path.toUtf8().size() > 512 || path.contains(u'\\') || path.contains(u':') ||
+        path.contains(u'%') || path.contains(u'?') || path.contains(u'#')) {
+        return false;
+    }
+    return std::ranges::all_of(path.split(u'/'), [](const QString& part) {
+        return !part.isEmpty() && part != u"." && part != u".." &&
+               std::ranges::none_of(part, [](QChar ch) { return ch.category() == QChar::Other_Control; });
+    });
+}
+
+bool IsRawGitHubUrl(const QUrl& url) {
+    return IsCredentialFree(url) && url.scheme() == u"https" && url.port() == -1 &&
+           url.host() == u"raw.githubusercontent.com" && !url.hasQuery();
+}
+
+std::optional<GitHubDownload> ParseGitHubDownload(const QJsonObject& row,
+                                                 const GitHubListing& listing, const QString& id) {
+    const auto path = row.value("path"_L1).toString();
+    const auto member = row.value("member"_L1);
+    const auto tag = row.value("tag"_L1);
+    const auto kind = row.value("kind"_L1).toString();
+    const auto leaf = member.isUndefined() ? path : member.toString();
+    const bool archive = !member.isUndefined();
+    if (!IsGitHubPath(path) ||
+        (archive && (!IsGitHubPath(leaf) || !path.endsWith(u".zip", Qt::CaseInsensitive)))) {
+        return std::nullopt;
+    }
+    const auto has_suffix = [&](QStringView suffix) {
+        return leaf.endsWith(suffix, Qt::CaseInsensitive);
+    };
+    GitHubPatchKind patch_kind;
+    if (kind == u"pchtxt" && id.size() == 64 && has_suffix(u".pchtxt")) {
+        patch_kind = GitHubPatchKind::Pchtxt;
+    } else if (kind == u"ips" && id.size() == 64 &&
+               MatchesGitHubIpsFilename(leaf.section(u'/', -1), id)) {
+        patch_kind = GitHubPatchKind::Ips;
+    } else if (kind == u"cheat" && id.size() == 16 && (!archive || !tag.isUndefined()) &&
+               has_suffix(u".txt") &&
+               leaf.section(u'/', -1).chopped(4).compare(id, Qt::CaseInsensitive) == 0) {
+        patch_kind = GitHubPatchKind::Cheat;
+    } else {
+        return std::nullopt;
+    }
+    const QString tag_text = tag.toString();
+    if (!tag.isUndefined() && (patch_kind != GitHubPatchKind::Cheat || !IsCheatTag(tag_text))) {
+        return std::nullopt;
+    }
+    const auto size = row.value("size_bytes"_L1).toInteger(-1);
+    const auto sha256 = ParseHash(row.value("sha256"_L1));
+    if (size <= 0 || size > (archive ? MaxArchiveBytes : MaxGitHubPatchBytes) || sha256.size() != 32) {
+        return std::nullopt;
+    }
+    QUrl url(u"https://raw.githubusercontent.com"_s, QUrl::StrictMode);
+    url.setPath(u"/%1/%2/%3"_s.arg(listing.repository, listing.commit, path), QUrl::DecodedMode);
+    if (!IsRawGitHubUrl(url)) {
+        return std::nullopt;
+    }
+    return GitHubDownload{url, sha256, size, {patch_kind, id, member.toString(), tag_text}};
+}
+
+std::optional<GitHubListing> ParseGitHub(const QJsonObject& row, const QUrl& source_url) {
+    GitHubListing listing{
+        .repository = row.value("repository"_L1).toString(),
+        .commit = row.value("commit"_L1).toString(),
+        .builds = {},
+    };
+    static const QRegularExpression commit{u"\\A[0-9a-f]{40}\\z"_s};
+    const auto expected =
+        QUrl(u"https://github.com/%1/tree/%2"_s.arg(listing.repository, listing.commit),
+             QUrl::StrictMode);
+    const auto builds_value = row.value("builds"_L1);
+    const auto builds = builds_value.toArray();
+    if (!commit.match(listing.commit).hasMatch() || source_url != expected ||
+        row.value("license"_L1).toString() != u"NOASSERTION" || !builds_value.isArray() ||
+        builds.size() > 128) {
+        return std::nullopt;
+    }
+    QSet<QString> seen;
+    for (const auto value : builds) {
+        const auto build = value.toObject();
+        const auto id = build.value("id"_L1).toString();
+        const auto target = build.value("target"_L1).toString();
+        if (!EvidenceBuildId.match(id).hasMatch() || seen.contains(id) ||
+            std::ranges::all_of(id, [](QChar ch) { return ch == u'0'; }) ||
+            (target != u"main" && target != u"unknown")) {
+            return std::nullopt;
+        }
+        seen.insert(id);
+        GitHubBuild result{id, target == u"main", {}};
+        if (const auto download = build.value("download"_L1); !download.isUndefined()) {
+            result.download = ParseGitHubDownload(download.toObject(), listing, id);
+            if (!result.download ||
+                (result.download->patch.kind == GitHubPatchKind::Cheat && !result.main)) {
+                return std::nullopt;
+            }
+        }
+        listing.builds.append(std::move(result));
+    }
+    return listing;
+}
+
 std::optional<Mod> ParseMod(const QJsonObject& row, bool detail = false) {
     Mod mod;
     mod.id = row.value("id"_L1).toString();
@@ -368,6 +471,17 @@ std::optional<Mod> ParseMod(const QJsonObject& row, bool detail = false) {
             mod.source_url != GameBananaUrl("mods"_L1, id)) {
             return std::nullopt;
         }
+    } else if (source == u"github" && !mod.demo && mod.title_ids.size() == 1 &&
+               mod.id.startsWith(u"gh-")) {
+        static const QRegularExpression url{
+            u"\\Ahttps://github\\.com/[A-Za-z0-9-]{1,39}/(?!\\.{1,2}/)[A-Za-z0-9_.-]{1,100}"
+            u"/tree/[0-9a-f]{40}\\z"_s};
+        const auto source_url = row.value("source_url"_L1).toString();
+        if (!url.match(source_url).hasMatch() || !row.value("preview_url"_L1).isNull()) {
+            return std::nullopt;
+        }
+        mod.source_url = QUrl(source_url, QUrl::StrictMode);
+        mod.source = Source::GitHub;
     } else {
         return std::nullopt;
     }
@@ -396,6 +510,13 @@ std::optional<Mod> ParseMod(const QJsonObject& row, bool detail = false) {
     if (mod.source == Source::GameBanana) {
         mod.external = ParseExternal(row.value("external"_L1).toObject(), mod);
         if (!versions.isEmpty() || !mod.external) {
+            return std::nullopt;
+        }
+        return mod;
+    }
+    if (mod.source == Source::GitHub) {
+        mod.github = ParseGitHub(row.value("github"_L1).toObject(), mod.source_url);
+        if (!versions.isEmpty() || !mod.github) {
             return std::nullopt;
         }
         return mod;
@@ -447,18 +568,18 @@ std::optional<Page<T>> ParsePage(const QJsonObject& row, QLatin1StringView key, 
 
 template <typename T, typename Parse>
 auto JsonCallback(Callback<T> done, Parse parse) {
-    return [done = std::move(done), parse = std::move(parse)](auto result) {
+    return [callback = std::move(done), parse_object = std::move(parse)](auto result) {
         if (auto* error = std::get_if<Error>(&result)) {
-            done(std::move(*error));
+            callback(std::move(*error));
         } else if (const auto document = QJsonDocument::fromJson(std::get<QByteArray>(result));
                    document.isObject()) {
-            if (auto parsed = parse(document.object())) {
-                done(std::move(*parsed));
+            if (auto parsed = parse_object(document.object())) {
+                callback(std::move(*parsed));
             } else {
-                done(MakeError(ErrorCode::InvalidResponse));
+                callback(MakeError(ErrorCode::InvalidResponse));
             }
         } else {
-            done(MakeError(ErrorCode::InvalidResponse));
+            callback(MakeError(ErrorCode::InvalidResponse));
         }
     };
 }
@@ -560,9 +681,13 @@ void Request::Get(const QUrl& url) {
     switch (transfer->kind) {
     case Client::TransferKind::Json:
         request.setRawHeader("Accept", "application/json");
+        request.setRawHeader("X-Lichii-Catalog-Features", "github-v1");
         break;
     case Client::TransferKind::Preview:
         request.setRawHeader("Accept", "image/png, image/jpeg, image/webp, image/gif");
+        break;
+    case Client::TransferKind::GitHubPatch:
+        request.setRawHeader("Accept", "application/octet-stream, text/plain, application/zip");
         break;
     default:
         request.setRawHeader("Accept", "application/zip, application/octet-stream, */*");
@@ -611,10 +736,13 @@ bool Request::CheckHeaders() {
     }
     const auto encoding = reply->rawHeader("Content-Encoding").trimmed().toLower();
     const auto mime = reply->header(QNetworkRequest::ContentTypeHeader).toByteArray().toLower();
+    const bool from_gamebanana = transfer->kind == Client::TransferKind::GameBananaArchive;
+    const bool from_github = transfer->kind == Client::TransferKind::GitHubPatch;
     if ((!encoding.isEmpty() && encoding != "identity") ||
-        (transfer->kind == Client::TransferKind::GameBananaArchive &&
-         (!IsGameBananaCdn(reply->url()) || mime.startsWith("text/html") ||
-          mime.startsWith("application/xhtml+xml")))) {
+        (from_gamebanana && !IsGameBananaCdn(reply->url())) ||
+        (from_github && !IsRawGitHubUrl(reply->url())) ||
+        ((from_gamebanana || from_github) &&
+         (mime.startsWith("text/html") || mime.startsWith("application/xhtml+xml")))) {
         Finish(MakeError(ErrorCode::InvalidResponse));
         return false;
     }
@@ -715,11 +843,11 @@ void Request::Finish(Result result) {
     }
     auto done = std::move(transfer->done);
     transfer.reset();
-    QTimer::singleShot(0, this,
-                       [this, done = std::move(done), result = std::move(result)]() mutable {
-                           deleteLater();
-                           done(std::move(result));
-                       });
+    QTimer::singleShot(
+        0, this, [this, callback = std::move(done), completed = std::move(result)]() mutable {
+            deleteLater();
+            callback(std::move(completed));
+        });
 }
 
 void Request::ReleaseReply() {
@@ -752,7 +880,8 @@ Request* Client::Start(const QUrl& url, TransferKind kind,
     transfer.url = url;
     transfer.kind = kind;
     transfer.archive =
-        kind == TransferKind::LocalArchive || kind == TransferKind::GameBananaArchive;
+        kind == TransferKind::LocalArchive || kind == TransferKind::GameBananaArchive ||
+        kind == TransferKind::GitHubPatch;
     transfer.limit =
         transfer.archive ? size : (kind == TransferKind::Json ? MaxJsonBytes : MaxPreviewBytes);
     transfer.expected_hash = std::move(hash);
@@ -853,15 +982,15 @@ Request* Client::GetPreview(const Mod& mod, Callback<QImage> done) {
         url = Endpoint(base_url, PreviewPath(mod.id));
     }
     return Start(
-        url, TransferKind::Preview, [done = std::move(done), gamebanana](Request::Result result) {
+        url, TransferKind::Preview, [callback = std::move(done), gamebanana](Request::Result result) {
             if (auto* error = std::get_if<Error>(&result)) {
-                done(std::move(*error));
+                callback(std::move(*error));
             } else if (QImage image =
                            DecodePreview(std::move(std::get<QByteArray>(result)), gamebanana);
                        !image.isNull()) {
-                done(std::move(image));
+                callback(std::move(image));
             } else {
-                done(MakeError(ErrorCode::InvalidImage));
+                callback(MakeError(ErrorCode::InvalidImage));
             }
         });
 }
@@ -870,7 +999,8 @@ Request* Client::Download(const Version& version, Callback<DownloadedFile> done,
                           Progress progress) {
     const QUrl url =
         IsLocalDownload(version) ? Endpoint(base_url, version.download_url.path()) : QUrl{};
-    return DownloadFile(url, false, version.size_bytes, version.sha256, std::move(done),
+    return DownloadFile(url, TransferKind::LocalArchive, version.size_bytes, version.sha256,
+                        std::move(done),
                         std::move(progress));
 }
 
@@ -880,14 +1010,23 @@ Request* Client::Download(const ExternalFile& file, Callback<DownloadedFile> don
                              file.id > 0 && file.download_url == GameBananaUrl("dl"_L1, file.id)
                          ? file.download_url
                          : QUrl{};
-    return DownloadFile(url, true, file.size_bytes, file.sha256, std::move(done),
+    return DownloadFile(url, TransferKind::GameBananaArchive, file.size_bytes, file.sha256,
+                        std::move(done),
                         std::move(progress));
 }
 
-Request* Client::DownloadFile(const QUrl& url, bool gamebanana, qint64 size, const QByteArray& hash,
+Request* Client::Download(const GitHubDownload& file, Callback<DownloadedFile> done,
+                          Progress progress) {
+    const bool valid = IsRawGitHubUrl(file.url) &&
+                       (!file.patch.member.isEmpty() || file.size_bytes <= MaxGitHubPatchBytes);
+    return DownloadFile(valid ? file.url : QUrl{}, TransferKind::GitHubPatch, file.size_bytes,
+                        file.sha256, std::move(done), std::move(progress));
+}
+
+Request* Client::DownloadFile(const QUrl& url, TransferKind kind, qint64 size, const QByteArray& hash,
                               Callback<DownloadedFile> done, Progress progress) {
     std::optional<Error> error;
-    if ((!gamebanana || !hash.isEmpty()) &&
+    if ((kind != TransferKind::GameBananaArchive || !hash.isEmpty()) &&
         hash.size() != QCryptographicHash::hashLength(QCryptographicHash::Sha256)) {
         error = MakeError(ErrorCode::MissingSha256);
     } else if (size <= 0) {
@@ -896,12 +1035,12 @@ Request* Client::DownloadFile(const QUrl& url, bool gamebanana, qint64 size, con
         error = MakeError(ErrorCode::TooLarge);
     }
     return Start(
-        url, gamebanana ? TransferKind::GameBananaArchive : TransferKind::LocalArchive,
-        [done = std::move(done)](Request::Result result) {
+        url, kind,
+        [callback = std::move(done)](Request::Result result) {
             if (auto* failure = std::get_if<Error>(&result)) {
-                done(std::move(*failure));
+                callback(std::move(*failure));
             } else {
-                done(std::move(std::get<DownloadedFile>(result)));
+                callback(std::move(std::get<DownloadedFile>(result)));
             }
         },
         std::move(error), size, hash, std::move(progress));

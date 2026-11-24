@@ -20,6 +20,7 @@
 #include <limits>
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <memory>
@@ -84,10 +85,12 @@
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/nx2_fence_action.h"
 #include "core/hle/service/nx2_frame_interval.h"
+#include "core/hle/service/nx2_hdr_notifications.h"
 #include "core/hle/service/nx2_image_layout.h"
 #include "core/hle/service/nx2_movie_clock.h"
 #include "core/hle/service/nx2_video_input_queue.h"
 #include "core/hle/service/nx2_present_pacer.h"
+#include "core/hle/service/nx2_present_queue.h"
 #include "core/hle/service/nx2_video_ready.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/server_manager.h"
@@ -2044,6 +2047,8 @@ public:
     }
 
     ~INx2Vi2Session() override {
+        // Wake waits on outstanding releases before their syncpoint returns to nvdrv.
+        m_releases.reset();
         // The display stops starting frames for this session's events; other sessions keep
         // theirs.
         VideoCore::HostVsync::RemoveListener(m_vsync.get());
@@ -2063,7 +2068,7 @@ public:
         for (auto* event : m_events) {
             m_context.CloseEvent(event);
         }
-        // The interval belonged to this session's presents (PaceToVblank).
+        // The interval belonged to this session's presents (PresentInterval).
         Tegra::g_nx2_guest_frame_interval_ns.store(0, std::memory_order_relaxed);
     }
 
@@ -2073,8 +2078,8 @@ private:
     }
 
     // 229(u64 client token, u32 slot, u32 image, ...fences): result, u64 mask of buffer slots the
-    // client may acquire next, four zero words. Nothing is shown yet; every slot is handed back
-    // at once (changes.patch's default mask is 0x7fff).
+    // client may acquire next (changes.patch's default mask is 0x7fff), then the presented
+    // buffer's release fence (~syncpoint, 0, value, 0), or four zero words when it is free now.
     void PresentClientBuffer(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         ++m_presents;
@@ -2153,9 +2158,32 @@ private:
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
-        Composite(w[5], ~w[22], w[24], w[7], w[8]);
+        const auto pacing = PresentInterval(w[12], ctx.GetThread().GetOwnerProcess());
+        // With this frame's fence reached, return before its deadline and release the buffer
+        // through a fence instead. Not on a wait that can return with the frame unfinished, and
+        // not with timestamp recorders, which record after the pacing as before. Single-core
+        // keeps the blocking path and its tick-based speed limiter.
+        const bool queueable =
+            system.IsMulticore() && frames_ahead == 0 && (w[18] & 0xf) == 0 &&
+            (~w[22] >= 192 ||
+             system.Host1x().GetSyncpointManager().IsReadyGuest(~w[22], w[24]));
+        std::optional<Nx2PresentReleases::Release> release;
+        std::chrono::steady_clock::time_point hold_until{};
+        if (queueable) {
+            release = QueueRelease(pacing, hold_until);
+        }
+        if (!Composite(w[5], ~w[22], w[24], w[7], w[8],
+                       release ? release->on_composited : std::function<void()>{}) &&
+            release) {
+            // Nothing will read the image.
+            release->on_composited();
+        }
         const auto composited = std::chrono::steady_clock::now();
-        PaceToVblank(w[12], ctx.GetThread().GetOwnerProcess());
+        if (!release) {
+            PaceToVblank(pacing);
+        } else if (composited < hold_until) {
+            SleepFor(std::chrono::duration_cast<std::chrono::nanoseconds>(hold_until - composited));
+        }
         const auto paced = std::chrono::steady_clock::now();
         if (const u32 recorder = w[18] & 0xf; recorder != 0) {
             m_recorded_ticks[recorder - 1] = system.CoreTiming().GetClockTicks();
@@ -2237,14 +2265,77 @@ private:
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
-                             static_cast<u32>(AvailableSlots >> 32), 0, 0, 0, 0});
+                             static_cast<u32>(AvailableSlots >> 32),
+                             release ? ~release->id : 0U, 0, release ? release->value : 0U, 0});
     }
 
+    struct PresentPacing {
+        std::chrono::nanoseconds interval;
+        bool capped; ///< #2178's cap for an otherwise unpaced game
+    };
+
+    /**
+     * Queues this present's release fence in place of holding it until its deadline: the buffer is
+     * released once the deadline has passed and the renderer composited it. A present still holds
+     * until the previous release's deadline (`hold_until`), so a game cycling any number of buffer
+     * slots stays at most one frame ahead of the pacing. Returns nothing to keep the blocking
+     * path: under #2178's cap, which holds every present, or when no release can be queued.
+     */
+    std::optional<Nx2PresentReleases::Release> QueueRelease(
+        const std::optional<PresentPacing>& pacing,
+        std::chrono::steady_clock::time_point& hold_until) {
+        if (pacing && pacing->capped) {
+            return std::nullopt;
+        }
+        if (!m_releases) {
+            m_releases.emplace(
+                system.CoreTiming(), system.Host1x().GetSyncpointManager(),
+                [this]() -> std::optional<u32> {
+                    const auto service =
+                        system.ServiceManager().GetService<Nvidia::NVDRV>("nvdrv", false);
+                    if (!service) {
+                        return std::nullopt;
+                    }
+                    m_release_module = service->GetModule();
+                    return m_release_module->GetContainer().GetSyncpointManager()
+                        .TryAllocateSyncpoint(true);
+                },
+                [this](u32 id) {
+                    m_release_module->GetContainer().GetSyncpointManager().FreeSyncpoint(id);
+                });
+        }
+        hold_until = std::chrono::steady_clock::now() + m_releases->RunAhead();
+        // Deadlines keep the pacer's interval and catch-up; CoreTiming has another epoch, so the
+        // queue gets the time left.
+        Nx2PresentPacer pacer{m_present_pacer};
+        std::chrono::nanoseconds wait{};
+        bool reset = false;
+        if (pacing) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto step = pacer.Advance(now, pacing->interval);
+            wait = std::chrono::duration_cast<std::chrono::nanoseconds>(step.deadline - now);
+            reset = step.reset;
+        }
+        auto release = m_releases->Queue(wait);
+        if (release) {
+            m_present_pacer = pacer;
+            if (Common::DkbFrameTrace::Enabled()) {
+                m_frame_trace.deadline_reset = reset;
+            }
+        }
+        return release;
+    }
+
+    // Release fences of queued presents; m_release_module holds the nvdrv allocator of their
+    // syncpoint.
+    std::shared_ptr<Nvidia::Module> m_release_module;
+    std::optional<Nx2PresentReleases> m_releases;
+
     // The console's compositor frees a buffer only once its frame's GPU fence has passed, which
-    // is what keeps a game from running ahead of the GPU. This reply always reports every buffer
-    // free, so pace the game here instead: wait (bounded, in case the GPU waits on the CPU) until
-    // Eden's GPU thread has processed the frame. Otherwise the game laps the GPU thread and
-    // rewrites command memory it hasn't read yet.
+    // is what keeps a game from running ahead of the GPU. This reply reports every buffer free or
+    // releases it once composited, so pace the game here instead: wait (bounded, in case the GPU
+    // waits on the CPU) until Eden's GPU thread has processed the frame. Otherwise the game laps
+    // the GPU thread and rewrites command memory it hasn't read yet.
     u32 m_wait_timeouts{};
     struct PresentStats {
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
@@ -2504,8 +2595,9 @@ private:
     }
 
     /**
-     * Holds this present until the next vblank its word asks for, or for longer when an FPS limit
-     * (the setting, or EDEN_NX2_FPS_LIMIT) is below that rate.
+     * Returns the interval to hold presents to: the vblank the present word asks for, or longer
+     * when an FPS limit (the setting, or EDEN_NX2_FPS_LIMIT) is below that rate. Nothing when
+     * presents are not paced.
      *
      * Fire Emblem: Fortune's Weave sends 0x1003c during its boot logos and 0x2003c (two vblanks
      * per frame, 30 fps) after; paced at every vblank it ran at double speed.
@@ -2514,7 +2606,7 @@ private:
      * @param timing  Present word 12: (swap interval << 16) | refresh rate.
      * @param process Owning process, for the Mario Kart World dynamic FPS case; may be null.
      */
-    void PaceToVblank(u32 timing, const Kernel::KProcess* process) {
+    std::optional<PresentPacing> PresentInterval(u32 timing, const Kernel::KProcess* process) {
         const bool trace = Common::DkbFrameTrace::Enabled();
         if (trace) {
             if (m_frame_trace.previous_word && *m_frame_trace.previous_word != timing) {
@@ -2580,7 +2672,7 @@ private:
         }
         if (!speed_limited && fps_limit == 0 && unpaced_cap == 0) {
             Tegra::g_nx2_guest_frame_interval_ns.store(0, std::memory_order_relaxed);
-            return;
+            return std::nullopt;
         }
         if (timing != std::exchange(m_swap_word, timing)) {
             LOG_INFO(Service,
@@ -2601,27 +2693,38 @@ private:
         if (trace) {
             m_frame_trace.target_ms = std::chrono::duration<double, std::milli>(interval).count();
         }
-        const auto now = std::chrono::steady_clock::now();
-        const auto pacing = m_present_pacer.Advance(now, interval);
-        if (trace) {
-            m_frame_trace.deadline_reset = pacing.reset;
+        return PresentPacing{interval, unpaced_cap != 0};
+    }
+
+    /// Holds this present until its deadline from the pacer.
+    void PaceToVblank(const std::optional<PresentPacing>& pacing) {
+        if (!pacing) {
+            return;
         }
-        if (now < pacing.deadline) {
-            // Sleep this service thread in the guest kernel. It runs on guest core 3, and a host
-            // sleep held that core for the whole wait: game threads scheduled there ran only
-            // between presents (Fortune's Weave's loader read one RomFS block per frame).
-            const auto wait =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(pacing.deadline - now);
-            const auto sleep_start = trace ? std::chrono::steady_clock::now()
-                                           : std::chrono::steady_clock::time_point{};
-            static_cast<void>(Kernel::GetCurrentThread(kernel).Sleep(
-                kernel, kernel.HardwareTimer().GetTick() + wait.count() + 2));
-            if (trace) {
-                m_frame_trace.sleep_requested_ms =
-                    std::chrono::duration<double, std::milli>(wait).count();
-                m_frame_trace.sleep_actual_ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - sleep_start).count();
-            }
+        const auto now = std::chrono::steady_clock::now();
+        const auto step = m_present_pacer.Advance(now, pacing->interval);
+        if (Common::DkbFrameTrace::Enabled()) {
+            m_frame_trace.deadline_reset = step.reset;
+        }
+        if (now < step.deadline) {
+            SleepFor(std::chrono::duration_cast<std::chrono::nanoseconds>(step.deadline - now));
+        }
+    }
+
+    // Sleeps this service thread in the guest kernel. It runs on guest core 3, and a host sleep
+    // held that core for the whole wait: game threads scheduled there ran only between presents
+    // (Fortune's Weave's loader read one RomFS block per frame).
+    void SleepFor(std::chrono::nanoseconds wait) {
+        const bool trace = Common::DkbFrameTrace::Enabled();
+        const auto sleep_start = trace ? std::chrono::steady_clock::now()
+                                       : std::chrono::steady_clock::time_point{};
+        static_cast<void>(Kernel::GetCurrentThread(kernel).Sleep(
+            kernel, kernel.HardwareTimer().GetTick() + wait.count() + 2));
+        if (trace) {
+            m_frame_trace.sleep_requested_ms =
+                std::chrono::duration<double, std::milli>(wait).count();
+            m_frame_trace.sleep_actual_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - sleep_start).count();
         }
     }
 
@@ -2733,7 +2836,10 @@ private:
     // surface in the console's native GOB layout at GPU address == CPU address.
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
     // into from the image's top-left corner (0 when it gives none). flags: word 8.
-    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size, u32 flags) {
+    // on_composited runs once the renderer has composited the image. Returns whether a composite
+    // was requested.
+    bool Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size, u32 flags,
+                   std::function<void()> on_composited) {
         NotifyHdrChange();
         u64 address{};
         u32 parent{};
@@ -2746,11 +2852,11 @@ private:
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
             if (image == m_objects->images.end()) {
-                return;
+                return false;
             }
             const auto memory = m_objects->memories.find(image->second.memory);
             if (memory == m_objects->memories.end() || memory->second.address == 0) {
-                return;
+                return false;
             }
             address = memory->second.address + image->second.offset;
             parent = memory->second.parent;
@@ -2787,7 +2893,7 @@ private:
         if (!device) {
             LOG_WARNING(Service, "nx2:vi2 present: image {} at {:#x} has no device mapping",
                         image_id, address);
-            return;
+            return false;
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
@@ -2854,7 +2960,7 @@ private:
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
             .native_tiling = true,
-            .color_space = Nx2NativeImageColorSpace(image_format, m_told_hdr.load()),
+            .color_space = Nx2NativeImageColorSpace(image_format, m_hdr_notifications.ToldHdr()),
             .linear_unit_luminance = image_format == Nx2NativeImageFormat::Rgba16Float
                                          ? static_cast<u16>((image_word7 >> 8) & 0xFFFF)
                                          : u16{},
@@ -2863,12 +2969,14 @@ private:
         if (fence_id < 192) {
             fences.push_back({static_cast<s32>(fence_id), fence_value});
         }
-        system.GPU().RequestComposite(std::move(layers), std::move(fences));
+        system.GPU().RequestComposite(std::move(layers), std::move(fences),
+                                      std::move(on_composited));
         CaptureFrame();
         DumpRanges();
         system.SpeedLimiter().DoSpeedLimiting(system.CoreTiming().GetGlobalTimeUs());
         system.GetPerfStats().EndSystemFrame();
         system.GetPerfStats().BeginSystemFrame();
+        return true;
     }
 
     // EDEN_NX2_FRAME_CAPTURE=<dir>: every 120th present, save what the renderer shows as
@@ -2985,8 +3093,7 @@ private:
                output.reference_white;
     }
 
-    // What the game is told; m_logged_hdr_output keeps the last answer.
-    Common::HdrOutput HostHdrOutput() {
+    Common::HdrOutput QueryHostHdrOutput() {
         std::optional<Common::DisplayHdrInfo> display;
         const auto output = ResolveHostHdrOutput(display);
         const u64 logged = HdrOutputKey(output);
@@ -3005,25 +3112,25 @@ private:
         return output;
     }
 
-    // Fires the slots bound to the HDR status and paper white events once the monitor's state
-    // changed what the game was last told (Windows HDR toggled, the window moved to another
-    // monitor, a new HDR calibration or SDR content brightness), so it queries again and switches
-    // between SDR and HDR images. Runs at every present; costs an atomic load while nothing
-    // changes.
+    // A monitor or swapchain change wakes the slots for the replies that are now stale.
     void NotifyHdrChange() {
         const u64 generation = Common::DisplayHdrMonitor::Instance().Generation();
         if (generation == m_hdr_generation) {
             return;
         }
         m_hdr_generation = generation;
+        if ((m_hdr_status_slots | m_hdr_paper_white_slots) == 0) {
+            return;
+        }
         std::optional<Common::DisplayHdrInfo> display;
-        if (m_hdr_change_slots == 0 || m_logged_hdr_output == ~u64{} ||
-            HdrOutputKey(ResolveHostHdrOutput(display)) == m_logged_hdr_output) {
+        const u32 slots = m_hdr_notifications.ChangedSlots(
+            ResolveHostHdrOutput(display), m_hdr_status_slots, m_hdr_paper_white_slots);
+        if (slots == 0) {
             return;
         }
         LOG_INFO(Service, "nx2:vi2 display HDR state changed, signalling the game");
         for (u32 index = 0; index < m_native_events.size(); ++index) {
-            if ((m_hdr_change_slots >> index) & 1 && m_native_events[index]) {
+            if ((slots >> index) & 1 && m_native_events[index]) {
                 m_native_events[index]->Signal(system.Kernel());
             }
         }
@@ -3031,15 +3138,14 @@ private:
 
     // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 reference white in nits.
     void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
-        TipcReplyWords(ctx, {HostHdrOutput().reference_white});
+        TipcReplyWords(ctx, {m_hdr_notifications.RecordPaperWhite(QueryHostHdrOutput())});
     }
 
     // Wire reply: u64 output format (1 = SDR, 2 = HDR), u16 peak luminance in nits.
     // MKW's SDK converts these to public formats 0/1 before DefaultDisplay tests for HDR.
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
-        const auto output = HostHdrOutput();
-        m_told_hdr = output.enabled;
-        TipcReplyWords(ctx, {output.enabled ? 2U : 1U, 0, output.peak_luminance});
+        const auto status = m_hdr_notifications.RecordStatus(QueryHostHdrOutput());
+        TipcReplyWords(ctx, {status.enabled ? 2U : 1U, 0, status.peak_luminance});
     }
 
     // 212(u64 layer): u64 bits of the layer's buffer slots that are ready. The client polls it once
@@ -3165,7 +3271,8 @@ private:
         LOG_INFO(Service, "nx2:vi2 261 native event {} -> vsync", index);
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, true);
-            m_hdr_change_slots &= ~(1U << index);
+            m_hdr_status_slots &= ~(1U << index);
+            m_hdr_paper_white_slots &= ~(1U << index);
         }
         TipcReplyWords(ctx, {});
     }
@@ -3182,11 +3289,9 @@ private:
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, false);
             const u32 command = ctx.GetCommand();
-            if (command == 265 || command == 267) {
-                m_hdr_change_slots |= 1U << index;
-            } else {
-                m_hdr_change_slots &= ~(1U << index);
-            }
+            const u32 bit = 1U << index;
+            m_hdr_status_slots = (m_hdr_status_slots & ~bit) | (command == 265 ? bit : 0);
+            m_hdr_paper_white_slots = (m_hdr_paper_white_slots & ~bit) | (command == 267 ? bit : 0);
             m_native_events[index]->Signal(system.Kernel());
         }
         TipcReplyWords(ctx, {});
@@ -3198,7 +3303,8 @@ private:
         LOG_INFO(Service, "nx2:vi2 {} native event {} unbound", ctx.GetCommand(), index);
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, false);
-            m_hdr_change_slots &= ~(1U << index);
+            m_hdr_status_slots &= ~(1U << index);
+            m_hdr_paper_white_slots &= ~(1U << index);
         }
         TipcReplyWords(ctx, {});
     }
@@ -3282,7 +3388,7 @@ private:
                     return std::nullopt;
                 });
             system.CoreTiming().ScheduleLoopingEvent(VblankInterval, VblankInterval, m_vsync_timer);
-            // The host's display can start this session's frames (PaceToVblank says when):
+            // The host's display can start this session's frames (PresentInterval says when):
             // each frame on screen then signals its vsync events, from the presenter's thread
             // as host1x syncpoint actions signal theirs from the GPU thread.
             VideoCore::HostVsync::AddListener(
@@ -3315,9 +3421,10 @@ private:
     std::array<std::optional<u64>, 15> m_recorded_ticks{}; ///< 53's recorders, by present word 18
     u64 m_shown_layout{}; // image and crop size last logged
     u64 m_logged_hdr_output{~u64{}}; // HDR status last logged
-    u64 m_hdr_generation{};           // DisplayHdrMonitor generation NotifyHdrChange last saw
-    u32 m_hdr_change_slots{};         // native event slots bound to HDR status / paper white
-    std::atomic<bool> m_told_hdr{};   // the last HDR status answer was HDR
+    u64 m_hdr_generation{}; // DisplayHdrMonitor generation NotifyHdrChange last saw
+    u32 m_hdr_status_slots{};
+    u32 m_hdr_paper_white_slots{};
+    Nx2HdrNotifications m_hdr_notifications;
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
 };
 

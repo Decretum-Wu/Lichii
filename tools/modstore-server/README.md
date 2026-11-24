@@ -95,11 +95,15 @@ printf '%s\n' '{"status":"approved"}' | sudo docker compose exec -T modstore \
 ```
 
 Set the same object to `rejected` to hide it. Rejection does not delete the
-bytes. Stop the service before running `seed-demo` on an existing catalog.
-Running it again doesn't overwrite records or undo moderation.
+bytes. Stop the service before running `seed-demo` on an existing catalog,
+then start it again to rebuild the public catalog snapshot. `serve` and
+`seed-demo` refuse to share a data directory while either is running.
+Running the seed again doesn't overwrite records or undo moderation.
 
 GameBanana entries are links to third-party listings, not locally hosted mods.
 See [the import guide](GAMEBANANA.md) to refresh them and remove the demo listings.
+See [the GitHub patch catalog guide](GITHUB.md) for verified direct downloads
+of pinned patches and cheats.
 
 ## Back up or restore
 

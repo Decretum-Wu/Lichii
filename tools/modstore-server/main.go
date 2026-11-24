@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -38,6 +40,9 @@ func tokenFromEnv() (string, error) {
 }
 
 func serve(s *store, publicAddr, token string) error {
+	if _, err := s.catalog(context.Background()); err != nil {
+		return fmt.Errorf("load catalog: %w", err)
+	}
 	public, err := net.Listen("tcp4", publicAddr)
 	if err != nil {
 		return err
@@ -48,19 +53,8 @@ func serve(s *store, publicAddr, token string) error {
 		return err
 	}
 	defer admin.Close()
-	sem := make(chan struct{}, 32)
 	publicHandler := s.publicHandler()
-	limited := responseHeaders(endpoint(func(w http.ResponseWriter, r *http.Request) error {
-		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
-		default:
-			return problem{503, "server_busy", "too many concurrent requests"}
-		}
-		publicHandler.ServeHTTP(w, r)
-		return nil
-	}))
-	publicServer := http.Server{Handler: limited, ReadHeaderTimeout: 5 * time.Second,
+	publicServer := http.Server{Handler: publicHandler, ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 15 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	adminServer := http.Server{Handler: s.adminHandler(token), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 90 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 16 << 10}
@@ -129,6 +123,31 @@ func adminRequest(args []string) error {
 	return nil
 }
 
+func lockCatalog(dir string) (func(), error) {
+	path, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return nil, err
+	}
+	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(path, "service-lock.sqlite3")),
+		RawQuery: "_txlock=immediate"}
+	db, err := sql.Open("sqlite", uri.String())
+	if err != nil {
+		return nil, err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("lock catalog directory (stop the running service before seeding): %w", err)
+	}
+	return func() {
+		_ = tx.Rollback()
+		_ = db.Close()
+	}, nil
+}
+
 func run(args []string) error {
 	command := "serve"
 	if len(args) != 0 {
@@ -170,6 +189,11 @@ func run(args []string) error {
 		if dir == "" {
 			dir = "data"
 		}
+		release, err := lockCatalog(dir)
+		if err != nil {
+			return err
+		}
+		defer release()
 		s, err := openStore(dir)
 		if err != nil {
 			return err

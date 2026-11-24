@@ -303,7 +303,7 @@ private:
     /// What a draw leaves for Ocarina of Time's upscalers once recorded.
     void NoteOcarinaDraw(const GraphicsPipeline& pipeline);
 
-    void FlushWork();
+    void FlushWork(bool ends_pass = false);
 
     void TraceRenderState(bool is_indexed, const char* outcome, const Framebuffer* framebuffer);
 
@@ -401,7 +401,8 @@ private:
     DescriptorPool descriptor_pool;
     GuestDescriptorQueue guest_descriptor_queue;
     /// EDEN_NX2_RENDER_UNLEND: the back's buffer entries of the draw it unlends.
-    GuestDescriptorQueue unlend_capture;
+    std::optional<GuestDescriptorQueue> unlend_capture;
+    GuestDescriptorQueue& UnlendCapture();
     ComputePassDescriptorQueue compute_pass_descriptor_queue;
     DescriptorBufferRing descriptor_buffer_ring;
     BlitImageHelper blit_image;
@@ -477,15 +478,25 @@ private:
         std::array<f32, 4> origin{};
         std::array<f32, 280 * 12> bones{};
     } oot_actor, oot_previous_actor;
+    struct OcarinaCameraFacts {
+        VideoCommon::OcarinaCameraBuffer values;
+        bool gpu_written;
+    };
     /// What Ocarina's temporal trackers read from guest memory and the buffer cache at a draw,
     /// taken at the draw's place in the stream (by the back for an unlent draw). GPURender applies
     /// it with its render targets to the Ocarina state, which only it changes.
     struct OcarinaDrawFacts {
         Tegra::MemoryManager* channel{};
-        std::optional<VideoCommon::OcarinaCameraBuffer> camera;
-        bool camera_gpu_written{};
+        std::optional<OcarinaCameraFacts> camera;
         std::optional<OcarinaActorPose> actor;
     };
+    void TrackOcarinaDraw(u64 shader_hash, bool is_indexed, bool is_indirect);
+    [[nodiscard]] const ImageView* OcarinaCameraTarget() const;
+    [[nodiscard]] std::optional<OcarinaCameraFacts> CaptureOcarinaCamera();
+    void ApplyOcarinaCamera(const ImageView& color, const OcarinaCameraFacts& camera,
+                            const Tegra::MemoryManager* channel);
+    [[nodiscard]] std::optional<OcarinaActorPose> CaptureOcarinaActor();
+    void ApplyOcarinaActor(const OcarinaActorPose& pose);
     [[nodiscard]] std::unique_ptr<OcarinaDrawFacts> CaptureOcarinaFacts(u64 shader_hash,
                                                                         bool is_indexed,
                                                                         bool is_indirect);
@@ -620,7 +631,7 @@ private:
 
     /// The buffer half of an inline upload: uploads into GPU-written buffer data. Whether it
     /// uploaded.
-    bool InlineBufferHalf(DAddr cpu_addr, size_t copy_size, std::span<const u8> memory);
+    bool InlineBufferHalf(DAddr cpu_addr, size_t copy_size, std::span<const u8> memory, bool defer);
     void TraceInlineToMemory(GPUVAddr address, size_t copy_size, std::span<const u8> memory,
                              std::optional<DAddr> cpu_addr);
     /// The back (EDEN_NX2_RENDER_POST_INLINE): writes guest memory and runs the buffer half

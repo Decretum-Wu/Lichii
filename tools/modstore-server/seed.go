@@ -82,7 +82,11 @@ func (s *store) seedDemo(ctx context.Context) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateCatalog()
+	return nil
 }
 
 func writeDemoZIP(w io.Writer, id string) (int64, error) {

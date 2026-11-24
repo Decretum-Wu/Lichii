@@ -407,7 +407,7 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
         uint8_pass = std::make_unique<Uint8Pass>(device, scheduler, descriptor_pool, staging_pool,
                                                  compute_pass_descriptor_queue);
     }
-    if (BufferArena::Enabled()) {
+    if (scheduler.BufferArenaEnabled()) {
         upload_pool = std::make_unique<StagingBufferPool>(device, memory_allocator, scheduler,
                                                           arena.Clock(), 2);
     }
@@ -524,7 +524,17 @@ u64 BufferCacheRuntime::GetMaxStorageBufferRange() const {
 }
 
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noexcept {
-    multi_range_buffers.TickFrame(scheduler);
+    const u64 tick = scheduler.CurrentTick();
+    const u64 completed_tick = master_semaphore.KnownGpuTick();
+    multi_range_buffers.TickFrame(scheduler, tick, completed_tick);
+    for (auto it = retired_sparse_sources.rbegin();
+         it != retired_sparse_sources.rend() && !it->tick; ++it) {
+        it->tick = tick;
+    }
+    while (!retired_sparse_sources.empty() &&
+           *retired_sparse_sources.front().tick <= completed_tick) {
+        retired_sparse_sources.pop_front();
+    }
     arena.TickFrame();
     if (upload_pool) {
         upload_pool->TickFrame();
@@ -534,6 +544,14 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noe
             it->ResetUsageTracking();
         }
     }
+}
+
+bool BufferCacheRuntime::RetireBufferIfSparseSource(Buffer& buffer) {
+    if (!multi_range_buffers.DropOwner(scheduler, buffer.Handle())) {
+        return false;
+    }
+    retired_sparse_sources.push_back({.buffer = std::move(buffer)});
+    return true;
 }
 
 bool BufferCacheRuntime::IsFree(u64 tick) {
@@ -828,13 +846,8 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
     if (binding_count == 0) {
         return;
     }
-    boost::container::static_vector<BufferArena::VertexBinding, VideoCommon::NUM_VERTEX_BUFFERS>
-        vertex_bindings;
-    for (u32 i = 0; i < binding_count; ++i) {
-        vertex_bindings.push_back({buffer_handles[i], bindings.offsets[i], bindings.sizes[i],
-                                   bindings.strides[i]});
-    }
-    arena.BindVertices(bindings.min_index, vertex_bindings,
+    arena.BindVertices(bindings.min_index, std::span{buffer_handles}.first(binding_count),
+                       bindings.offsets, bindings.sizes, bindings.strides,
                        device.IsExtExtendedDynamicStateSupported());
 }
 
@@ -852,8 +865,9 @@ void BufferCacheRuntime::BindTransformFeedbackBuffer(u32 index, VkBuffer buffer,
         offset = 0;
         size = 0;
     }
-    const std::array<BufferArena::VertexBinding, 1> binding{{{buffer, offset, size, 0}}};
-    arena.BindTransformFeedback(index, binding);
+    const u64 vk_offset = offset;
+    const u64 vk_size = size;
+    arena.BindTransformFeedback(index, {&buffer, 1}, {&vk_offset, 1}, {&vk_size, 1});
 }
 
 void BufferCacheRuntime::BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings) {
@@ -872,12 +886,7 @@ void BufferCacheRuntime::BindTransformFeedbackBuffers(VideoCommon::HostBindings<
         }
         buffer_handles[i] = handle;
     }
-    boost::container::static_vector<BufferArena::VertexBinding, VideoCommon::NUM_VERTEX_BUFFERS>
-        feedback_bindings;
-    for (size_t i = 0; i < buffer_handles.size(); ++i) {
-        feedback_bindings.push_back({buffer_handles[i], bindings.offsets[i], bindings.sizes[i], 0});
-    }
-    arena.BindTransformFeedback(0, feedback_bindings);
+    arena.BindTransformFeedback(0, buffer_handles, bindings.offsets, bindings.sizes);
 }
 
 void BufferCacheRuntime::ReserveNullBuffer() {

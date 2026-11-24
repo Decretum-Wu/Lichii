@@ -40,14 +40,24 @@ func validStatus(s string) bool {
 func (s *store) adminHandler(token string) http.Handler {
 	mux := http.NewServeMux()
 	s.registerReads(mux, adminPrefix, true)
-	mux.Handle("PUT "+adminPrefix+"/games/{title}", endpoint(s.putGame))
-	mux.Handle("PUT "+adminPrefix+"/mods/{id}", endpoint(s.putMod))
-	mux.Handle("PUT "+adminPrefix+"/mods/{id}/preview", endpoint(s.putPreview))
-	mux.Handle("PUT "+adminPrefix+"/mods/{id}/status", endpoint(s.putStatus))
-	mux.Handle("PUT "+adminPrefix+"/mods/{id}/versions/{version}", endpoint(s.putVersion))
-	mux.Handle("PUT "+adminPrefix+"/mods/{id}/versions/{version}/status", endpoint(s.putStatus))
-	mux.Handle("PUT "+adminPrefix+"/gamebanana", endpoint(s.putGameBanana))
-	mux.Handle("PUT "+adminPrefix+"/gamebanana/drop-demos", endpoint(s.dropDemos))
+	write := func(route string, handler endpoint) {
+		mux.Handle("PUT "+adminPrefix+route, endpoint(func(w http.ResponseWriter, r *http.Request) error {
+			if err := handler(w, r); err != nil {
+				return err
+			}
+			s.invalidateCatalog()
+			return nil
+		}))
+	}
+	write("/games/{title}", s.putGame)
+	write("/mods/{id}", s.putMod)
+	write("/mods/{id}/preview", s.putPreview)
+	write("/mods/{id}/status", s.putStatus)
+	write("/mods/{id}/versions/{version}", s.putVersion)
+	write("/mods/{id}/versions/{version}/status", s.putStatus)
+	write("/gamebanana", s.putGameBanana)
+	write("/gamebanana/drop-demos", s.dropDemos)
+	write("/github", s.putGitHub)
 	want := sha256.Sum256([]byte("Bearer " + token))
 	writer := make(chan struct{}, 1)
 	return responseHeaders(endpoint(func(w http.ResponseWriter, r *http.Request) error {
@@ -157,6 +167,9 @@ func (s *store) putMod(w http.ResponseWriter, r *http.Request) error {
 		!validText(input.Description, 4000, true) || !validText(input.Author, 100, false) {
 		return invalid("invalid mod ID, metadata or type")
 	}
+	if err := s.rejectGitHubWrite(r.Context(), id); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(r.Context(), `INSERT INTO mods
 	    (id,name,summary,description,author,type,demo,status,updated_at) VALUES (?,?,?,?,?,?,0,'pending',?)
 	    ON CONFLICT(id) DO UPDATE SET name=excluded.name, summary=excluded.summary, description=excluded.description,
@@ -174,6 +187,9 @@ func (s *store) putPreview(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if gameBananaIDPattern.MatchString(id) {
 		return invalid("GameBanana previews come from the import manifest")
+	}
+	if err := s.rejectGitHubWrite(r.Context(), id); err != nil {
+		return err
 	}
 	var modID string
 	if err := s.db.QueryRowContext(r.Context(), "SELECT id FROM mods WHERE id=?", id).Scan(&modID); err != nil {
@@ -242,6 +258,9 @@ func (s *store) putVersion(w http.ResponseWriter, r *http.Request) error {
 	id, ver := r.PathValue("id"), r.PathValue("version")
 	if gameBananaIDPattern.MatchString(id) {
 		return invalid("GameBanana files cannot be uploaded")
+	}
+	if err := s.rejectGitHubWrite(r.Context(), id); err != nil {
+		return err
 	}
 	if !versionPattern.MatchString(ver) || !portableName(ver) {
 		return invalid("invalid version ID")

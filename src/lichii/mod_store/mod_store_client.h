@@ -17,13 +17,15 @@
 #include <QTemporaryFile>
 #include <QUrl>
 
+#include "lichii/mod_store/mod_store_install.h"
+
 class QNetworkAccessManager;
 
 namespace ModStore {
 
 enum class ModType { Graphics, Fps, Cheats, Translation, Gameplay };
 enum class Sort { Updated, Name };
-enum class Source { Demo, Submission, GameBanana };
+enum class Source { Demo, Submission, GameBanana, GitHub };
 
 struct Game {
     QString title_id;
@@ -68,6 +70,25 @@ struct External {
     QList<ExternalFile> files;
 };
 
+struct GitHubDownload {
+    QUrl url;
+    QByteArray sha256;
+    qint64 size_bytes;
+    GitHubPatch patch;
+};
+
+struct GitHubBuild {
+    QString id;
+    bool main{};
+    std::optional<GitHubDownload> download;
+};
+
+struct GitHubListing {
+    QString repository;
+    QString commit;
+    QList<GitHubBuild> builds;
+};
+
 struct Mod {
     QString id;
     QStringList title_ids;
@@ -83,6 +104,7 @@ struct Mod {
     QDateTime updated_at;
     QList<Version> versions;
     std::optional<External> external;
+    std::optional<GitHubListing> github;
 };
 
 struct ModFilter {
@@ -169,14 +191,16 @@ public:
                       Progress progress = {});
     Request* Download(const ExternalFile& file, Callback<DownloadedFile> done,
                       Progress progress = {});
+    Request* Download(const GitHubDownload& file, Callback<DownloadedFile> done,
+                      Progress progress = {});
 
 private:
-    enum class TransferKind { Json, Preview, LocalArchive, GameBananaArchive };
+    enum class TransferKind { Json, Preview, LocalArchive, GameBananaArchive, GitHubPatch };
 
     Request* Start(const QUrl& url, TransferKind kind, std::function<void(Request::Result)> done,
                    std::optional<Error> error = {}, qint64 size = 0, QByteArray hash = {},
                    Progress progress = {});
-    Request* DownloadFile(const QUrl& url, bool gamebanana, qint64 size, const QByteArray& hash,
+    Request* DownloadFile(const QUrl& url, TransferKind kind, qint64 size, const QByteArray& hash,
                           Callback<DownloadedFile> done, Progress progress);
 
     const QUrl base_url;

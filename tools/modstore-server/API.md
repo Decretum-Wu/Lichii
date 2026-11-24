@@ -72,7 +72,16 @@ UTC RFC 3339. Local asset URLs begin with `/api/v1/` and belong to the same orig
 
 Public records require approval of both mod and version. An unavailable
 mod, version, or preview returns 404, whether absent or pending/rejected.
-The API sets `Cache-Control: no-store`, including for assets. When the JSON
+Successful public game lists, mod lists, and mod details up to 1 MiB
+of uncompressed JSON support gzip and
+`ETag` revalidation with `If-None-Match`. They set
+`Cache-Control: public, max-age=300` and vary on `Accept-Encoding` and
+`X-Lichii-Catalog-Features`. The origin invalidates cached data on successful
+admin writes. A CDN may still serve a fresh cached response after a write.
+Edge cache rules must keep opt-in and legacy responses separate.
+Larger JSON responses, admin responses, errors, and assets remain
+`no-store`. The public listener permits up to 32 concurrent asset requests
+and returns 503 for additional ones. When the JSON
 handler rejects a request it returns `{"error":{"code":"invalid_input","message":"..."}}`
 or another stable code with the appropriate status. Unmatched paths,
 methods and HTTP transport errors may return plain text instead. Handle
@@ -80,8 +89,8 @@ non-2xx status codes before parsing a success body.
 
 ### GameBanana listings
 
-`source` is `demo`, `submission`, or `gamebanana`. GameBanana entries have an ID
-of the form `gb-<GameBanana mod ID>`, one catalog title, and a `source_url`
+GameBanana entries have `source: "gamebanana"`, an ID of the form
+`gb-<GameBanana mod ID>`, one catalog title, and a `source_url`
 pointing to the canonical author page. The list may return a `preview_url`
 on `images.gamebanana.com`. Do not proxy or rehost that image.
 
@@ -120,6 +129,38 @@ a patch targets. A mismatch with the game's main executable does not establish
 that the patch is incompatible. Show external file compatibility as
 **Unverified**. Known mismatches against exact managed release targets still
 block installation.
+
+### GitHub patch listings
+
+Send `X-Lichii-Catalog-Features: github-v1` on games, mod lists, and mod
+details to include GitHub listings. Without the header, their entries are
+excluded from game counts and pagination and their detail routes return 404.
+
+GitHub listings have `source: "github"`, an ID beginning with `gh-`, one
+catalog title, and a `source_url` on GitHub pinned to a full commit SHA.
+The detail has `versions: []`, no preview, and a `github` object containing
+`repository`, `commit`, `license`, and `builds`. `license: "NOASSERTION"`
+means the source does not declare redistribution terms. The API never serves or
+proxies these files. The source button opens the pinned GitHub revision.
+
+Each build has an uppercase hex `id` and a `target` of `main` or `unknown`.
+A 64-digit main ID matches the full main build. A 16-digit main ID is a
+cheat prefix, compared with the first eight bytes of the main build ID.
+An untyped full patch ID can match the installed main build. If it differs,
+compatibility remains unverified because the patch may target another module.
+
+An optional `download` object provides a Git blob's relative `path`, exact
+`size_bytes` and lowercase hex `sha256`, and a `kind` of `pchtxt`, `ips`,
+or `cheat`. The desktop downloads directly from
+`https://raw.githubusercontent.com/<repository>/<commit>/<path>` without
+redirects, checks the length and SHA-256, and validates the selected patch.
+An optional `member` names one file within a pinned ZIP. A `tag` names one
+cheat section and is required for ZIP cheats. Raw cheats without a tag must
+contain exactly one section. No other files or sections are installed. The ZIP
+limit is 64 MiB, and the raw or selected patch limit is 2 MiB. The desktop
+stages the patch under `exefs` or `cheats` in its store-owned add-on.
+Missing download metadata leaves a build link-only. Known main build
+mismatches block the install action.
 
 ## Qt compatibility and installation
 

@@ -1026,9 +1026,14 @@ void PipelineCache::SaveUsedPipelines() {
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(bool key_unchanged) {
     VideoCommon::GpuSplit::BackOwned("PipelineCache::CurrentGraphicsPipeline");
 
-    ++graphics_lookups;
-    last_lookup_kept = false;
-    const std::array<u64, 6> hashes = graphics_key.unique_hashes;
+    if (VideoCommon::GpuSplit::TracksGraphicsLookups()) {
+        ++graphics_lookups;
+        last_lookup_kept = false;
+    }
+    std::array<u64, 6> hashes;
+    if (key_unchanged) {
+        hashes = graphics_key.unique_hashes;
+    }
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
         return nullptr;
@@ -1761,11 +1766,11 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                 .cpu_bytes = TranslationBytes(bytes),
                 .driver_bytes = DriverCompileBytes,
                 .cpu = [this, &state, &built_one, &records, &pipeline_record, &unreadable, key,
-                        indices = std::move(indices),
+                        job_indices = std::move(indices),
                         read_properties](VideoCommon::ShaderJobContext& context)
                     -> VideoCommon::ShaderDriverStage {
                     std::vector<CachedComputeTranslation> candidates;
-                    for (const size_t index : indices) {
+                    for (const size_t index : job_indices) {
                         const CacheV2::LogRecord& record = *records[index];
                         Common::UniqueFunction<void, std::istream&, FileEnvironment> read_compute{
                             [&](std::istream& file, FileEnvironment env) {

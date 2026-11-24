@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -60,14 +62,33 @@ CREATE VIEW IF NOT EXISTS catalog_targets AS
     SELECT mod_id, title_id, status='approved' AS available FROM versions
     UNION ALL
     SELECT mod_id, title_id, 1 AS available FROM gamebanana;
+CREATE TABLE IF NOT EXISTS github (
+    mod_id TEXT PRIMARY KEY REFERENCES mods(id),
+    title_id TEXT NOT NULL REFERENCES games(title_id),
+    repository TEXT NOT NULL COLLATE NOCASE,
+    commit_sha TEXT NOT NULL,
+    license TEXT NOT NULL CHECK (license='NOASSERTION'),
+    builds TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS github_title ON github(title_id, mod_id);
+CREATE VIEW IF NOT EXISTS catalog_targets_with_github AS
+    SELECT mod_id, title_id, available FROM catalog_targets
+    UNION ALL
+    SELECT mod_id, title_id, 1 AS available FROM github;
 `
 
-const publicMod = `m.status = 'approved' AND EXISTS (
-    SELECT 1 FROM catalog_targets t WHERE t.mod_id=m.id AND t.available)`
+func publicMod(targets string) string {
+	return `m.status = 'approved' AND EXISTS (
+	    SELECT 1 FROM ` + targets + ` t WHERE t.mod_id=m.id AND t.available)`
+}
 
 type store struct {
-	db     *sql.DB
-	assets string
+	db             *sql.DB
+	assets         string
+	assetTransfers chan struct{}
+	responses      catalogResponses
+	view           atomic.Pointer[catalogView]
+	viewMu         sync.Mutex
 }
 
 func openStore(dir string) (*store, error) {
@@ -85,12 +106,12 @@ func openStore(dir string) (*store, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(4)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &store{db: db, assets: assets}, nil
+	return &store{db: db, assets: assets, assetTransfers: make(chan struct{}, 32)}, nil
 }
 
 type game struct {
@@ -119,6 +140,7 @@ type modDetail struct {
 	Description string              `json:"description"`
 	Versions    []version           `json:"versions"`
 	External    *gameBananaMetadata `json:"external,omitempty"`
+	GitHub      *githubMetadata     `json:"github,omitempty"`
 }
 
 type version struct {
@@ -134,18 +156,18 @@ type version struct {
 	Status            string `json:"status,omitempty"`
 }
 
-func modColumns(admin bool) string {
+func modColumns(admin bool, targets string) string {
 	match := "t.mod_id=m.id"
 	if !admin {
 		match += " AND t.available"
 	}
 	return `m.id, (SELECT json_group_array(title_id) FROM
-	    (SELECT DISTINCT t.title_id FROM catalog_targets t WHERE ` + match + ` ORDER BY t.title_id)),
+	    (SELECT DISTINCT t.title_id FROM ` + targets + ` t WHERE ` + match + ` ORDER BY t.title_id)),
 	    m.name, m.summary, m.author, m.type, m.demo, m.preview_sha, m.updated_at, m.status,
-	    gb.page_url, gb.preview_url`
+	    gb.page_url, gb.preview_url, gh.repository, gh.commit_sha`
 }
 
-const modsFrom = " FROM mods m LEFT JOIN gamebanana gb ON gb.mod_id=m.id"
+const modsFrom = " FROM mods m LEFT JOIN gamebanana gb ON gb.mod_id=m.id LEFT JOIN github gh ON gh.mod_id=m.id"
 const publicPrefix = "/api/v1"
 const adminPrefix = "/admin/v1"
 
@@ -156,10 +178,10 @@ type scanner interface {
 func scanMod(row scanner, admin bool, description *string) (mod, error) {
 	var m mod
 	var titleIDs string
-	var preview, sourceURL, remotePreview sql.NullString
+	var preview, sourceURL, remotePreview, repository, commit sql.NullString
 	var updated int64
 	args := []any{&m.ID, &titleIDs, &m.Name, &m.Summary, &m.Author, &m.Type, &m.Demo, &preview, &updated, &m.Status,
-		&sourceURL, &remotePreview}
+		&sourceURL, &remotePreview, &repository, &commit}
 	if description != nil {
 		args = append(args, description)
 	}
@@ -176,6 +198,9 @@ func scanMod(row scanner, admin bool, description *string) (mod, error) {
 		m.Status = ""
 	}
 	switch {
+	case repository.Valid:
+		m.Source = "github"
+		m.SourceURL = githubSourceURL(repository.String, commit.String)
 	case sourceURL.Valid:
 		m.Source = "gamebanana"
 		m.SourceURL = sourceURL.String
@@ -187,7 +212,7 @@ func scanMod(row scanner, admin bool, description *string) (mod, error) {
 	default:
 		m.Source = "submission"
 	}
-	if preview.Valid && !sourceURL.Valid {
+	if preview.Valid && !sourceURL.Valid && !repository.Valid {
 		previewURL := prefix + "/mods/" + m.ID + "/preview"
 		m.PreviewURL = &previewURL
 	}
@@ -195,7 +220,7 @@ func scanMod(row scanner, admin bool, description *string) (mod, error) {
 	return m, nil
 }
 
-func (s *store) detail(ctx context.Context, id string, admin bool) (modDetail, error) {
+func (s *store) detail(ctx context.Context, id string, admin bool, targets string) (modDetail, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return modDetail{}, err
@@ -207,14 +232,24 @@ func (s *store) detail(ctx context.Context, id string, admin bool) (modDetail, e
 	versionWhere := "mod_id=?"
 	if !admin {
 		prefix = publicPrefix
-		modWhere += " AND " + publicMod
+		modWhere += " AND " + publicMod(targets)
 		versionWhere += " AND status='approved'"
 	}
-	detail.mod, err = scanMod(tx.QueryRowContext(ctx, "SELECT "+modColumns(admin)+", m.description"+modsFrom+" WHERE "+modWhere, id), admin, &detail.Description)
+	detail.mod, err = scanMod(tx.QueryRowContext(ctx, "SELECT "+modColumns(admin, targets)+", m.description"+modsFrom+" WHERE "+modWhere, id), admin, &detail.Description)
 	if err != nil {
 		return detail, err
 	}
 	detail.Versions = []version{}
+	if detail.Source == "github" {
+		var metadata githubMetadata
+		var builds string
+		if err := tx.QueryRowContext(ctx, "SELECT repository, commit_sha, license, builds FROM github WHERE mod_id=?", id).
+			Scan(&metadata.Repository, &metadata.Commit, &metadata.License, &builds); err != nil {
+			return detail, err
+		}
+		detail.GitHub = &metadata
+		return detail, json.Unmarshal([]byte(builds), &metadata.Builds)
+	}
 	if detail.Source == "gamebanana" {
 		var raw string
 		if err := tx.QueryRowContext(ctx, "SELECT metadata FROM gamebanana WHERE mod_id=?", id).Scan(&raw); err != nil {

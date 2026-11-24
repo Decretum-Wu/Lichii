@@ -5,10 +5,13 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <utility>
 
+#include <QBuffer>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
@@ -34,6 +37,7 @@ namespace {
 using namespace Qt::StringLiterals;
 
 constexpr qint64 MaxArchiveBytes = 64 * 1024 * 1024;
+constexpr qint64 MaxPatchBytes = 2 * 1024 * 1024;
 constexpr quint64 MaxExpandedBytes = 256 * 1024 * 1024;
 constexpr int MaxEntries = 4096;
 constexpr qint64 MaxManifestBytes = 16 * 1024;
@@ -62,6 +66,12 @@ bool IsModId(const QString& mod_id) {
 bool IsDisplayMetadata(const QString& name, const QString& version) {
     return !name.trimmed().isEmpty() && name.size() <= 512 && !version.trimmed().isEmpty() &&
            version.size() <= 256;
+}
+
+bool IsInstallInfo(const QString& root, const QString& title_id, const QString& mod_id,
+                   const QString& name, const QString& version, const QByteArray& sha256) {
+    return !root.isEmpty() && IsTitleId(title_id) && IsModId(mod_id) &&
+           IsDisplayMetadata(name, version) && sha256.size() == 32;
 }
 
 bool IsLink(const QFileInfo& info) {
@@ -397,7 +407,7 @@ bool PlanExtraction(QList<ZipEntry>& entries, const QString& title_id, bool exte
     return true;
 }
 
-bool ExtractEntry(QuaZip& zip, const ZipEntry& entry, QFile* output) {
+bool ExtractEntry(QuaZip& zip, const ZipEntry& entry, QIODevice* output) {
     QuaZipFile input(&zip);
     int method = 0;
     if (!input.open(QIODevice::ReadOnly, &method, nullptr, true) || method != entry.method ||
@@ -518,69 +528,283 @@ bool ExtractArchive(QuaZip& zip, const QList<ZipEntry>& entries, const QDir& sta
     return !zip.hasCurrentFile() && zip.getZipError() == 0;
 }
 
-} // namespace
-
-QString InstallMod(const QString& root, const QString& title_id, const QString& mod_id,
-                   const QString& name, const QString& version, const QString& archive_path,
-                   const QByteArray& sha256, bool external) {
-    if (!IsTitleId(title_id) || !IsModId(mod_id) || !IsDisplayMetadata(name, version) ||
-        root.isEmpty() || sha256.size() != 32) {
-        return u"The mod installation information is invalid."_s;
+QString SnapshotSource(QTemporaryFile& snapshot, const QString& path, const QByteArray& sha256,
+                       bool raw_patch) {
+    const qint64 limit = raw_patch ? MaxPatchBytes : MaxArchiveBytes;
+    const QString kind = raw_patch ? u"patch"_s : u"ZIP"_s;
+    const QString limit_error =
+        u"The downloaded %1 exceeds the %2 MiB limit."_s.arg(kind).arg(limit / (1024 * 1024));
+    QFile source(path);
+    if (!IsRegularFile(path) || !source.open(QIODevice::ReadOnly) || !snapshot.open()) {
+        return u"Could not open the downloaded %1."_s.arg(kind);
     }
-    const QString title = title_id.toUpper();
+    if (source.size() > limit) {
+        return limit_error;
+    }
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    for (qint64 total = 0;;) {
+        const QByteArray block = source.read(ChunkSize);
+        if (source.error() != QFileDevice::NoError) {
+            return u"Could not read the downloaded %1."_s.arg(kind);
+        }
+        if (block.isEmpty()) {
+            break;
+        }
+        total += block.size();
+        if (total > limit) {
+            return limit_error;
+        }
+        hash.addData(block);
+        if (snapshot.write(block) != block.size()) {
+            return u"Could not stage the downloaded %1."_s.arg(kind);
+        }
+    }
+    if (hash.result() != sha256) {
+        return u"The downloaded %1 does not match its expected SHA-256."_s.arg(kind);
+    }
+    if (!snapshot.flush() || !snapshot.seek(0)) {
+        return u"Could not stage the downloaded %1."_s.arg(kind);
+    }
+    return {};
+}
+
+QList<ZipEntry> ReadArchive(QTemporaryFile& snapshot, QuaZip& zip, bool external) {
+    const int count = ReadDirectoryCount(snapshot);
+    zip.setAutoClose(false);
+    zip.setFileNameCodec("UTF-8");
+    if (count == 0 || !zip.open(QuaZip::mdUnzip) || zip.getEntriesCount() != count) {
+        return {};
+    }
+    return ReadEntries(zip, count, snapshot.size(), external);
+}
+
+QString NormalizedBuildId(const QString& id, bool cheat) {
+    static const QRegularExpression hex(u"\\A[0-9a-fA-F]+\\z"_s);
+    const auto length = id.size();
+    if ((length != 16 && (cheat || (length != 32 && length != 40 && length != 64))) ||
+        !hex.match(id).hasMatch()) {
+        return {};
+    }
+    return id.toUpper().leftJustified(cheat ? 16 : 64, u'0');
+}
+
+bool IsPatchMember(const ZipEntry& entry, const GitHubPatch& patch, const QString& build_id,
+                   const QString& title) {
+    if (entry.directory || entry.expanded_size > MaxPatchBytes) {
+        return false;
+    }
+    for (qsizetype i = 0; i + 2 < entry.parts.size(); ++i) {
+        if (entry.parts[i].compare(u"contents"_s, Qt::CaseInsensitive) == 0 &&
+            IsTitleId(entry.parts[i + 1]) && entry.parts[i + 1].toUpper() != title) {
+            return false;
+        }
+    }
+    const QString& filename = entry.parts.back();
+    const qsizetype dot = filename.lastIndexOf(u'.');
+    if (dot <= 0) {
+        return false;
+    }
+    const auto extension = QStringView(filename).sliced(dot + 1);
+    if (patch.kind == GitHubPatchKind::Pchtxt) {
+        return extension.compare(u"pchtxt", Qt::CaseInsensitive) == 0;
+    }
+    if (patch.kind == GitHubPatchKind::Cheat) {
+        return extension.compare(u"txt", Qt::CaseInsensitive) == 0 &&
+               NormalizedBuildId(filename.left(dot), true) == build_id;
+    }
+    return MatchesGitHubIpsFilename(filename, build_id);
+}
+
+bool ReadPatchMember(QuaZip& zip, const QList<ZipEntry>& entries, const GitHubPatch& patch,
+                     const QString& build_id, const QString& title, QByteArray& bytes) {
+    if (entries.isEmpty() || !zip.goToFirstFile()) {
+        return false;
+    }
+    QBuffer output(&bytes);
+    if (!output.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    bool found = false;
+    for (const auto& entry : entries) {
+        const bool selected = entry.parts.join(u'/') == patch.member;
+        if (!zip.hasCurrentFile() ||
+            (selected && (found || !IsPatchMember(entry, patch, build_id, title))) ||
+            !ExtractEntry(zip, entry, selected ? &output : nullptr)) {
+            return false;
+        }
+        found |= selected;
+        zip.goToNextFile();
+    }
+    return found && !zip.hasCurrentFile() && zip.getZipError() == 0;
+}
+
+std::string_view TrimPatchLine(std::string_view line) {
+    constexpr std::string_view space = " \t\v\f";
+    const auto start = line.find_first_not_of(space);
+    if (start == std::string_view::npos) {
+        return {};
+    }
+    return line.substr(start, line.find_last_not_of(space) - start + 1);
+}
+
+std::string_view TakePatchLine(std::string_view& bytes) {
+    const auto end = bytes.find_first_of("\r\n");
+    const auto line = bytes.substr(0, end);
+    bytes.remove_prefix(end == std::string_view::npos ? bytes.size() : end + 1);
+    return TrimPatchLine(line);
+}
+
+bool MatchesPchtxt(QByteArrayView patch, const QString& build_id) {
+    std::string_view bytes(patch.data(), patch.size());
+    if (bytes.find('\0') != std::string_view::npos) {
+        return false;
+    }
+    bool matched = false;
+    while (!bytes.empty()) {
+        const auto raw_line = TakePatchLine(bytes);
+        const auto line = TrimPatchLine(raw_line.substr(0, raw_line.find_first_of("/#")));
+        if (line.size() < 3 || line[0] != '@') {
+            continue;
+        }
+        if (line[1] == 's' || line[1] == 'S') {
+            break;
+        }
+        if (line[1] != 'n' && line[1] != 'N') {
+            continue;
+        }
+        if (matched || line.size() <= 8 || line.size() > 8 + 64) {
+            return false;
+        }
+        const QString directive = QString::fromLatin1(line.data(), line.size());
+        if (!directive.startsWith(u"@nsobid-"_s, Qt::CaseInsensitive) ||
+            NormalizedBuildId(directive.sliced(8), false) != build_id) {
+            return false;
+        }
+        matched = true;
+    }
+    return matched;
+}
+
+bool IsIps(QByteArrayView bytes, bool require_ips32) {
+    const bool ips32 = bytes.startsWith("IPS32");
+    if (!ips32 && (require_ips32 || !bytes.startsWith("PATCH"))) {
+        return false;
+    }
+    const QByteArrayView end = ips32 ? "EEOF" : "EOF";
+    const qsizetype offset_size = end.size();
+    bytes = bytes.sliced(5);
+    while (bytes.size() >= offset_size) {
+        if (bytes.startsWith(end)) {
+            return bytes.size() == offset_size;
+        }
+        if (bytes.size() < offset_size + 2) {
+            return false;
+        }
+        const quint32 offset = ips32 ? qFromBigEndian<quint32>(bytes.data())
+                                    : (quint32(static_cast<quint8>(bytes[0])) << 16) |
+                                          qFromBigEndian<quint16>(bytes.data() + 1);
+        bytes = bytes.sliced(offset_size);
+        quint16 count = qFromBigEndian<quint16>(bytes.data());
+        bytes = bytes.sliced(2);
+        if (count == 0) {
+            if (bytes.size() < 3) {
+                return false;
+            }
+            count = qFromBigEndian<quint16>(bytes.data());
+            bytes = bytes.sliced(3);
+        } else {
+            if (bytes.size() < count) {
+                return false;
+            }
+            bytes = bytes.sliced(count);
+        }
+        if (count == 0 || count > std::numeric_limits<quint32>::max() - offset) {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool ScopeCheat(QByteArray& patch, const QString& tag) {
+    static const QRegularExpression master(
+        u"\\A(?:master\\z|master\\s+code\\b|must\\s+be\\s+on\\b)"_s,
+        QRegularExpression::CaseInsensitiveOption);
+    constexpr int max_opcodes = 0x100;
+    QSet<QString> names;
+    QByteArray scoped;
+    std::string_view bytes(patch.constData(), patch.size());
+    bool selected = false;
+    int opcodes = 0;
+    bool selected_has_code = false;
+    while (!bytes.empty()) {
+        auto line = TakePatchLine(bytes);
+        if (line.empty()) {
+            continue;
+        }
+        if (line.front() == '[' && line.back() == ']') {
+            const auto inner = line.substr(1, line.size() - 2);
+            const QString name = QString::fromUtf8(inner.data(), inner.size());
+            if (!IsCheatTag(name) || master.match(name.trimmed()).hasMatch() || names.contains(name)) {
+                return false;
+            }
+            names.insert(name);
+            selected = !tag.isEmpty() && name == tag;
+            opcodes = 0;
+            if (selected) {
+                scoped.append(line.data(), line.size());
+                scoped.append('\n');
+            }
+            continue;
+        }
+        if (names.isEmpty()) {
+            return false;
+        }
+        if (selected) {
+            scoped.append(line.data(), line.size());
+            scoped.append('\n');
+        }
+        while (!line.empty()) {
+            const auto end = line.find_first_of(" \t");
+            const auto word = line.substr(0, end);
+            if (word.size() != 8 || word.find_first_not_of("0123456789abcdefABCDEF") !=
+                                        std::string_view::npos ||
+                ++opcodes > max_opcodes) {
+                return false;
+            }
+            const auto next = line.find_first_not_of(" \t", word.size());
+            line = next == std::string_view::npos ? std::string_view{} : line.substr(next);
+        }
+        selected_has_code |= selected;
+    }
+    if (tag.isEmpty()) {
+        return names.size() == 1 && opcodes > 0;
+    }
+    if (!selected_has_code) {
+        return false;
+    }
+    patch = std::move(scoped);
+    return true;
+}
+
+bool WriteNewFile(const QString& path, const QByteArray& bytes) {
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly) || file.write(bytes) != bytes.size()) {
+        return false;
+    }
+    file.close();
+    return file.error() == QFileDevice::NoError;
+}
+
+template <typename StagePayload>
+QString InstallPreparedMod(const QString& root, const QString& title, const QString& mod_id,
+                           const QString& name, const QString& version, const QByteArray& sha256,
+                           const QString& stage_error, StagePayload stage_payload) {
     QDir mods_dir(QDir(root).absolutePath());
     const QDir title_dir(mods_dir.filePath(title));
     const QString destination = title_dir.filePath(mod_id);
     const QString root_error = u"The mods directory is unavailable or is a link."_s;
     const QString conflict_error =
         u"An existing mod folder is not owned by the Lichii Mod Store."_s;
-    QFile source(archive_path);
-    QTemporaryFile snapshot;
-    if (!IsRegularFile(archive_path) || !source.open(QIODevice::ReadOnly) || !snapshot.open()) {
-        return u"Could not open the downloaded ZIP."_s;
-    }
-    if (source.size() > MaxArchiveBytes) {
-        return u"The downloaded ZIP exceeds the 64 MiB limit."_s;
-    }
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    for (qint64 total = 0;;) {
-        const QByteArray block = source.read(ChunkSize);
-        if (source.error() != QFileDevice::NoError) {
-            return u"Could not read the downloaded ZIP."_s;
-        }
-        if (block.isEmpty()) {
-            break;
-        }
-        total += block.size();
-        if (total > MaxArchiveBytes) {
-            return u"The downloaded ZIP exceeds the 64 MiB limit."_s;
-        }
-        hash.addData(block);
-        if (snapshot.write(block) != block.size()) {
-            return u"Could not stage the downloaded ZIP."_s;
-        }
-    }
-    const QByteArray snapshot_sha256 = hash.result();
-    if (snapshot_sha256 != sha256) {
-        return u"The downloaded ZIP does not match its expected SHA-256."_s;
-    }
-
-    const QString unsafe_archive_error = u"The ZIP is malformed or contains unsafe entries."_s;
-    const int count = ReadDirectoryCount(snapshot);
-    QuaZip zip(&snapshot);
-    zip.setAutoClose(false);
-    zip.setFileNameCodec("UTF-8");
-    if (count == 0 || !zip.open(QuaZip::mdUnzip) || zip.getEntriesCount() != count) {
-        return unsafe_archive_error;
-    }
-    QList<ZipEntry> entries = ReadEntries(zip, count, snapshot.size(), external);
-    if (entries.isEmpty()) {
-        return unsafe_archive_error;
-    }
-    if (!PlanExtraction(entries, title, external)) {
-        return u"The ZIP does not contain a single supported mod layout for this title."_s;
-    }
-
     if (!IsDirectory(mods_dir.path()) &&
         (!IsAbsent(mods_dir.path()) || !QDir().mkpath(mods_dir.path()) ||
          !IsDirectory(mods_dir.path()))) {
@@ -591,26 +815,20 @@ QString InstallMod(const QString& root, const QString& title_id, const QString& 
         return u"Could not create a staging folder in the mods directory."_s;
     }
     const QDir stage(transaction.filePath(u"new"_s));
-    if (!QDir().mkdir(stage.path()) || !ExtractArchive(zip, entries, stage)) {
-        return u"Could not extract the mod ZIP safely."_s;
+    if (!QDir().mkdir(stage.path()) || !stage_payload(stage)) {
+        return stage_error;
     }
 
-    QFile manifest(stage.filePath(ManifestName));
     const QJsonObject object{
         {u"schema"_s, 1},
         {u"title_id"_s, title},
         {u"id"_s, mod_id},
         {u"name"_s, name},
         {u"version"_s, version},
-        {u"sha256"_s, QString::fromLatin1(snapshot_sha256.toHex())},
+        {u"sha256"_s, QString::fromLatin1(sha256.toHex())},
     };
-    const QByteArray bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
-    if (!manifest.open(QIODevice::WriteOnly | QIODevice::NewOnly) ||
-        manifest.write(bytes) != bytes.size()) {
-        return u"Could not write the mod ownership manifest."_s;
-    }
-    manifest.close();
-    if (manifest.error() != QFileDevice::NoError) {
+    if (!WriteNewFile(stage.filePath(ManifestName),
+                      QJsonDocument(object).toJson(QJsonDocument::Compact))) {
         return u"Could not write the mod ownership manifest."_s;
     }
 
@@ -643,6 +861,115 @@ QString InstallMod(const QString& root, const QString& title_id, const QString& 
         return u"Could not move the staged mod into the mods directory."_s;
     }
     return {};
+}
+
+} // namespace
+
+bool IsCheatTag(const QString& tag) {
+    static const QRegularExpression forbidden(u"[\\p{Cc}\\p{Cf}\\p{Cs}\\x{fffd}\\[\\]{}]"_s);
+    return tag.size() <= 160 && !tag.trimmed().isEmpty() && !tag.contains(forbidden);
+}
+
+bool MatchesGitHubIpsFilename(const QString& filename, QStringView build_id) {
+    static const QRegularExpression ips_id{u"\\A[0-9A-F]{16,64}\\z"_s};
+    const auto stem = filename.section(u'.', 0, 0).toUpper();
+    return (filename.endsWith(u".ips"_s, Qt::CaseInsensitive) ||
+            filename.endsWith(u".ips32"_s, Qt::CaseInsensitive)) &&
+           ips_id.match(stem).hasMatch() && stem.leftJustified(64, u'0') == build_id;
+}
+
+QString InstallMod(const QString& root, const QString& title_id, const QString& mod_id,
+                   const QString& name, const QString& version, const QString& archive_path,
+                   const QByteArray& sha256, bool external) {
+    if (!IsInstallInfo(root, title_id, mod_id, name, version, sha256)) {
+        return u"The mod installation information is invalid."_s;
+    }
+    QTemporaryFile snapshot;
+    if (const QString error = SnapshotSource(snapshot, archive_path, sha256, false);
+        !error.isEmpty()) {
+        return error;
+    }
+    QuaZip zip(&snapshot);
+    QList<ZipEntry> entries = ReadArchive(snapshot, zip, external);
+    if (entries.isEmpty()) {
+        return u"The ZIP is malformed or contains unsafe entries."_s;
+    }
+    const QString title = title_id.toUpper();
+    if (!PlanExtraction(entries, title, external)) {
+        return u"The ZIP does not contain a single supported mod layout for this title."_s;
+    }
+    return InstallPreparedMod(root, title, mod_id, name, version, sha256,
+                              u"Could not extract the mod ZIP safely."_s,
+                              [&](const QDir& stage) { return ExtractArchive(zip, entries, stage); });
+}
+
+QString InstallGitHubPatch(const QString& root, const QString& title_id, const QString& mod_id,
+                           const QString& name, const QString& version, const QString& archive_path,
+                           const QByteArray& sha256, const GitHubPatch& patch) {
+    const bool cheat = patch.kind == GitHubPatchKind::Cheat;
+    const QString build_id = NormalizedBuildId(patch.build_id, cheat);
+    if (!IsInstallInfo(root, title_id, mod_id, name, version, sha256) || build_id.isEmpty() ||
+        patch.member.size() > 512 || patch.member.toUtf8().size() > 512 ||
+        (cheat && !patch.member.isEmpty() && patch.tag.isEmpty()) ||
+        (!patch.tag.isEmpty() && (!cheat || !IsCheatTag(patch.tag)))) {
+        return u"The mod installation information is invalid."_s;
+    }
+
+    const QString title = title_id.toUpper();
+    const bool raw_patch = patch.member.isEmpty();
+    QTemporaryFile snapshot;
+    if (const QString error = SnapshotSource(snapshot, archive_path, sha256, raw_patch);
+        !error.isEmpty()) {
+        return error;
+    }
+    QByteArray bytes;
+    if (raw_patch) {
+        bytes = snapshot.readAll();
+        if (snapshot.error() != QFileDevice::NoError || bytes.size() != snapshot.size()) {
+            return u"Could not read the downloaded patch."_s;
+        }
+    } else {
+        QuaZip zip(&snapshot);
+        const auto entries = ReadArchive(snapshot, zip, true);
+        if (!ReadPatchMember(zip, entries, patch, build_id, title, bytes)) {
+            return u"The ZIP does not contain the expected safe patch member."_s;
+        }
+    }
+
+    const QString invalid_patch = u"The downloaded patch is malformed or targets another build."_s;
+    QString extension;
+    switch (patch.kind) {
+    case GitHubPatchKind::Pchtxt:
+        if (!MatchesPchtxt(bytes, build_id)) {
+            return invalid_patch;
+        }
+        extension = u".pchtxt"_s;
+        break;
+    case GitHubPatchKind::Ips:
+        if (!IsIps(bytes, patch.member.endsWith(u".ips32"_s, Qt::CaseInsensitive))) {
+            return invalid_patch;
+        }
+        extension = u".ips"_s;
+        break;
+    case GitHubPatchKind::Cheat:
+        if (!ScopeCheat(bytes, patch.tag)) {
+            return u"The downloaded cheat has no unambiguous standalone section for this mod."_s;
+        }
+        extension = u".txt"_s;
+        break;
+    default:
+        return u"The mod installation information is invalid."_s;
+    }
+
+    const QString folder = cheat ? u"cheats"_s : u"exefs"_s;
+    const QString filename = patch.build_id.toUpper() + extension;
+    return InstallPreparedMod(root, title, mod_id, name, version, sha256,
+                              u"Could not stage the downloaded patch safely."_s,
+                              [&](const QDir& stage) {
+                                  return stage.mkdir(folder) &&
+                                         WriteNewFile(stage.filePath(folder + u'/' + filename),
+                                                      bytes);
+                              });
 }
 
 QString UninstallMod(const QString& root, const QString& title_id, const QString& mod_id) {

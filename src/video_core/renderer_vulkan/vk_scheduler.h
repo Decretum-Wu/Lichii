@@ -60,8 +60,17 @@ public:
     /// Every entry point: waits for the draw packet GPURender records, then plays the buffer
     /// commands this thread queued (BufferArena), so both keep their place before what follows.
     void JoinRecorders(std::source_location site = std::source_location::current()) const {
-        VideoCommon::GpuSplit::JoinRender(site);
-        BufferArena::PlayPending();
+        if (render_recorders) {
+            JoinActiveRecorders(site);
+        }
+    }
+
+    [[nodiscard]] bool RenderRecordersEnabled() const {
+        return render_recorders;
+    }
+
+    [[nodiscard]] bool BufferArenaEnabled() const {
+        return buffer_arena;
     }
 
     /// Sends the current execution context to the GPU.
@@ -178,6 +187,11 @@ public:
     bool IsRenderPassActive() const {
         JoinRecorders();
         return state.renderpass != VK_NULL_HANDLE;
+    }
+
+    bool IsBetweenRenderPasses() const {
+        JoinRecorders();
+        return state.renderpass == VK_NULL_HANDLE && deferred_clear.framebuffer == nullptr;
     }
 
     /// Changes whenever a render pass begins or ends.
@@ -530,8 +544,12 @@ private:
 
     void AcquireNewChunk();
 
+    static void JoinActiveRecorders(std::source_location site);
+
     const Device& device;
     StateTracker& state_tracker;
+    const bool render_recorders;
+    const bool buffer_arena;
 
     std::unique_ptr<MasterSemaphore> master_semaphore;
     FragmentBarrierState fragment_barrier;

@@ -70,40 +70,79 @@ func (s *store) publicHandler() http.Handler {
 		reply(w, 200, map[string]string{"status": "ok"})
 		return nil
 	}))
-	mux.Handle("GET "+publicPrefix+"/games", endpoint(s.listGames))
+	mux.Handle("GET "+publicPrefix+"/games", s.responses.wrap(endpoint(s.listGames)))
 	s.registerReads(mux, publicPrefix, false)
 	return responseHeaders(mux)
 }
 
 func (s *store) registerReads(mux *http.ServeMux, prefix string, admin bool) {
-	mux.Handle("GET "+prefix+"/mods", endpoint(func(w http.ResponseWriter, r *http.Request) error {
+	jsonRead := func(route string, handle endpoint, slots chan struct{}) {
+		var handler http.Handler = handle
+		if !admin {
+			handler = s.responses.wrapWithSlots(handler, slots)
+		}
+		mux.Handle("GET "+prefix+route, handler)
+	}
+	assetRead := func(route string, handle endpoint) {
+		mux.Handle("GET "+prefix+route, endpoint(func(w http.ResponseWriter, r *http.Request) error {
+			if !admin {
+				select {
+				case s.assetTransfers <- struct{}{}:
+					defer func() { <-s.assetTransfers }()
+				default:
+					return problem{503, "server_busy", "too many concurrent asset requests"}
+				}
+			}
+			return handle(w, r)
+		}))
+	}
+	jsonRead("/mods", func(w http.ResponseWriter, r *http.Request) error {
 		return s.listMods(w, r, admin)
-	}))
-	mux.Handle("GET "+prefix+"/mods/{id}", endpoint(func(w http.ResponseWriter, r *http.Request) error {
-		detail, err := s.detail(r.Context(), r.PathValue("id"), admin)
+	}, catalogFillSlots)
+	jsonRead("/mods/{id}", func(w http.ResponseWriter, r *http.Request) error {
+		detail, err := s.detail(r.Context(), r.PathValue("id"), admin, catalogTargets(w, r, admin))
 		if err != nil {
 			return err
 		}
 		reply(w, 200, detail)
 		return nil
-	}))
-	mux.Handle("GET "+prefix+"/mods/{id}/preview", endpoint(func(w http.ResponseWriter, r *http.Request) error {
+	}, catalogDetailSlots)
+	assetRead("/mods/{id}/preview", func(w http.ResponseWriter, r *http.Request) error {
 		id := r.PathValue("id")
-		query := "SELECT m.preview_sha, m.preview_type FROM mods m WHERE m.id=? AND m.preview_sha IS NOT NULL"
+		query := `SELECT m.preview_sha, m.preview_type FROM mods m WHERE m.id=? AND m.preview_sha IS NOT NULL
+		    AND NOT EXISTS (SELECT 1 FROM github WHERE mod_id=m.id)`
 		if !admin {
-			query += " AND " + publicMod
+			query += " AND " + publicMod("catalog_targets")
 		}
 		return s.serveAsset(w, r, s.db.QueryRowContext(r.Context(), query, id), "")
-	}))
-	mux.Handle("GET "+prefix+"/mods/{id}/versions/{version}/download", endpoint(func(w http.ResponseWriter, r *http.Request) error {
+	})
+	assetRead("/mods/{id}/versions/{version}/download", func(w http.ResponseWriter, r *http.Request) error {
 		id, ver := r.PathValue("id"), r.PathValue("version")
 		query := `SELECT v.sha256, 'application/zip' FROM versions v JOIN mods m ON m.id=v.mod_id
-		    WHERE m.id=? AND v.id=?`
+		    WHERE m.id=? AND v.id=? AND NOT EXISTS (SELECT 1 FROM github WHERE mod_id=m.id)`
 		if !admin {
 			query += " AND m.status='approved' AND v.status='approved'"
 		}
 		return s.serveAsset(w, r, s.db.QueryRowContext(r.Context(), query, id, ver), id+"-"+ver+".zip")
-	}))
+	})
+}
+
+const githubFeatureHeader = "X-Lichii-Catalog-Features"
+
+func githubCatalog(r *http.Request) bool {
+	values := r.Header.Values(githubFeatureHeader)
+	return len(values) == 1 && values[0] == "github-v1"
+}
+
+func catalogTargets(w http.ResponseWriter, r *http.Request, admin bool) string {
+	if admin {
+		return "catalog_targets_with_github"
+	}
+	w.Header().Add("Vary", githubFeatureHeader)
+	if githubCatalog(r) {
+		return "catalog_targets_with_github"
+	}
+	return "catalog_targets"
 }
 
 func (s *store) serveAsset(w http.ResponseWriter, r *http.Request, row *sql.Row, name string) error {
@@ -182,25 +221,14 @@ func (s *store) listGames(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT g.title_id, g.name, COUNT(DISTINCT t.mod_id)
-	    FROM games g JOIN catalog_targets t ON g.title_id=t.title_id JOIN mods m ON m.id=t.mod_id
-	    WHERE m.status='approved' AND t.available
-	    GROUP BY g.title_id ORDER BY g.name COLLATE NOCASE, g.title_id LIMIT ? OFFSET ?`, limit+1, offset)
+	catalogTargets(w, r, false)
+	view, err := s.catalog(r.Context())
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	result := page[game]{Items: []game{}}
-	for rows.Next() {
-		var g game
-		if err := rows.Scan(&g.TitleID, &g.Name, &g.ModCount); err != nil {
-			return err
-		}
-		result.Items = append(result.Items, g)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
+	games := view.data(githubCatalog(r)).games
+	start := min(offset, len(games))
+	result := page[game]{Items: games[start:min(start+limit+1, len(games))]}
 	result.trim(limit, offset)
 	reply(w, 200, map[string]any{"games": result.Items, "next_offset": result.NextOffset})
 	return nil
@@ -219,34 +247,42 @@ func (s *store) listMods(w http.ResponseWriter, r *http.Request, admin bool) err
 	if err != nil {
 		return err
 	}
+	title, term, category := strings.ToUpper(q.Get("title_id")), strings.TrimSpace(q.Get("q")), q.Get("type")
+	if q.Has("title_id") && !titlePattern.MatchString(title) {
+		return invalid("title_id must contain 16 hexadecimal digits")
+	}
+	if term != "" && !validText(term, 128, false) {
+		return invalid("q must be at most 128 characters without controls")
+	}
+	if q.Has("type") && !validType(category) {
+		return invalid("invalid mod type")
+	}
+	sort := q.Get("sort")
+	if sort != "" && sort != "updated" && sort != "name" {
+		return invalid("sort must be updated or name")
+	}
+	targets := catalogTargets(w, r, admin)
+	if !admin {
+		view, err := s.catalog(r.Context())
+		if err != nil {
+			return err
+		}
+		result := view.data(githubCatalog(r)).mods(title, term, category, sort == "name", limit, offset)
+		reply(w, 200, map[string]any{"mods": result.Items, "next_offset": result.NextOffset})
+		return nil
+	}
 	where := []string{"1=1"}
 	args := []any{}
-	if !admin {
-		where = append(where, publicMod)
-	}
-	if title := strings.ToUpper(q.Get("title_id")); q.Has("title_id") {
-		if !titlePattern.MatchString(title) {
-			return invalid("title_id must contain 16 hexadecimal digits")
-		}
-		match := "t.mod_id=m.id AND t.title_id=?"
-		if !admin {
-			match += " AND t.available"
-		}
-		where = append(where, "EXISTS (SELECT 1 FROM catalog_targets t WHERE "+match+")")
+	if title != "" {
+		where = append(where, "EXISTS (SELECT 1 FROM "+targets+" t WHERE t.mod_id=m.id AND t.title_id=?)")
 		args = append(args, title)
 	}
-	if term := strings.TrimSpace(q.Get("q")); term != "" {
-		if !validText(term, 128, false) {
-			return invalid("q must be at most 128 characters without controls")
-		}
+	if term != "" {
 		where = append(where, `(instr(lower(m.name), lower(?)) > 0 OR instr(lower(m.summary), lower(?)) > 0
 		    OR instr(lower(m.author), lower(?)) > 0 OR instr(lower(m.description), lower(?)) > 0)`)
 		args = append(args, term, term, term, term)
 	}
-	if category := q.Get("type"); q.Has("type") {
-		if !validType(category) {
-			return invalid("invalid mod type")
-		}
+	if category != "" {
 		where = append(where, "m.type=?")
 		args = append(args, category)
 	}
@@ -258,14 +294,10 @@ func (s *store) listMods(w http.ResponseWriter, r *http.Request, admin bool) err
 		args = append(args, status)
 	}
 	order := "m.updated_at DESC, m.id"
-	switch q.Get("sort") {
-	case "", "updated":
-	case "name":
+	if sort == "name" {
 		order = "m.name COLLATE NOCASE, m.id"
-	default:
-		return invalid("sort must be updated or name")
 	}
-	query := "SELECT " + modColumns(admin) + modsFrom + " WHERE " + strings.Join(where, " AND ") +
+	query := "SELECT " + modColumns(admin, targets) + modsFrom + " WHERE " + strings.Join(where, " AND ") +
 		" ORDER BY " + order + " LIMIT ? OFFSET ?"
 	rows, err := s.db.QueryContext(r.Context(), query, append(args, limit+1, offset)...)
 	if err != nil {

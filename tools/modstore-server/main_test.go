@@ -4,9 +4,27 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+func TestSeedRequiresOfflineCatalog(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MODSTORE_DATA_DIR", dir)
+	release, err := lockCatalog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"seed-demo"}); err == nil || !strings.Contains(err.Error(), "stop the running service") {
+		release()
+		t.Fatalf("seed with a locked directory got %v", err)
+	}
+	release()
+	if err := run([]string{"seed-demo"}); err != nil {
+		t.Fatalf("offline seed failed: %v", err)
+	}
+}
 
 func TestHealthProbesConfiguredPublicAddress(t *testing.T) {
 	var redirect atomic.Bool
