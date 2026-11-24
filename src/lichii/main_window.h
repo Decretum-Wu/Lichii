@@ -581,6 +581,7 @@ private:
     LoadingScreen* loading_screen = nullptr;
     QTimer shutdown_timer;
     QTimer emu_terminate_timer;
+    bool shutdown_game_in_progress{};
     QElapsedTimer emu_force_stop_clock;
     u64 shutdown_progress_seen{};
     QTimer nextendo_session_timer;

@@ -110,7 +110,7 @@ TEST_CASE("Arena clock names the tick of a closed stamp once its player maps it"
     REQUIRE(closed == noted);
     REQUIRE_FALSE(clock.TickOf(closed).has_value());
     clock.Map(closed, 7);
-    REQUIRE(clock.TickOf(closed) == 7);
+    REQUIRE(clock.TickOf(closed) == 7U);
     REQUIRE_FALSE(clock.TickOf(clock.Now()).has_value());
 }
 

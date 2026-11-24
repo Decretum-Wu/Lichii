@@ -637,6 +637,9 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     supports_d24_depth =
         IsFormatSupported(VK_FORMAT_D24_UNORM_S8_UINT,
                           VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, FormatType::Optimal);
+    if (!supports_d24_depth) {
+        LOG_INFO(Render_Vulkan, "No D24S8 depth attachments: Z24 depth is stored as a float");
+    }
 
     supports_conditional_barriers =
         !is_intel_windows && driver_id != VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
