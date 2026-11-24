@@ -4344,6 +4344,7 @@ void TextureCache<P>::InvalidateScale(Image& image) {
     for (const ImageViewId image_view_id : image_view_ids) {
         sentenced_image_view.Push(std::move(slot_image_views[image_view_id]));
         slot_image_views.erase(image_view_id);
+        ++image_view_removal_serial;
     }
     image.image_view_ids.clear();
     image.image_view_infos.clear();
@@ -5863,6 +5864,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
             sentenced_image_view.Push(std::move(slot_image_views[image_view_id]));
         }
         slot_image_views.erase(image_view_id);
+        ++image_view_removal_serial;
     }
     u64 delete_tick = 0;
     if constexpr (requires { runtime.CurrentTick(); }) {
@@ -5910,9 +5912,6 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
 
 template <class P>
 void TextureCache<P>::RemoveImageViewReferences(std::span<const ImageViewId> removed_views) {
-    if (!removed_views.empty()) {
-        ++image_view_removal_serial;
-    }
     for (const ImageViewId removed : removed_views) {
         const auto refs = image_view_descriptors.find(removed);
         if (refs == image_view_descriptors.end()) {
