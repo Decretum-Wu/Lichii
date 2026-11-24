@@ -11,6 +11,7 @@ add_executable(nup_dialog_tests
 target_include_directories(nup_dialog_tests PRIVATE ../..)
 target_link_libraries(nup_dialog_tests PRIVATE
     common core qt_common frontend_common video_core Qt6::Widgets Qt6::Concurrent Qt6::Test
+    ${PLATFORM_LIBRARIES}
 )
 if(NOT MSVC)
     target_compile_options(nup_dialog_tests PRIVATE
