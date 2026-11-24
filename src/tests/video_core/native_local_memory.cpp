@@ -228,17 +228,17 @@ TEST_CASE("Pruned local stores still select a layout-specific compute cache key"
                                               .workgroup_size{1, 1, 1}};
     const Vulkan::ComputePipelineLookupKey small_lookup{key, 16, 0};
     const Vulkan::ComputePipelineLookupKey large_lookup{key, 32, 0};
-    LocalEnvironment small{16, 0};
-    LocalEnvironment large{32, 0};
-    small.SetProgram(ImmediateLocalStore(20));
-    large.SetProgram(ImmediateLocalStore(20));
+    LocalEnvironment small_env{16, 0};
+    LocalEnvironment large_env{32, 0};
+    small_env.SetProgram(ImmediateLocalStore(20));
+    large_env.SetProgram(ImmediateLocalStore(20));
 
-    const auto small_translation = TranslateLocalProgram(small, small_lookup);
+    const auto small_translation = TranslateLocalProgram(small_env, small_lookup);
     CHECK(small_translation.stored_words.empty());
     CHECK(small_translation.key == small_lookup);
 
     std::ostringstream out{std::ios::binary};
-    small.Serialize(out, 0);
+    small_env.Serialize(out, 0);
     auto recorded = Read(out.str());
     REQUIRE(recorded.IsNativeProgram());
     const auto cached_translation =
@@ -247,7 +247,7 @@ TEST_CASE("Pruned local stores still select a layout-specific compute cache key"
     std::unordered_map<Vulkan::ComputePipelineLookupKey, int> cache{{cached_translation.key, 1}};
     CHECK(Vulkan::FindComputePipeline(cache, large_lookup) == cache.end());
 
-    const auto large_translation = TranslateLocalProgram(large, large_lookup);
+    const auto large_translation = TranslateLocalProgram(large_env, large_lookup);
     CHECK(large_translation.stored_words == std::vector<u32>{5});
     CHECK(large_translation.key == large_lookup);
 }
