@@ -39,7 +39,7 @@
     {
       "icon": "download",
       "title": "Better shader precompilation",
-      "body": "Precompile All Shaders remembers your choice for that game. Lichii reuses pipelines built earlier in the same session and shows how many shader builds remain."
+      "body": "Turning on Precompile All Shaders sets shader precache to Always for that game. Lichii reuses pipelines built earlier in the same session and shows how many shader builds remain."
     }
   ]
 }

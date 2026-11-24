@@ -64,6 +64,7 @@ enum class ImageFlagBits : u32 {
     /// Sparse only when the texture says so).
     NonContiguous = 1 << 24,
     GuestReplacedContents = 1 << 25,
+    CompactLayers = 1 << 26,
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
 
@@ -108,7 +109,7 @@ struct ImageBase {
 
     ImageInfo info;
 
-    u32 guest_size_bytes = 0;
+    u64 guest_size_bytes = 0;
     u32 unswizzled_size_bytes = 0;
     u32 converted_size_bytes = 0;
     u32 scale_rating = 0;

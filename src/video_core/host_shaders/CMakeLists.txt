@@ -177,7 +177,9 @@ foreach(SOURCE_FILE IN ITEMS ${SHADER_FILES})
     # Skip compiling to SPIR-V OpenGL exclusive files
     if (NOT ${FILENAME} MATCHES "opengl.*")
         set(SPIRV_DEPENDENCIES)
-        if (FILENAME STREQUAL "convert_abgr8_to_x8d24.frag" OR
+        if (FILENAME MATCHES "^smaa_")
+            list(APPEND SPIRV_DEPENDENCIES ${CMAKE_CURRENT_SOURCE_DIR}/opengl_smaa.glsl)
+        elseif (FILENAME STREQUAL "convert_abgr8_to_x8d24.frag" OR
             FILENAME STREQUAL "convert_x8d24_to_abgr8.frag")
             list(APPEND SPIRV_DEPENDENCIES ${CMAKE_CURRENT_SOURCE_DIR}/x8d24_conversion.glsl)
         endif()

@@ -303,7 +303,7 @@ private:
     /// What a draw leaves for Ocarina of Time's upscalers once recorded.
     void NoteOcarinaDraw(const GraphicsPipeline& pipeline);
 
-    void FlushWork();
+    void FlushWork(bool ends_pass = false);
 
     void TraceRenderState(bool is_indexed, const char* outcome, const Framebuffer* framebuffer);
 
