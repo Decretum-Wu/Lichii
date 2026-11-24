@@ -1366,7 +1366,7 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
             bc_encoder_pass.emplace(device, scheduler, descriptor_pool,
                                     compute_pass_descriptor_queue);
             const char* fused = std::getenv("EDEN_NX2_ASTC_FUSED");
-            if (fused != nullptr && std::string_view{fused} == "1") {
+            if (fused == nullptr || std::string_view{fused} == "1") {
                 astc_bc_pass.emplace(device, scheduler, descriptor_pool,
                                      compute_pass_descriptor_queue);
             }
