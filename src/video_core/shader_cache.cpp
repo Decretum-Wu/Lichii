@@ -457,18 +457,17 @@ void ShaderCache::RememberRejection(VAddr addr, GPUVAddr gpu_addr, u64 map_seria
         return;
     }
     const auto watch = [&](VAddr page) {
-        const auto [it, inserted] = rejected_page_refs.try_emplace(page, RejectionPage{1, false});
-        if (!inserted) {
-            ++it->second.refs;
-            return;
+        const auto [it, inserted] = rejected_page_refs.try_emplace(page, RejectionPage{});
+        ++it->second.refs;
+        if (inserted) {
+            page_filter.Mark(page, Core::DEVICE_PAGESIZE);
+            rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), page),
+                                  std::memory_order_relaxed);
+            rejected_highest.store((std::max)(rejected_highest.load(std::memory_order_relaxed),
+                                              page + Core::DEVICE_PAGESIZE),
+                                   std::memory_order_relaxed);
         }
-        page_filter.Mark(page, Core::DEVICE_PAGESIZE);
-        rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), page),
-                              std::memory_order_relaxed);
-        rejected_highest.store((std::max)(rejected_highest.load(std::memory_order_relaxed),
-                                          page + Core::DEVICE_PAGESIZE),
-                               std::memory_order_relaxed);
-        if (device_memory.GetPointer<u8>(page)) {
+        if (!it->second.cpu_watched && device_memory.GetPointer<u8>(page)) {
             device_memory.UpdatePagesCachedCount(page, Core::DEVICE_PAGESIZE, 1);
             it->second.cpu_watched = true;
         }

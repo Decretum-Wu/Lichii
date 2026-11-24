@@ -282,7 +282,6 @@ TEST_CASE("A rejected shader watches both GPU mappings of its header and code",
     device.BindInterface(&rasterizer);
     const Core::Asid asid = device.RegisterProcess(&process.GetMemory());
     device.Map(first_page, 0x10000, 0x1000, asid);
-    device.Map(second_page, 0x11000, 0x1000, asid);
     SCOPE_EXIT {
         device.Unmap(first_page, 0x1000);
         device.Unmap(second_page, 0x1000);
@@ -298,10 +297,18 @@ TEST_CASE("A rejected shader watches both GPU mappings of its header and code",
     CHECK(cache->page_filter.Any(second_page, 0x1000));
     CHECK_FALSE(cache->page_filter.Any(first_page + 0x1000, 0x1000));
     CHECK(device.IsRangeCached(first_page, 0x1000));
-    CHECK(device.IsRangeCached(second_page, 0x1000));
+    CHECK_FALSE(device.IsRangeCached(second_page, 0x1000));
     REQUIRE(Access::IsRejected(*cache, device_addr, gpu_addr));
+
+    device.Map(second_page, 0x11000, 0x1000, asid);
+    Access::RememberRejection(*cache, device_addr + 0x10, gpu_addr + 0x10, "rejected later");
+    CHECK(Access::PageRefs(*cache, second_page) == 2);
+    CHECK(device.IsRangeCached(second_page, 0x1000));
+    REQUIRE(Access::IsRejected(*cache, device_addr + 0x10, gpu_addr + 0x10));
     cache->OnCacheInvalidation(second_page + 0x10, 4);
     CHECK_FALSE(Access::IsRejected(*cache, device_addr, gpu_addr));
+    CHECK_FALSE(Access::IsRejected(*cache, device_addr + 0x10, gpu_addr + 0x10));
+    CHECK_FALSE(device.IsRangeCached(second_page, 0x1000));
 
     Access::RememberRejection(*cache, device_addr, gpu_addr, "rejected");
     memory.Map(gpu_page + 0x1000, second_page + 0x1000, 0x1000, Tegra::PTEKind::PITCH, false);
