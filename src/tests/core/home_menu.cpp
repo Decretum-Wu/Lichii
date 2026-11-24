@@ -334,7 +334,8 @@ TEST_CASE("HOME forwards an application only after Start through its CMIF access
     CHECK(request(accessor, 10)[10] == ResultSuccess.raw);
     CHECK(request(accessor, 20)[10] == ResultSuccess.raw);
     CHECK(launches == std::vector<u64>{Forwarder});
-    CHECK(launch_parameters == std::vector{account_parameter});
+    REQUIRE(launch_parameters.size() == 1);
+    CHECK(launch_parameters.front() == account_parameter);
     REQUIRE(reject_launch);
     reject_launch();
     CHECK(request(accessor, 1)[12] == 1);
