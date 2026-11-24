@@ -203,6 +203,9 @@ TEST_CASE("Owned snapshot survives overlapping source and destination", "[unswiz
         const auto output = std::span{storage}.first(layout.HostBytes());
         REQUIRE(layout.Parallel(output, storage, true, worker, pool));
         REQUIRE(std::ranges::equal(output, expected));
+        // The job lets its caller go before the pool counts it as done, and the pool has one
+        // worker: wait for it, or the next layout can find that worker still taken and be refused.
+        pool.WaitForRequests();
     }
 }
 

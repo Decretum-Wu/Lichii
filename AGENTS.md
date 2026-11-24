@@ -51,6 +51,7 @@ Users report game bugs with Lichii logs (`eden_log.txt`, `eden_log.txt.old`). Ea
 | 01003EC027CC8000 | Deep Rock Galactic: Survivor (Switch 1) |
 | 01001F5010DFA000 | Pokémon Legends: Arceus (Switch 1) |
 | 01006A800016E000 | Super Smash Bros. Ultimate (Switch 1) |
+| 01005D2011EA8000 | Kingdom Hearts: Melody of Memory (Switch 1) |
 | 0100F43008C44000 | Pokémon Legends Z-A |
 | 0400FF500E34A001 | Xenoblade Chronicles: Definitive Edition - Nintendo Switch 2 Edition |
 | 0400E95004038001 | Xenoblade Chronicles 2 - Nintendo Switch 2 Edition |
