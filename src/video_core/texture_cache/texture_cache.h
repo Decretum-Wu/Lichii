@@ -1367,8 +1367,8 @@ void TextureCache<P>::TickFrame() {
     }
     const bool reports_usage = runtime.CanReportMemoryUsage();
     std::optional<u64> reported_memory;
-    bool reap_images = false;
-    if constexpr (requires { runtime.DrainImageReaper(); }) {
+    bool retire_images = false;
+    if constexpr (requires { runtime.DrainRetiredImages(); }) {
         if (reports_usage) {
             reported_memory = runtime.GetDeviceMemoryUsage();
         }
@@ -1379,10 +1379,10 @@ void TextureCache<P>::TickFrame() {
             (reported_memory && *reported_memory >= critical_memory) ||
             (commit_room && *commit_room < 1_GiB);
         if (short_of_memory) {
-            runtime.DrainImageReaper();
+            runtime.DrainRetiredImages();
             reported_memory.reset();
         } else {
-            reap_images = true;
+            retire_images = true;
         }
     }
     if constexpr (requires { runtime.CurrentTick(); }) {
@@ -1390,9 +1390,9 @@ void TextureCache<P>::TickFrame() {
                runtime.IsFree(gpu_sentenced_images.front().tick)) {
             auto& sentenced = gpu_sentenced_images.front();
             gpu_sentenced_bytes -= sentenced.bytes;
-            if constexpr (requires { runtime.ReapImage(sentenced.image); }) {
-                if (reap_images) {
-                    runtime.ReapImage(sentenced.image);
+            if constexpr (requires { runtime.RetireImage(sentenced.image); }) {
+                if (retire_images) {
+                    runtime.RetireImage(sentenced.image);
                 }
             }
             gpu_sentenced_images.pop_front();
