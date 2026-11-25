@@ -253,12 +253,14 @@ TEST_CASE("Pruned local stores still select a layout-specific compute cache key"
     const auto cached_translation =
         TranslateLocalProgram(recorded, Vulkan::RecordLookupKey(key, recorded));
     CHECK(cached_translation.key == small_lookup);
+    CHECK(cached_translation.key.DriverBinaryKey() == small_translation.key.DriverBinaryKey());
     std::unordered_map<Vulkan::ComputePipelineLookupKey, int> cache{{cached_translation.key, 1}};
     CHECK(Vulkan::FindComputePipeline(cache, large_lookup) == cache.end());
 
     const auto large_translation = TranslateLocalProgram(large_env, large_lookup);
     CHECK(large_translation.stored_words == std::vector<u32>{5});
     CHECK(large_translation.key == large_lookup);
+    CHECK(large_translation.key.DriverBinaryKey() != small_translation.key.DriverBinaryKey());
 }
 
 TEST_CASE("Native immediate local stores check bounds after rotating the address",
@@ -315,6 +317,7 @@ TEST_CASE("Vulkan boot restores the recorded layouts that a compute shader needs
     struct Restored {
         std::vector<u32> words;
         std::vector<u64> pointers;
+        u64 binary_key;
     };
     std::unordered_map<Vulkan::ComputePipelineLookupKey, Restored> restored;
     const auto load = Vulkan::RestoreCachedComputeLayouts(
@@ -329,7 +332,8 @@ TEST_CASE("Vulkan boot restores the recorded layouts that a compute shader needs
             const auto stored_key =
                 scope == Vulkan::CachedComputeScope::ExactLayoutOnly ? lookup : translation.key;
             REQUIRE(restored.emplace(stored_key, Restored{std::move(translation.stored_words),
-                                                          env.MappedStoragePointerKeys()})
+                                                          env.MappedStoragePointerKeys(),
+                                                          translation.key.DriverBinaryKey()})
                         .second);
             return layout_dependent ? Vulkan::CachedComputeResult::ExactLayout
                                     : Vulkan::CachedComputeResult::AnyLayout;
@@ -345,12 +349,18 @@ TEST_CASE("Vulkan boot restores the recorded layouts that a compute shader needs
         REQUIRE(restored.size() == 1);
         CHECK(low_pipeline == split_pipeline);
         CHECK(low_pipeline->first == Vulkan::AnyLayoutKey(key));
+        CHECK(low_pipeline->second.binary_key == key.Hash());
         CHECK(low_pipeline->second.words.empty());
         CHECK(low_pipeline->second.pointers ==
               std::vector<u64>{pointer_bank | 0x10, pointer_bank | 0x18, pointer_bank | 0x38});
         return;
     }
     REQUIRE(load.layouts == 2);
+    CHECK(low_pipeline->second.binary_key == low_only.DriverBinaryKey());
+    CHECK(split_pipeline->second.binary_key == split.DriverBinaryKey());
+    CHECK(low_pipeline->second.binary_key != split_pipeline->second.binary_key);
+    CHECK(low_pipeline->second.binary_key != key.Hash());
+    CHECK(split_pipeline->second.binary_key != key.Hash());
     CHECK(low_pipeline->second.words == std::vector<u32>{3});
     CHECK(split_pipeline->second.words == std::vector<u32>{11});
     CHECK(low_pipeline->second.pointers == std::vector<u64>{pointer_bank | 0x10, pointer_bank | 0x18});

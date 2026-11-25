@@ -98,6 +98,9 @@ struct ComputePipelineLookupKey {
 
     size_t Hash() const noexcept;
 
+    /// The driver binary slot for this translated key, keeping legacy slots for shared layouts.
+    [[nodiscard]] u64 DriverBinaryKey() const noexcept;
+
     bool operator==(const ComputePipelineLookupKey& rhs) const noexcept;
 };
 static_assert(std::has_unique_object_representations_v<ComputePipelineLookupKey>);
@@ -320,7 +323,7 @@ private:
     /// be, the SPIR-V is emitted by the CPU stage of the pipeline's job, which takes the pools and
     /// the program. A shared-layout boot probe defers layout-dependent programs after flow analysis.
     ComputePipelineCacheEntry CreateComputePipeline(ShaderPools& pools,
-                                                     const ComputePipelineCacheKey& key,
+                                                     const ComputePipelineLookupKey& lookup,
                                                      Shader::Environment& env,
                                                      PipelineStatistics* statistics,
                                                      bool build_in_parallel,

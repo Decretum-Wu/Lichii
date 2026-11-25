@@ -548,6 +548,10 @@ size_t ComputePipelineLookupKey::Hash() const noexcept {
     return static_cast<size_t>(hash);
 }
 
+u64 ComputePipelineLookupKey::DriverBinaryKey() const noexcept {
+    return local_memory_size == AnyLocalMemory ? key.Hash() : Hash();
+}
+
 bool ComputePipelineLookupKey::operator==(const ComputePipelineLookupKey& rhs) const noexcept {
     return std::memcmp(&rhs, this, sizeof *this) == 0;
 }
@@ -1796,7 +1800,7 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                             }
                             pools.ReleaseContents();
                             const bool probe = scope == CachedComputeScope::AnyLayoutOnly;
-                            auto entry = CreateComputePipeline(pools, key, env,
+                            auto entry = CreateComputePipeline(pools, lookup, env,
                                                                state.statistics.get(), false,
                                                                nullptr, probe);
                             if (!entry.pipeline) {
@@ -2175,26 +2179,26 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::stop_token stop_loading,
                 ++file_entries;
                 // Programs already in the disk cache were built above, and those an earlier
                 // precache built before it was skipped are in the driver's cache; leave them out.
-                if (FindComputePipeline(compute_cache, RecordLookupKey(key, env)) !=
-                    compute_cache.end()) {
+                const auto lookup = RecordLookupKey(key, env);
+                if (FindComputePipeline(compute_cache, lookup) != compute_cache.end()) {
                     ++in_cache;
                     continue;
                 }
                 // Two layouts of one key are two programs (old progress entries match neither)
-                const u64 progress_key{RecordLookupKey(key, env).Hash()};
+                const u64 progress_key{lookup.Hash()};
                 if (built_before.contains(progress_key)) {
                     continue;
                 }
                 job_keys.push_back(progress_key);
                 const u64 cpu_bytes = TranslationBytes(env.MemorySize());
                 jobs.push_back({
-                    .translate = [this, key,
+                    .translate = [this, lookup,
                                   env = std::move(env)]() mutable -> Common::UniqueFunction<bool> {
                         static const GuessMissing guess{};
                         env.SetGuessMissing(&guess);
                         ShaderPools pools;
                         auto pipeline =
-                            CreateComputePipeline(pools, key, env, nullptr, false).pipeline;
+                            CreateComputePipeline(pools, lookup, env, nullptr, false).pipeline;
                         if (!pipeline) {
                             return {};
                         }
@@ -3742,8 +3746,9 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(const ComputePipe
     // The SPIR-V is emitted by the pipeline's job instead of here
     std::shared_ptr<ShaderPools> emit_pools = TakeSparePools();
     ShaderPools& pools = *emit_pools;
-    auto entry{CreateComputePipeline(pools, key, env, nullptr, true, std::move(emit_pools))};
-    entry.dispatch_key = DispatchLookupKey(key);
+    const auto lookup = DispatchLookupKey(key);
+    auto entry{CreateComputePipeline(pools, lookup, env, nullptr, true, std::move(emit_pools))};
+    entry.dispatch_key = lookup;
     if (const char* directory = std::getenv("EDEN_NX2_SHADER_DUMP");
         directory && !entry.pipeline && env.CanBeSerialized()) {
         const auto path = std::filesystem::path{directory} /
@@ -3773,7 +3778,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(const ComputePipe
 }
 
 ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
-    ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
+    ShaderPools& pools, const ComputePipelineLookupKey& lookup, Shader::Environment& env,
     PipelineStatistics* statistics, bool build_in_parallel,
     std::shared_ptr<ShaderPools> emit_pools, bool defer_local_memory) try {
     SCOPE_EXIT {
@@ -3781,7 +3786,8 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
             ReturnPools(std::move(emit_pools));
         }
     };
-    auto hash = key.Hash();
+    const auto& key = lookup.key;
+    const auto hash = key.Hash();
     if (device.HasBrokenCompute()) {
         LOG_ERROR(Render_Vulkan, "Skipping {:#016x}", hash);
         return {.failure = "Device reports broken compute support"};
@@ -3790,9 +3796,12 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
 
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
-    if (defer_local_memory && cfg.HasLocalMemoryAccesses()) {
+    const bool depends_on_local_memory_layout = cfg.HasLocalMemoryAccesses();
+    if (defer_local_memory && depends_on_local_memory_layout) {
         return {.depends_on_local_memory_layout = true};
     }
+    const u64 binary_key =
+        TranslatedComputeKey(lookup, depends_on_local_memory_layout).DriverBinaryKey();
 
     // Dump it before error.
     if (Settings::values.dump_guest_shaders) {
@@ -3842,7 +3851,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
             return module;
         };
         pipeline = std::make_unique<ComputePipeline>(
-            device, scheduler, vulkan_pipeline_cache, pipeline_binaries.get(), hash,
+            device, scheduler, vulkan_pipeline_cache, pipeline_binaries.get(), binary_key,
             descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring,
             BuildQueue(build_in_parallel, ir_bytes), statistics,
             &shader_notify, info, vk::ShaderModule{}, key.unique_hash, std::vector<u8>{},
@@ -3860,7 +3869,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
             pools.inst.Free();
         }
         pipeline = std::make_unique<ComputePipeline>(
-            device, scheduler, vulkan_pipeline_cache, pipeline_binaries.get(), hash,
+            device, scheduler, vulkan_pipeline_cache, pipeline_binaries.get(), binary_key,
             descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring,
             BuildQueue(build_in_parallel), statistics, &shader_notify, info, std::move(module),
             key.unique_hash, std::move(kept_spirv));
@@ -3870,11 +3879,11 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
                                                         : std::vector<std::pair<u32, u32>>{},
             .mapped_pointers =
                 env.IsNativeProgram() ? env.MappedStoragePointerKeys() : std::vector<u64>{},
-            .depends_on_local_memory_layout = cfg.HasLocalMemoryAccesses()};
+            .depends_on_local_memory_layout = depends_on_local_memory_layout};
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "Compute pipeline compilation failed shader={:#016x} pipeline={:#016x}: {}",
-              key.unique_hash, key.Hash(), exception.what());
+              lookup.key.unique_hash, lookup.key.Hash(), exception.what());
     return {.failure = exception.what()};
 }
 
