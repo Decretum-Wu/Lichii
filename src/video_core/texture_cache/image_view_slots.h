@@ -3,24 +3,39 @@
 
 #pragma once
 
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "video_core/texture_cache/types.h"
 
 namespace VideoCommon {
 
-template <typename View>
+template <typename View, typename GenerationAllocator = std::allocator<u32>>
 class ImageViewSlots : private Common::SlotVector<View> {
     using Base = Common::SlotVector<View>;
 
 public:
-    using Base::insert;
+    ImageViewSlots() = default;
+    explicit ImageViewSlots(const GenerationAllocator& allocator) : generations(allocator) {}
+
     using Base::operator[];
 
-    void erase(ImageViewId id) {
+    template <typename... Args>
+    [[nodiscard]] ImageViewId insert(Args&&... args) {
+        const ImageViewId id = Base::insert(std::forward<Args>(args)...);
         if (id.Value() >= generations.size()) {
-            generations.resize(id.Value() + 1);
+            try {
+                generations.resize(id.Value() + 1);
+            } catch (...) {
+                Base::erase(id);
+                throw;
+            }
         }
+        return id;
+    }
+
+    void erase(ImageViewId id) noexcept {
         ++generations[id.Value()];
         Base::erase(id);
     }
@@ -34,7 +49,7 @@ public:
     }
 
 private:
-    std::vector<u32> generations;
+    std::vector<u32, GenerationAllocator> generations;
 };
 
 } // namespace VideoCommon
