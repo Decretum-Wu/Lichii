@@ -17,7 +17,6 @@
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
 #include "video_core/renderer_vulkan/vk_dlss_network_probe.h"
 #include "video_core/renderer_vulkan/vk_fsr3_upscaler.h"
-#include "video_core/renderer_vulkan/vk_image_reaper.h"
 #ifdef EGLANTINE_STREAMLINE
 #include "video_core/renderer_vulkan/vk_streamline_dlss.h"
 #endif
@@ -112,9 +111,6 @@ public:
     void FreeDeferredStagingBuffer(StagingBufferRef& ref);
 
     void TickFrame();
-
-    void DrainImageReaper();
-    void ReapImage(Image& image);
 
     void FlushDeferredClear();
 
@@ -403,7 +399,6 @@ public:
         bool used_this_frame{};
     };
     std::vector<ColorFeedbackSnapshot> color_feedback_snapshots;
-    ImageReaper image_reaper;
 };
 
 class Framebuffer {
@@ -539,8 +534,6 @@ public:
 
     Image(Image&&) = default;
     Image& operator=(Image&&) = default;
-
-    void ReleaseDedicatedImage(ImageReaper& reaper);
 
     u32 HostMipLevels() const noexcept;
 
