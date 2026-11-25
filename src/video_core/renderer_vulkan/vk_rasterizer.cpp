@@ -3404,7 +3404,7 @@ void RasterizerVulkan::PlayUnlentDispatch(UnlentDispatch& dispatch) {
         VideoCommon::GpuSplit::SetPlayingPosition(~u64{0});
     };
     Profile::Scope profile_scope{Profile::Zone::Compute};
-    FlushWork(true);
+    FlushWork();
     auto& slots = buffer_cache_runtime.Nx2Slots();
     if (dispatch.list_slot && !slots.Held(*dispatch.list_slot)) {
         split.NoteUnlentSlotUnheld();
@@ -3492,7 +3492,7 @@ void RasterizerVulkan::DispatchCompute() {
         return;
     }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Compute};
-    FlushWork(true);
+    FlushWork();
     gpu_memory->FlushCaching();
     if (frame_dump.Capturing()) {
         frame_dump.EndPass();
@@ -6037,7 +6037,7 @@ void RasterizerVulkan::LoadDiskResources(u64 title_id, std::stop_token stop_load
     pipeline_cache.LoadDiskResources(title_id, stop_loading, callback);
 }
 
-void RasterizerVulkan::FlushWork(bool ends_pass) {
+void RasterizerVulkan::FlushWork() {
 #ifdef __ANDROID__
     static constexpr bool android = true;
 #else
@@ -6075,13 +6075,7 @@ void RasterizerVulkan::FlushWork(bool ends_pass) {
         }();
         legacy_budget = forced_draws != 0 ? forced_draws : (device.IsMoltenVK() ? 128U : 4096U);
     }
-    bool pass_boundary = false;
-    if (native && !android && draw_counter + 1 >= budget / 2 && draw_counter + 1 < budget) {
-        pass_boundary = ends_pass || scheduler.IsBetweenRenderPasses() ||
-                        (texture_cache.RenderTargetsDirty() && scheduler.IsRenderPassActive());
-    }
-    auto action = SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget,
-                                            pass_boundary);
+    auto action = SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget);
     if (action != SubmissionPolicy::Action::Flush && native && !android &&
         scheduler.IdleGpuAwaitsWork()) {
         draw_counter = 0;

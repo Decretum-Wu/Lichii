@@ -304,7 +304,7 @@ private:
     void NoteOcarinaDraw(const GraphicsPipeline& pipeline);
     void MarkOcarinaEffectsIfAlive();
 
-    void FlushWork(bool ends_pass = false);
+    void FlushWork();
 
     void TraceRenderState(bool is_indexed, const char* outcome, const Framebuffer* framebuffer);
 
