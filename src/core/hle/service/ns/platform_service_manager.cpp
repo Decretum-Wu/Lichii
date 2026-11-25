@@ -243,29 +243,25 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
         if (isolated_system_data) {
             font_fp = isolated_system_data->OpenFile(GetFontAsset(font.first), font.second);
         } else {
-            FileSys::VirtualFile romfs;
+            const auto open_font = [&](const FileSys::VirtualFile& romfs) -> FileSys::VirtualFile {
+                const auto extracted_romfs = romfs ? FileSys::ExtractRomFS(romfs) : nullptr;
+                return extracted_romfs ? extracted_romfs->GetFile(font.second) : nullptr;
+            };
             const auto nca =
                 nand->GetEntry(static_cast<u64>(font.first), FileSys::ContentRecordType::Data);
             if (nca) {
-                romfs = nca->GetRomFS();
+                font_fp = open_font(nca->GetRomFS());
+                if (!font_fp) {
+                    LOG_WARNING(Service_NS,
+                                "Cannot read \"{}\" from the installed {:016X}, using the "
+                                "built-in font",
+                                font.second, font.first);
+                }
             }
-
-            if (!romfs) {
-                romfs =
-                    FileSys::SystemArchive::SynthesizeSystemArchive(static_cast<u64>(font.first));
+            if (!font_fp) {
+                font_fp = open_font(
+                    FileSys::SystemArchive::SynthesizeSystemArchive(static_cast<u64>(font.first)));
             }
-
-            if (!romfs) {
-                LOG_ERROR(Service_NS, "Failed to find or synthesize {:016X}! Skipping", font.first);
-                continue;
-            }
-
-            const auto extracted_romfs = FileSys::ExtractRomFS(romfs);
-            if (!extracted_romfs) {
-                LOG_ERROR(Service_NS, "Failed to extract RomFS for {:016X}! Skipping", font.first);
-                continue;
-            }
-            font_fp = extracted_romfs->GetFile(font.second);
         }
         if (!font_fp) {
             LOG_ERROR(Service_NS, "{} font file not found: \"{}\"",

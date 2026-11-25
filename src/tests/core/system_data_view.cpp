@@ -22,6 +22,7 @@
 #include "common/hex_util.h"
 #include "common/scope_exit.h"
 #include "core/constants.h"
+#include "core/file_sys/content_archive.h"
 #include "core/file_sys/errors.h"
 #include "core/file_sys/fssystem/fssystem_nca_header.h"
 #include "core/file_sys/nca_metadata.h"
@@ -120,8 +121,10 @@ FileSys::VirtualDir TimeZoneRomFS(std::string_view version, const std::vector<u8
         std::vector<VirtualDir>{zoneinfo});
 }
 
-void WriteLegacyRecord(const FileSys::VirtualDir& registered, u64 title,
-                       FileSys::VirtualDir directory, u8 id) {
+constexpr size_t LegacyRomFSOffset = 0xC00;
+
+FileSys::VirtualFile WriteLegacyRecord(const FileSys::VirtualDir& registered, u64 title,
+                                      FileSys::VirtualDir directory, u8 id) {
     using namespace FileSys;
     const auto romfs = CreateRomFS(std::move(directory));
     REQUIRE(romfs);
@@ -131,8 +134,9 @@ void WriteLegacyRecord(const FileSys::VirtualDir& registered, u64 title,
     header.content_type = NcaHeader::ContentType::Data;
     header.program_id = title;
     header.sdk_addon_version = 0x000C0000;
-    header.fs_info[0].start_sector = 6;
-    header.fs_info[0].end_sector = 6 + static_cast<u32>((romfs->GetSize() + 0x1FF) / 0x200);
+    header.fs_info[0].start_sector = LegacyRomFSOffset / 0x200;
+    header.fs_info[0].end_sector = header.fs_info[0].start_sector +
+                                   static_cast<u32>((romfs->GetSize() + 0x1FF) / 0x200);
     header.content_size = header.fs_info[0].end_sector * 0x200ULL;
     NcaFsHeader fs{};
     fs.version = 2;
@@ -142,7 +146,7 @@ void WriteLegacyRecord(const FileSys::VirtualDir& registered, u64 title,
     std::vector<u8> bytes(header.content_size);
     std::memcpy(bytes.data(), &header, sizeof(header));
     std::memcpy(bytes.data() + NcaHeader::Size, &fs, sizeof(fs));
-    REQUIRE(romfs->Read(bytes.data() + 0xC00, romfs->GetSize()) == romfs->GetSize());
+    REQUIRE(romfs->Read(bytes.data() + LegacyRomFSOffset, romfs->GetSize()) == romfs->GetSize());
 
     const NcaID nca_id{id};
     const auto name = Common::HexToString(nca_id, false);
@@ -162,6 +166,7 @@ void WriteLegacyRecord(const FileSys::VirtualDir& registered, u64 title,
         CNMT{metadata, {}, {ContentRecord{{}, nca_id, {}, ContentRecordType::Data, 0}}, {}}
             .Serialize();
     REQUIRE(meta->WriteBytes(cnmt) == cnmt.size());
+    return nca;
 }
 
 class ObservedArchive final : public FileSys::VectorVfsFile {
@@ -690,8 +695,6 @@ TEST_CASE("System data is selected before NS loads fonts and SET serves firmware
         fsc.GetSystemNANDContentDirectory()->GetSubdirectory("registered");
     REQUIRE(registered);
     WriteLegacyRecord(registered, VersionTitle, VersionRomFS(7, 5), 1);
-    WriteLegacyRecord(registered, static_cast<u64>(Service::NS::FontArchives::Standard),
-                      FontRomFS(1, 0), 2);
     fsc.GetSystemNANDContents()->Refresh();
 
     const auto client_owner = std::make_unique<Kernel::KThread>(kernel);
@@ -734,6 +737,17 @@ TEST_CASE("System data is selected before NS loads fonts and SET serves firmware
 
     constexpr auto standard = SharedFontType::JapanUSEuropeStandard;
     constexpr auto korean = SharedFontType::KoreanHangul;
+    u32 synthesized_size{};
+    {
+        const auto missing_firmware_font = std::make_unique<IPlatformServiceManager>(system, "pl:u");
+        synthesized_size = font_query(*missing_firmware_font, 2010, standard);
+        REQUIRE(synthesized_size > 0);
+    }
+
+    constexpr auto standard_title = static_cast<u64>(Service::NS::FontArchives::Standard);
+    const auto standard_nca = WriteLegacyRecord(registered, standard_title, FontRomFS(1, 0), 2);
+    auto* nand = fsc.GetSystemNANDContents();
+    nand->Refresh();
     const auto legacy_ns_owner = std::make_unique<IPlatformServiceManager>(system, "pl:u");
     IPlatformServiceManager& legacy_ns = *legacy_ns_owner;
     REQUIRE(legacy_set.GetFirmwareVersion2(&version).IsSuccess());
@@ -781,6 +795,18 @@ TEST_CASE("System data is selected before NS loads fonts and SET serves firmware
     REQUIRE(legacy_set.GetFirmwareVersion2(&version).IsSuccess());
     CHECK(version.major == 7);
     CHECK(font_query(legacy_ns, 2, standard) == 4);
+
+    const u64_le invalid_header_size{0};
+    REQUIRE(standard_nca->WriteObject(invalid_header_size, LegacyRomFSOffset) ==
+            sizeof(invalid_header_size));
+    const auto installed = nand->GetEntry(standard_title, FileSys::ContentRecordType::Data);
+    REQUIRE(installed);
+    const auto malformed_romfs = installed->GetRomFS();
+    REQUIRE(malformed_romfs);
+    REQUIRE_FALSE(FileSys::ExtractRomFS(malformed_romfs));
+
+    const auto unreadable_firmware_font = std::make_unique<IPlatformServiceManager>(system, "pl:u");
+    CHECK(font_query(*unreadable_firmware_font, 2010, standard) == synthesized_size);
 }
 
 TEST_CASE("The startup time-zone mount never substitutes legacy system data",
