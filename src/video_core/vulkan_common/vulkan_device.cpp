@@ -1930,10 +1930,18 @@ bool Device::GetSuitability(bool requires_swapchain) {
     // Disable VertexInputDynamicState on old Intel Windows drivers
     if (extensions.vertex_input_dynamic_state) {
         const u32 version = (properties.properties.driverVersion << 3) >> 3;
-        if ((driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && version < VK_MAKE_API_VERSION(27, 20, 100, 0))
-        || (driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY && properties.properties.driverVersion < NvidiaDriverVersion(580, 119, 2))) {
+        const char* intel_dynamic_input = std::getenv("EDEN_NX2_INTEL_DYNAMIC_VERTEX_INPUT");
+        const bool restore_intel_driver_check =
+            intel_dynamic_input != nullptr && std::string_view{intel_dynamic_input} == "0";
+        if ((driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && restore_intel_driver_check &&
+             version < VK_MAKE_API_VERSION(27, 20, 100, 0)) ||
+            (driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY &&
+             properties.properties.driverVersion < NvidiaDriverVersion(580, 119, 2))) {
             LOG_WARNING(Render_Vulkan, "Disabling broken VK_EXT_vertex_input_dynamic_state");
             RemoveExtensionFeature(extensions.vertex_input_dynamic_state, features.vertex_input_dynamic_state, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+        } else if (driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS &&
+                   !restore_intel_driver_check) {
+            LOG_INFO(Render_Vulkan, "Intel vertex input A/B: bypassing the driver version check");
         }
     }
 
