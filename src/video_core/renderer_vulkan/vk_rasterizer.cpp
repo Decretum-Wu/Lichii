@@ -595,6 +595,11 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
         [this](const std::function<void(DAddr, size_t)>& callback) {
             gpu.ForEachPendingCpuWrite(callback);
         });
+    buffer_cache.SetReadRunPageFilter([this](DAddr addr, u64 size) {
+        return !texture_cache.page_filter.Any(addr, size) &&
+               !query_cache.page_filter.Any(addr, size) &&
+               !buffer_cache_runtime.Nx2Slots().HasOwed();
+    });
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) {
             auto* const rasterizer = static_cast<RasterizerVulkan*>(argument);
@@ -628,6 +633,7 @@ RasterizerVulkan::~RasterizerVulkan() {
     state_tracker.ClearChannel();
     scheduler.WaitWorker();
     scheduler.Finish();
+    buffer_cache_runtime.ClearMultiRangeBuffers();
 }
 
 GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_indirect) {
@@ -1608,13 +1614,27 @@ void RasterizerVulkan::NoteOcarinaDraw(const GraphicsPipeline& pipeline) {
                 scene.size.width == oot_motion.extent.width &&
                 scene.size.height == oot_motion.extent.height && !scene.IsRescaled() &&
                 scene.range == VideoCommon::SubresourceRange{}) {
-                oot_effects_scene = scene.Handle(Shader::TextureType::Color2D);
+                oot_effects_view = scene_id;
+                oot_effects_generation = texture_cache.ImageViewGeneration(scene_id);
                 oot_effects_address = scene.gpu_addr;
                 oot_effects_frame = render_trace_frame;
-                oot_live_dlss->SaveEffectsBase(oot_effects_scene, oot_motion.extent,
-                                               render_trace_frame);
+                oot_live_dlss->SaveEffectsBase(scene.Handle(Shader::TextureType::Color2D),
+                                               oot_motion.extent, render_trace_frame);
             }
         }
+    }
+}
+
+void RasterizerVulkan::MarkOcarinaEffectsIfAlive() {
+    if (const auto* scene =
+            texture_cache.GetImageViewIfCurrent(oot_effects_view, oot_effects_generation)) {
+        oot_live_dlss->MarkEffects(scene->Handle(Shader::TextureType::Color2D), render_trace_frame);
+    } else if (oot_effects_stale_warnings < 8) {
+        ++oot_effects_stale_warnings;
+        LOG_WARNING(Render_Vulkan,
+                    "OoT effects mark skipped: scene view at {:#x} was retired since the fog "
+                    "draw ({} so far)",
+                    oot_effects_address, oot_effects_stale_warnings);
     }
 }
 
@@ -3438,7 +3458,7 @@ void RasterizerVulkan::PlayUnlentDispatch(UnlentDispatch& dispatch) {
         if (std::ranges::any_of(pipeline->WrittenImages(), [this](VideoCommon::ImageViewId id) {
                 return id && texture_cache.GetImageView(id).gpu_addr == oot_effects_address;
             })) {
-            oot_live_dlss->MarkEffects(oot_effects_scene, render_trace_frame);
+            MarkOcarinaEffectsIfAlive();
             oot_effects_frame.reset();
         }
     }
@@ -3662,7 +3682,7 @@ void RasterizerVulkan::DispatchCompute() {
         if (std::ranges::any_of(written, [this](VideoCommon::ImageViewId id) {
                 return id && texture_cache.GetImageView(id).gpu_addr == oot_effects_address;
             })) {
-            oot_live_dlss->MarkEffects(oot_effects_scene, render_trace_frame);
+            MarkOcarinaEffectsIfAlive();
             oot_effects_frame.reset();
         }
     }
@@ -4431,8 +4451,8 @@ bool RasterizerVulkan::BackTakesInvalidation(std::span<const std::pair<DAddr, Si
         }
         return std::nullopt;
     };
-    const auto lend = [&split](Site site) {
-        split.NoteInvalidation(site);
+    const auto lend = [&split](Site lent) {
+        split.NoteInvalidation(lent);
         return false;
     };
     // Shaders are looked up on the back as well: their invalidation stays lent.
@@ -5716,6 +5736,7 @@ void RasterizerVulkan::TickFrame() {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.TickFrame();
     }
+    scheduler.JoinRecorders();
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.TickFrame();
@@ -6059,8 +6080,14 @@ void RasterizerVulkan::FlushWork(bool ends_pass) {
         pass_boundary = ends_pass || scheduler.IsBetweenRenderPasses() ||
                         (texture_cache.RenderTargetsDirty() && scheduler.IsRenderPassActive());
     }
-    switch (SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget,
-                                      pass_boundary)) {
+    auto action = SubmissionPolicy::Advance(draw_counter, native, android, budget, legacy_budget,
+                                            pass_boundary);
+    if (action != SubmissionPolicy::Action::Flush && native && !android &&
+        scheduler.IdleGpuAwaitsWork()) {
+        draw_counter = 0;
+        action = SubmissionPolicy::Action::Flush;
+    }
+    switch (action) {
     case SubmissionPolicy::Action::None:
         break;
     case SubmissionPolicy::Action::Dispatch:

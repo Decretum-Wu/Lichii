@@ -231,6 +231,9 @@ public:
             instance.WaitRender(site);
         }
     }
+    [[nodiscard]] static bool BackHasPendingRender() {
+        return on_back_thread && instance.RenderPending();
+    }
     /// EDEN_NX2_RENDER_OWNS=1: on the back, every call into GPURender's objects (the scheduler,
     /// the texture cache, the guest descriptor queue, the query cache) is lent to it.
     [[nodiscard]] static bool LendsToRender() {
