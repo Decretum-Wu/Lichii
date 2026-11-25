@@ -738,6 +738,15 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         LOG_INFO(Render_Vulkan, "RADV before 26.2.5: native mesh shaders read the grid size to "
                                 "avoid the stale mesh user SGPR hang");
     }
+    if (profile.select_global_memory_buffer) {
+        constexpr std::array arch_names{"Kepler or older", "Maxwell", "Pascal", "Volta", "Turing",
+                                        "Ampere or newer"};
+        LOG_INFO(Render_Vulkan, "NVIDIA {}: global memory accesses search the bound buffers {}",
+                 arch_names[static_cast<size_t>(device.GetNvidiaArch())],
+                 profile.has_broken_global_memory_search_call
+                     ? "inline in every stage"
+                     : "through one non-inlined function outside task and mesh programs");
+    }
 
     host_info = Shader::HostTranslateInfo{
         .min_ssbo_alignment = device.GetStorageBufferAlignment(),
