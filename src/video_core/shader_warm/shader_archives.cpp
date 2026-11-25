@@ -1067,6 +1067,14 @@ bool IsFramePack(std::span<const u8> head, std::string_view path, u64 size) {
     return true;
 }
 
+bool IsPdatPackPath(std::string_view path) {
+    constexpr std::string_view asset_prefix = "asset/assets_";
+    const auto lower = Lower(path);
+    return lower.ends_with(".pdat") ||
+           (lower.starts_with(asset_prefix) && lower.ends_with(".dat") &&
+            lower.find('/', asset_prefix.size()) == std::string::npos);
+}
+
 FrameScanResult ScanFrames(u64 size, const ReadAt& read, const ZstdDictionaries* dictionaries,
                            const std::function<void(const ShaderRecord&)>& on_record,
                            std::stop_token stop, const FrameScanOptions& options) {

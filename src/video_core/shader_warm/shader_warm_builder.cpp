@@ -605,6 +605,8 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     if (const auto error = OpenGame(system, game_path, game, steps)) {
         return fail(*error);
     }
+    const bool loose_exefs =
+        game.loader && game.loader->GetFileType() == Loader::FileType::DeconstructedRomDirectory;
 
     // Archive list, in the offline pipeline's order: every shader archive of each package, then
     // each package's effects, sorted by path inside a package (see ClassifyGameFile).
@@ -622,6 +624,9 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
         steps.Advance("RomFS file classification and header probing", files.size());
         std::vector<ArchiveFile> package_effects;
         for (auto& file : files) {
+            if (stop.stop_requested()) {
+                return fail("Stopped");
+            }
             switch (ClassifyGameFile(file.path)) {
             case GameFileKind::ShaderArchive:
                 archives.push_back(file);
@@ -632,14 +637,21 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             case GameFileKind::ZstdDictionaries:
                 dictionary_pack = file.file; // the newest package wins
                 break;
-            case GameFileKind::Other:
-                if (IsFramePack(file.file->ReadBytes(4, 0), file.path, file.file->GetSize())) {
+            case GameFileKind::Other: {
+                const auto size = file.file->GetSize();
+                if (IsFramePack({}, file.path, size) ||
+                    (size >= 4 && (!loose_exefs || IsPdatPackPath(file.path)) &&
+                     IsFramePack(file.file->ReadBytes(4, 0), file.path, size))) {
                     packs.push_back(file);
                 }
                 break;
             }
+            }
         }
         effects.insert(effects.end(), package_effects.begin(), package_effects.end());
+    }
+    if (stop.stop_requested()) {
+        return fail("Stopped");
     }
     archives.insert(archives.end(), effects.begin(), effects.end());
     if (dictionary_pack) {

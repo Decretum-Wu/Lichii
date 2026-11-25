@@ -350,6 +350,16 @@ TEST_CASE("ShaderPrecache: asset packs are told by their magic or size", "[video
     REQUIRE_FALSE(ShaderWarm::IsFramePack(other, "Movie/Opening.MP4", u64{2} << 30));
 }
 
+TEST_CASE("ShaderPrecache: loose pack probes are limited to PDAT paths", "[video_core]") {
+    REQUIRE(ShaderWarm::IsPdatPackPath("Asset/assets_b000.dat"));
+    REQUIRE(ShaderWarm::IsPdatPackPath("ASSET/ASSETS_A000.DAT"));
+    REQUIRE(ShaderWarm::IsPdatPackPath("Pack/custom.PDAT"));
+    REQUIRE_FALSE(ShaderWarm::IsPdatPackPath("Asset/Model.dat"));
+    REQUIRE_FALSE(ShaderWarm::IsPdatPackPath("Asset/assets_a000.dat.zs"));
+    REQUIRE_FALSE(ShaderWarm::IsPdatPackPath("Asset/assets_nested/file.dat"));
+    REQUIRE_FALSE(ShaderWarm::IsPdatPackPath("Actor/assets_b000.dat"));
+}
+
 TEST_CASE("ShaderPrecache: a pack's frames are found across window ends", "[video_core]") {
     constexpr size_t window = 256;
     MemoryPack pack;

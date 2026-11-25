@@ -15,7 +15,10 @@ The global setting keeps its meaning: Off, Ask and Always apply to every game, a
 
 Kirby Air Riders keeps no shader archives. Its programs sit bare in `Asset/assets_a*.dat` (magic `PDAT`, 16.6 GB): there are 194,537 zstd members, and each is a FlatBuffer holding one compute program or a vertex and pixel pair. The reader is a port of Zachary McKenney's #1117 (40dadda7d5, b57bfc0457), without its recipe stack:
 
-- `IsFramePack`: a RomFS file the archive readers don't take is a pack when it starts with `PDAT`, or when it is 1 GiB or larger and isn't media.
+- The builder scans unclassified RomFS files of 1 GiB or more unless they have a media extension.
+  It also checks for the `PDAT` header. For loose ExeFS dumps, this check only opens
+  `Asset/assets_*.dat` and `*.pdat` files so boot doesn't open every asset. A smaller PDAT pack
+  with another name is not discovered in a loose ExeFS dump.
 - `ScanFrames` reads the pack through bounded VFS reads, 64 MiB at a time, never the whole file. A zstd frame must parse to its end (`ZSTD_findFrameCompressedSize`) before it is inflated, so a stray magic costs nothing. The stop token is checked before each window. A read that returns less than asked before the pack's end fails the build like a stop, and the previous precache file stays.
 - `FindBarePrograms` reads each inflated member. A member is a native control section (magic `0x98761234`, version `0xc9`), its own length at +0x30 and its code length at +0x44, followed by the code. The stage comes from the control's stage byte (+0x56: 5 compute, 6 task, 7 mesh) or from the graphics header at the code's start.
 

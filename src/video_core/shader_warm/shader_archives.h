@@ -100,6 +100,8 @@ void FindBarePrograms(std::span<const u8> data,
 /// or any other file of 1 GiB or more that isn't media.
 [[nodiscard]] bool IsFramePack(std::span<const u8> head, std::string_view path, u64 size);
 
+[[nodiscard]] bool IsPdatPackPath(std::string_view path);
+
 struct FrameScanOptions {
     size_t window = size_t{64} << 20; ///< Bytes read at a time
     size_t max_frame = size_t{256} << 20; ///< Largest compressed frame read
