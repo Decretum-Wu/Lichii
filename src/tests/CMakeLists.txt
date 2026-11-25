@@ -120,6 +120,7 @@ add_executable(tests
     video_core/native_texture_header_index.cpp
     video_core/texture_alias_ticks.cpp
     video_core/texture_cache_gob_layout.cpp
+    video_core/image_view_slots.cpp
     video_core/sampled_views.cpp
     video_core/texture_handles.cpp
     video_core/ampere_selevet_modes.cpp
