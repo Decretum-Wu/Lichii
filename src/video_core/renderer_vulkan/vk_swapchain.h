@@ -11,7 +11,9 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "common/common_types.h"
@@ -70,6 +72,24 @@ public:
     /// failed call took); Present logs the end of the event.
     void ReportRecovery(VkResult result, std::string_view what,
                         std::chrono::steady_clock::duration took);
+
+    /// Marks a wait of the present path for the watchdog, which logs it once when it passes
+    /// WAIT_STALL_THRESHOLD and once when it ends. Nothing about the wait changes.
+    class WaitScope {
+    public:
+        WaitScope(Swapchain& swapchain_, const char* what, u64 index, u64 tick)
+            : swapchain{swapchain_} {
+            swapchain.BeginWait(what, index, tick);
+        }
+        ~WaitScope() {
+            swapchain.EndWait();
+        }
+        WaitScope(const WaitScope&) = delete;
+        WaitScope& operator=(const WaitScope&) = delete;
+
+    private:
+        Swapchain& swapchain;
+    };
 
     /// Presents the rendered image to the swapchain. A non-zero `present_id` is chained as the
     /// present's id when the swapchain has ids (HasPresentIds). Returns whether the present was
@@ -204,6 +224,10 @@ private:
 
     bool NeedsPresentModeUpdate() const;
 
+    void BeginWait(const char* what, u64 index, u64 tick);
+    void EndWait();
+    void WatchWaits(std::stop_token token);
+
     /// Locks the swapchain for an acquire, a present or its recreation, ahead of the present wait
     /// thread (WaitForPresent).
     [[nodiscard]] std::unique_lock<std::mutex> LockForUse();
@@ -258,6 +282,11 @@ private:
     std::condition_variable use_cv;
     std::atomic<u32> use_requests{}; ///< Threads in LockForUse; WaitForPresent lets them in first.
     std::atomic<u64> generation{};
+
+    WaitWatch wait_watch;
+    std::mutex watchdog_mutex;
+    std::condition_variable_any watchdog_cv;
+    std::jthread watchdog; ///< Last member: stopped first.
 };
 
 } // namespace Vulkan

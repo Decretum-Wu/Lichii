@@ -4,6 +4,7 @@
 #pragma once
 
 #include <chrono>
+#include <mutex>
 #include <optional>
 
 #include <vulkan/vulkan_core.h>
@@ -92,6 +93,66 @@ private:
     bool active{};
     VkResult first_result{VK_SUCCESS};
     u32 failures{};
+    Clock::time_point began{};
+};
+
+/// A wait on the present path that has run for WAIT_STALL_THRESHOLD or more. Diagnostics only: the
+/// wait itself is untouched, a watchdog thread polls and each wait is reported once, and once more
+/// when it ends.
+constexpr std::chrono::milliseconds WAIT_STALL_THRESHOLD{1000};
+
+class WaitWatch {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    struct Wait {
+        const char* what;
+        u64 index;
+        u64 tick;
+        std::chrono::milliseconds elapsed;
+    };
+
+    void Begin(const char* what, u64 index, u64 tick, Clock::time_point now) {
+        std::scoped_lock lock{mutex};
+        active = true;
+        reported = false;
+        current = {what, index, tick, {}};
+        began = now;
+    }
+
+    /// The wait in progress once it has run for `threshold`, the first time only.
+    std::optional<Wait> Poll(Clock::time_point now, std::chrono::milliseconds threshold) {
+        std::scoped_lock lock{mutex};
+        if (!active || reported || now - began < threshold) {
+            return std::nullopt;
+        }
+        reported = true;
+        return Snapshot(now);
+    }
+
+    /// Ends the wait. The wait if it had been reported, with its total time.
+    std::optional<Wait> End(Clock::time_point now) {
+        std::scoped_lock lock{mutex};
+        const bool was_reported = active && reported;
+        active = false;
+        reported = false;
+        if (!was_reported) {
+            return std::nullopt;
+        }
+        return Snapshot(now);
+    }
+
+private:
+    Wait Snapshot(Clock::time_point now) const {
+        Wait wait = current;
+        wait.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - began);
+        return wait;
+    }
+
+    std::mutex mutex;
+    bool active{};
+    bool reported{};
+    Wait current{};
     Clock::time_point began{};
 };
 

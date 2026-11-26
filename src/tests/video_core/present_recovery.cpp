@@ -55,3 +55,29 @@ TEST_CASE("One recovery event is reported once at its start and once at its end"
     REQUIRE(second->first_result == VK_ERROR_SURFACE_LOST_KHR);
     REQUIRE(second->failures == 1);
 }
+
+TEST_CASE("A wait is reported once after the threshold and once when it ends",
+          "[video_core][present_recovery]") {
+    Vulkan::WaitWatch watch;
+    const auto t0 = Vulkan::WaitWatch::Clock::now();
+
+    REQUIRE_FALSE(watch.Poll(t0, 1000ms).has_value());
+    REQUIRE_FALSE(watch.End(t0).has_value());
+
+    watch.Begin("scheduler wait", 2, 40, t0);
+    REQUIRE_FALSE(watch.Poll(t0 + 999ms, 1000ms).has_value());
+    const auto stalled = watch.Poll(t0 + 1250ms, 1000ms);
+    REQUIRE(stalled.has_value());
+    REQUIRE(stalled->index == 2);
+    REQUIRE(stalled->tick == 40);
+    REQUIRE(stalled->elapsed == 1250ms);
+    REQUIRE_FALSE(watch.Poll(t0 + 2000ms, 1000ms).has_value());
+
+    const auto ended = watch.End(t0 + 3000ms);
+    REQUIRE(ended.has_value());
+    REQUIRE(ended->elapsed == 3000ms);
+    REQUIRE_FALSE(watch.Poll(t0 + 4000ms, 1000ms).has_value());
+
+    watch.Begin("submit", 0, 0, t0 + 5000ms);
+    REQUIRE_FALSE(watch.End(t0 + 5100ms).has_value());
+}
