@@ -316,12 +316,12 @@ private:
                 std::unique_lock lock(guard);
                 const auto can_release = [&] {
                     fence_thread_waiting = !stop_token.stop_requested() && fences.empty();
-                    if (fence_thread_waiting && fence_thread_sleep_hook) [[unlikely]] {
+                    if (fence_thread_waiting && fence_thread_sleep_hook) {
                         fence_thread_sleep_hook();
                     }
                     return !fence_thread_waiting;
                 };
-                if (fence_thread_sleep_hook) [[unlikely]] {
+                if (fence_thread_sleep_hook) {
                     if (!cv.wait_for(lock, std::chrono::seconds{10}, can_release)) {
                         continue;
                     }
