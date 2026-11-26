@@ -163,13 +163,16 @@ TEST_CASE("Pointers are grouped into device-contiguous windows", "[video_core][p
     }
 
     SECTION("A window does not span a discontiguous range") {
-        const std::vector<GPUVAddr> pointers{0x100000, 0x100040};
+        // Device memory changes at the page boundary 0x101000
+        const std::vector<GPUVAddr> pointers{0x100f00, 0x101000};
         const auto split = [](GPUVAddr begin, GPUVAddr end) {
-            return end <= 0x100040 || begin >= 0x100040;
+            return end <= 0x101000 || begin >= 0x101000;
         };
         REQUIRE(GroupPointerWindows(pointers, split, windows));
-        CHECK(windows[0].gpu_addr == 0x100000);
-        CHECK(windows[1].gpu_addr == 0x100040);
+        CHECK(windows[0].gpu_addr == 0x100f00);
+        CHECK(windows[0].size == access);
+        CHECK(windows[1].gpu_addr == 0x101000);
+        CHECK(windows[1].size == access);
     }
 
     SECTION("Pointers further apart than the largest window do not fit") {
