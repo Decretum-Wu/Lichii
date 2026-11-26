@@ -4231,7 +4231,13 @@ ImageViewId TextureCache<P>::CreateImageView(const TICEntry& raw_config, bool& r
         return NULL_IMAGE_VIEW_ID;
     }
     ImageBase& image = slot_images[image_id];
-    const SubresourceBase base = image.TryFindBase(config.Address()).value();
+    const std::optional<SubresourceBase> found_base = image.TryFindBase(config.Address());
+    if (!found_base) {
+        LOG_WARNING(HW_GPU, "No subresource of image {:#x} at {:#x}, dropping the view",
+                    image.gpu_addr, config.Address());
+        return NULL_IMAGE_VIEW_ID;
+    }
+    const SubresourceBase base = *found_base;
     ASSERT(base.level == 0);
     const ImageViewInfo view_info(config, base.layer);
     const ImageViewId image_view_id = FindOrEmplaceImageView(image_id, view_info);
