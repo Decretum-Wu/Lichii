@@ -700,9 +700,19 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
 
     surface_width = (std::min)(surface_width, out_luma_width);
     surface_height = (std::min)(surface_height, out_luma_height);
+    // The chroma plane is sized from its own dimensions in the guest's config: one byte pair per
+    // two luma pixels, one row per two luma rows. Its pairs are written only where it holds them,
+    // and the luma is written as before.
+    auto const chroma_row_bytes = out_chroma_width * 2;
+    auto const chroma_fits = surface_width <= chroma_row_bytes &&
+                             (surface_height + 1) / 2 <= out_chroma_height;
+    auto const has_chroma = [&](size_t x, size_t y) {
+        return y / 2 < out_chroma_height && x + 1 < chroma_row_bytes;
+    };
 
     auto Decode = [&](u8* out_luma, u8* out_chroma) {
-        if (COMPILED_HAS_SSE41 && HasSSE41() && surface_width % 16 == 0) {
+        // The SSE path writes whole chroma rows: only where the chroma plane holds them.
+        if (COMPILED_HAS_SSE41 && HasSSE41() && surface_width % 16 == 0 && chroma_fits) {
 #if COMPILED_HAS_SSE41
             // luma_mask   = [00 00] [00 00] [00 00] [FF FF] [00 00] [00 00] [00 00] [FF FF]
             auto const luma_mask = _mm_set_epi16(0, 0, 0, -1, 0, 0, 0, -1);
@@ -831,13 +841,7 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
                     // clang-format on
                 }
 
-                auto const src_chroma = y * surface_stride;
-                for (; x < surface_width; x += 2) {
-                    out_luma[dst_luma + x + 0] = u8(output_surface[src + x + 0].r >> 2);
-                    out_luma[dst_luma + x + 1] = u8(output_surface[src + x + 1].r >> 2);
-                    out_chroma[dst_chroma + x + 0] = u8(output_surface[src_chroma + x].g >> 2);
-                    out_chroma[dst_chroma + x + 1] = u8(output_surface[src_chroma + x].b >> 2);
-                }
+                // No tail: this path runs only for widths that are multiples of 16.
             }
 #endif
         } else {
@@ -849,8 +853,10 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
                 for (size_t x = 0; x < surface_width; x += 2) {
                     out_luma[dst_luma + x + 0] = u8(output_surface[src_luma + x + 0].r >> 2);
                     out_luma[dst_luma + x + 1] = u8(output_surface[src_luma + x + 1].r >> 2);
-                    out_chroma[dst_chroma + x + 0] = u8(output_surface[src_chroma + x].g >> 2);
-                    out_chroma[dst_chroma + x + 1] = u8(output_surface[src_chroma + x].b >> 2);
+                    if (has_chroma(x, y)) {
+                        out_chroma[dst_chroma + x + 0] = u8(output_surface[src_chroma + x].g >> 2);
+                        out_chroma[dst_chroma + x + 1] = u8(output_surface[src_chroma + x].b >> 2);
+                    }
                 }
             }
         }
