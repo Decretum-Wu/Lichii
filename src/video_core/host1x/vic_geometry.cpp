@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "video_core/host1x/vic_geometry.h"
+#include "video_core/textures/decoders.h"
 
 namespace Tegra::Host1x::VicGeometry {
 
@@ -52,6 +53,29 @@ void SwizzleSurface(std::span<u8> output, u32 out_stride, std::span<const u8> in
         offs_y = (offs_y - y_mask) & y_mask;
         offs_x += offs_y ? 0 : out_stride; // Wrap into next tile row
     }
+}
+
+size_t BlockLinearSize(u32 row_bytes, u32 height, u32 block_height) noexcept {
+    // As Texture::CalculateSize, but in 64 bits: rows to a GOB's width (64 bytes), height to a
+    // block's (8 rows a GOB). Callers pass at most MaxBlockHeight.
+    const u64 aligned_row = (u64{row_bytes} + 63) & ~u64{63};
+    const u64 block_rows = u64{8} << (std::min)(block_height, MaxBlockHeight);
+    const u64 aligned_height = (u64{height} + block_rows - 1) / block_rows * block_rows;
+    return static_cast<size_t>(aligned_row * aligned_height);
+}
+
+bool SwizzleBlockLinear(std::span<u8> output, std::span<const u8> input, u32 row_bytes, u32 height,
+                        u32 block_height) noexcept {
+    if (block_height > MaxBlockHeight || input.size() < size_t{row_bytes} * height ||
+        output.size() < BlockLinearSize(row_bytes, height, block_height)) {
+        return false;
+    }
+    if (block_height == 1 && row_bytes % 64 == 0 && height % 2 == 0) {
+        SwizzleSurface(output, row_bytes, input, row_bytes, height);
+    } else {
+        Texture::SwizzleTexture(output, input, 1, row_bytes, height, 1, block_height, 0, 1);
+    }
+    return true;
 }
 
 } // namespace Tegra::Host1x::VicGeometry

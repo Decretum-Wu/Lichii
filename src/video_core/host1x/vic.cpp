@@ -36,7 +36,6 @@ extern "C" {
 #include "video_core/host1x/vic.h"
 #include "video_core/host1x/vic_geometry.h"
 #include "video_core/memory_manager.h"
-#include "video_core/textures/decoders.h"
 
 #if defined(ARCHITECTURE_x86_64)
 #include "common/cpu_features.h"
@@ -683,6 +682,20 @@ void Vic::Blend(const ConfigStruct& config, const SlotStruct& slot, VideoPixelFo
     }
 }
 
+bool Vic::ValidBlockHeight(u32 block_height) noexcept {
+    // A guest value of four bits: past the largest a surface has, the sizes and offsets derived
+    // from it no longer agree.
+    if (block_height <= VicGeometry::MaxBlockHeight) {
+        return true;
+    }
+    if (!logged_block_height) {
+        logged_block_height = true;
+        LOG_ERROR(HW_GPU, "Vic {} has an output block height {} past {}: not written", id,
+                  block_height, VicGeometry::MaxBlockHeight);
+    }
+    return false;
+}
+
 void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) noexcept {
     constexpr u32 BytesPerPixel = 1;
 
@@ -870,8 +883,13 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
     switch (output_surface_config.out_block_kind) {
     case BlkKind::Generic_16Bx2: {
         u32 const block_height = u32(output_surface_config.out_block_height);
-        auto const out_luma_swizzle_size = Texture::CalculateSize(true, BytesPerPixel, out_luma_width, out_luma_height, 1, block_height, 0);
-        auto const out_chroma_swizzle_size = Texture::CalculateSize(true, BytesPerPixel * 2, out_chroma_width, out_chroma_height, 1, block_height, 0);
+        if (!ValidBlockHeight(block_height)) {
+            break;
+        }
+        // Sized from the planes' row bytes, as the swizzle reads them (the same alignment to a
+        // GOB's width as from their pixel widths).
+        auto const out_luma_swizzle_size = VicGeometry::BlockLinearSize(out_luma_stride, out_luma_height, block_height);
+        auto const out_chroma_swizzle_size = VicGeometry::BlockLinearSize(out_chroma_stride, out_chroma_height, block_height);
 
         LOG_TRACE(HW_GPU, "Writing Y8__V8U8_N420 swizzled frame\n"
             "\tinput surface {}x{} stride {} size {:#x}\n"
@@ -887,14 +905,15 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
         chroma_scratch.resize_destructive(out_chroma_size);
         Decode(luma_scratch.data(), chroma_scratch.data());
 
+        // Each plane copies through its own backup when its guest mapping is not contiguous: one
+        // shared buffer would be resized under the other span while both are alive.
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_luma_swizzle_size, &swizzle_scratch);
-        Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_chroma(host1x.gmmu_manager, regs.output_surface.chroma_u.Address(), out_chroma_swizzle_size, &swizzle_scratch);
-        if (block_height == 1) {
-            VicGeometry::SwizzleSurface(out_luma, out_luma_stride, luma_scratch, out_luma_stride, out_luma_height);
-            VicGeometry::SwizzleSurface(out_chroma, out_chroma_stride, chroma_scratch, out_chroma_stride, out_chroma_height);
-        } else {
-            Texture::SwizzleTexture(out_luma, luma_scratch, BytesPerPixel, out_luma_width, out_luma_height, 1, block_height, 0, 1);
-            Texture::SwizzleTexture(out_chroma, chroma_scratch, BytesPerPixel, out_chroma_width, out_chroma_height, 1, block_height, 0, 1);
+        Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_chroma(host1x.gmmu_manager, regs.output_surface.chroma_u.Address(), out_chroma_swizzle_size, &chroma_swizzle_scratch);
+        // Rows of the planes' row bytes (the chroma's two bytes a pixel included), bounded by the
+        // guest spans.
+        if (!VicGeometry::SwizzleBlockLinear(out_luma, luma_scratch, out_luma_stride, out_luma_height, block_height) ||
+            !VicGeometry::SwizzleBlockLinear(out_chroma, chroma_scratch, out_chroma_stride, out_chroma_height, block_height)) {
+            LOG_ERROR(HW_GPU, "Vic {} could not swizzle its Y8/V8U8 output", id);
         }
     } break;
     case BlkKind::Pitch: {
@@ -920,7 +939,12 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
         host1x.gmmu_manager.WriteBlock(regs.output_surface.chroma_u.Address(), chroma_scratch.data(), out_chroma_size);
     } break;
     default:
-        UNREACHABLE();
+        // A guest value: log it once and write nothing.
+        if (!logged_block_kind) {
+            logged_block_kind = true;
+            LOG_ERROR(HW_GPU, "Vic {} has an output block kind {} it cannot write", id,
+                      u32(output_surface_config.out_block_kind.Value()));
+        }
         break;
     }
 }
@@ -1042,7 +1066,10 @@ void Vic::WriteABGR(const OutputSurfaceConfig& output_surface_config, VideoPixel
     switch (output_surface_config.out_block_kind) {
     case BlkKind::Generic_16Bx2: {
         const u32 block_height = u32(output_surface_config.out_block_height);
-        auto const out_swizzle_size = Texture::CalculateSize(true, BytesPerPixel, out_luma_width, out_luma_height, 1, block_height, 0);
+        if (!ValidBlockHeight(block_height)) {
+            break;
+        }
+        auto const out_swizzle_size = VicGeometry::BlockLinearSize(out_luma_stride, out_luma_height, block_height);
         LOG_TRACE(HW_GPU, "Writing ABGR swizzled frame\n"
             "\tinput surface {}x{} stride {} size {:#x}\n"
             "\toutput surface {}x{} stride {} size {:#x} block height {} swizzled size {:#x}",
@@ -1053,10 +1080,8 @@ void Vic::WriteABGR(const OutputSurfaceConfig& output_surface_config, VideoPixel
         Decode(luma_scratch.data(), output_surface.data());
 
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_swizzle_size, &swizzle_scratch);
-        if (block_height == 1) {
-            VicGeometry::SwizzleSurface(out_luma, out_luma_stride, luma_scratch, out_luma_stride, out_luma_height);
-        } else {
-            Texture::SwizzleTexture(out_luma, luma_scratch, BytesPerPixel, out_luma_width, out_luma_height, 1, block_height, 0, 1);
+        if (!VicGeometry::SwizzleBlockLinear(out_luma, luma_scratch, out_luma_stride, out_luma_height, block_height)) {
+            LOG_ERROR(HW_GPU, "Vic {} could not swizzle its ABGR output", id);
         }
     } break;
     case BlkKind::Pitch: {
@@ -1071,7 +1096,12 @@ void Vic::WriteABGR(const OutputSurfaceConfig& output_surface_config, VideoPixel
         Decode(out_luma.data(), output_surface.data());
     } break;
     default:
-        UNREACHABLE();
+        // A guest value: log it once and write nothing.
+        if (!logged_block_kind) {
+            logged_block_kind = true;
+            LOG_ERROR(HW_GPU, "Vic {} has an output block kind {} it cannot write", id,
+                      u32(output_surface_config.out_block_kind.Value()));
+        }
         break;
     }
 }

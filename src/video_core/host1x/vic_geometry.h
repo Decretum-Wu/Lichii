@@ -39,7 +39,22 @@ struct BlendRects {
 std::optional<BlendRects> FitBlend(const BlendInput& in) noexcept;
 
 /// Block-linear swizzle of a pitch surface for a block height of one (log2), as Vic writes it.
+/// Equal to Texture::SwizzleTexture only for a row size that is a multiple of a GOB's width (64
+/// bytes) and an even height; it does not bound its writes. SwizzleBlockLinear picks it only then.
 void SwizzleSurface(std::span<u8> output, u32 out_stride, std::span<const u8> input, u32 in_stride,
                     u32 height) noexcept;
+
+/// The largest block height (log2 GOBs) a block-linear surface has.
+inline constexpr u32 MaxBlockHeight = 5;
+
+/// The bytes a block-linear plane of `height` rows of `row_bytes` takes, in 64 bits. A block
+/// height past MaxBlockHeight is taken as MaxBlockHeight.
+[[nodiscard]] size_t BlockLinearSize(u32 row_bytes, u32 height, u32 block_height) noexcept;
+
+/// Swizzles a pitch plane (rows of row_bytes, one after the other) into a block-linear one.
+/// False, writing nothing, when block_height is past MaxBlockHeight or either span is smaller
+/// than the planes it describes.
+[[nodiscard]] bool SwizzleBlockLinear(std::span<u8> output, std::span<const u8> input,
+                                      u32 row_bytes, u32 height, u32 block_height) noexcept;
 
 } // namespace Tegra::Host1x::VicGeometry

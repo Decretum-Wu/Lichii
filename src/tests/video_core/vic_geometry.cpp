@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <optional>
 #include <utility>
+#include <vector>
 #include <random>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "video_core/host1x/vic_geometry.h"
+#include "video_core/textures/decoders.h"
 
 using Tegra::Host1x::VicGeometry::BlendInput;
 using Tegra::Host1x::VicGeometry::BlendRects;
@@ -173,4 +175,105 @@ TEST_CASE("Every fitted slot stays within both surfaces on both blend paths",
     CHECK(compared > Configurations / 4);
     CHECK(matrix_compared > Configurations / 10);
     CHECK(refused > 0);
+}
+
+namespace {
+
+/// Where byte x of row y of a pitch plane lands in a block-linear one, from the GOB layout
+/// itself (64 bytes by 8 rows, blocks of 2^block_height GOBs a column), apart from any
+/// implementation the swizzle uses.
+size_t BlockLinearOffset(u32 x, u32 y, u32 row_bytes, u32 block_height) {
+    const size_t gobs_a_row = (size_t{row_bytes} + 63) / 64;
+    const size_t gobs_a_block = size_t{1} << block_height;
+    const size_t block = y / (8 * gobs_a_block);
+    const size_t gob_in_block = (y / 8) % gobs_a_block;
+    const size_t gob = (block * gobs_a_row + x / 64) * gobs_a_block + gob_in_block;
+    const size_t in_gob = ((x % 64) / 32) * 256 + ((y % 8) / 2) * 64 + ((x % 32) / 16) * 32 +
+                          (y % 2) * 16 + x % 16;
+    return gob * 512 + in_gob;
+}
+
+/// The swizzle of `rows` rows of row_bytes, checked against BlockLinearOffset byte by byte, and
+/// that nothing is written past the plane's block-linear size.
+void CheckSwizzle(u32 row_bytes, u32 rows, u32 block_height) {
+    using Tegra::Host1x::VicGeometry::BlockLinearSize;
+    using Tegra::Host1x::VicGeometry::SwizzleBlockLinear;
+    constexpr u8 Guard = 0xA5;
+    constexpr size_t GuardBytes = 4096;
+    const size_t size = BlockLinearSize(row_bytes, rows, block_height);
+    REQUIRE(size == Tegra::Texture::CalculateSize(true, 1, row_bytes, rows, 1, block_height, 0));
+    // A hash of the byte's index: no two rows alike, so a swizzle that moves whole rows or
+    // blocks (rows 16 apart swapped, rows reversed) is caught.
+    std::vector<u8> input(size_t{row_bytes} * rows);
+    for (size_t i = 0; i < input.size(); ++i) {
+        u64 h = (i + 1) * 0x9E3779B97F4A7C15ULL;
+        h ^= h >> 29;
+        h *= 0xBF58476D1CE4E5B9ULL;
+        input[i] = static_cast<u8>(h >> 56);
+    }
+    std::vector<u8> output(size + GuardBytes, Guard);
+    REQUIRE(SwizzleBlockLinear(std::span(output).first(size), input, row_bytes, rows,
+                               block_height));
+    INFO("block height " << block_height << ", row bytes " << row_bytes << ", rows " << rows);
+    size_t outside = 0;
+    size_t wrong = 0;
+    for (u32 y = 0; y < rows; ++y) {
+        for (u32 x = 0; x < row_bytes; ++x) {
+            const size_t at = BlockLinearOffset(x, y, row_bytes, block_height);
+            if (at >= size) {
+                ++outside;
+            } else if (output[at] != input[size_t{y} * row_bytes + x]) {
+                ++wrong;
+            }
+        }
+    }
+    REQUIRE(outside == 0);
+    REQUIRE(wrong == 0);
+    REQUIRE(std::all_of(output.begin() + size, output.end(),
+                        [](u8 byte) { return byte == Guard; }));
+}
+
+} // namespace
+
+TEST_CASE("Vic's block-linear swizzle puts every byte where the GOB layout says",
+          "[video_core][vic_geometry]") {
+    using Tegra::Host1x::VicGeometry::MaxBlockHeight;
+    // 6 block heights x 32 row sizes x 48 heights = 9,216 planes, the fast path's included.
+    for (u32 block_height = 0; block_height <= MaxBlockHeight; ++block_height) {
+        for (u32 row_bytes = 16; row_bytes <= 512; row_bytes += 16) {
+            for (u32 rows = 1; rows <= 48; ++rows) {
+                CheckSwizzle(row_bytes, rows, block_height);
+            }
+        }
+    }
+}
+
+TEST_CASE("Vic's block-linear swizzle handles the planes its writers pass",
+          "[video_core][vic_geometry]") {
+    // What WriteY8__V8U8_N420 and WriteABGR pass: each plane's 16-byte-aligned stride as its row
+    // bytes, the chroma plane with two bytes a pixel, the ABGR plane with four.
+    const auto stride = [](u32 bytes) { return (bytes + 15) & ~15U; };
+    for (const auto [width, height] : {std::pair{1280U, 720U}, {854U, 480U}, {641U, 361U},
+                                       {100U, 37U}}) {
+        for (u32 block_height = 0; block_height <= 4; ++block_height) {
+            CheckSwizzle(stride(width), height, block_height);                 // Y8 luma
+            CheckSwizzle(stride((width + 1) / 2 * 2), (height + 1) / 2, block_height); // V8U8
+            CheckSwizzle(stride(width * 4), height, block_height);             // ABGR
+        }
+    }
+}
+
+TEST_CASE("Vic's block-linear swizzle refuses a block height or spans it cannot use",
+          "[video_core][vic_geometry]") {
+    using Tegra::Host1x::VicGeometry::BlockLinearSize;
+    using Tegra::Host1x::VicGeometry::MaxBlockHeight;
+    using Tegra::Host1x::VicGeometry::SwizzleBlockLinear;
+    std::vector<u8> input(64 * 16, 1);
+    std::vector<u8> output(BlockLinearSize(64, 16, MaxBlockHeight), 0);
+    CHECK_FALSE(SwizzleBlockLinear(output, input, 64, 16, MaxBlockHeight + 1));
+    CHECK_FALSE(SwizzleBlockLinear(std::span(output).first(output.size() - 1), input, 64, 16,
+                                   MaxBlockHeight));
+    CHECK_FALSE(SwizzleBlockLinear(output, std::span(input).first(input.size() - 1), 64, 16,
+                                   MaxBlockHeight));
+    CHECK(std::all_of(output.begin(), output.end(), [](u8 byte) { return byte == 0; }));
 }
