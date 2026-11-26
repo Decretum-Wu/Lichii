@@ -775,9 +775,14 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
         return y / 2 < out_chroma_height && x + 1 < chroma_row_bytes;
     };
 
+    // Widths the SSE path takes on this CPU. It writes chroma from even rows only; the scalar loop
+    // from every row, so an odd row's chroma replaces the even row's above it. A width the SSE
+    // path takes but whose chroma does not fit runs the scalar loop, from even rows only, as SSE
+    // would have.
+    auto const sse_width = COMPILED_HAS_SSE41 && HasSSE41() && surface_width % 16 == 0;
     auto Decode = [&](u8* out_luma, u8* out_chroma) {
         // The SSE path writes whole chroma rows: only where the chroma plane holds them.
-        if (COMPILED_HAS_SSE41 && HasSSE41() && surface_width % 16 == 0 && chroma_fits) {
+        if (sse_width && chroma_fits) {
 #if COMPILED_HAS_SSE41
             // luma_mask   = [00 00] [00 00] [00 00] [FF FF] [00 00] [00 00] [00 00] [FF FF]
             auto const luma_mask = _mm_set_epi16(0, 0, 0, -1, 0, 0, 0, -1);
@@ -921,7 +926,7 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
                     if (x + 1 < surface_width) {
                         out_luma[dst_luma + x + 1] = u8(output_surface[src_luma + x + 1].r >> 2);
                     }
-                    if (has_chroma(x, y)) {
+                    if (has_chroma(x, y) && (!sse_width || y % 2 == 0)) {
                         out_chroma[dst_chroma + x + 0] = u8(output_surface[src_chroma + x].g >> 2);
                         out_chroma[dst_chroma + x + 1] = u8(output_surface[src_chroma + x].b >> 2);
                     }
