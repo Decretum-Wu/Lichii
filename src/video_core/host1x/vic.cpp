@@ -966,12 +966,20 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
         // write (a block's padding) reach the guest as zero or as Vic's earlier output.
         ResizeCleared(swizzle_scratch, swizzle_cleared, out_luma_swizzle_size);
         ResizeCleared(chroma_swizzle_scratch, chroma_swizzle_cleared, out_chroma_swizzle_size);
-        Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_luma_swizzle_size, &swizzle_scratch);
-        Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_chroma(host1x.gmmu_manager, regs.output_surface.chroma_u.Address(), out_chroma_swizzle_size, &chroma_swizzle_scratch);
         // Rows of the planes' row bytes (the chroma's two bytes a pixel included), bounded by the
-        // guest spans.
-        if (!VicGeometry::SwizzleBlockLinear(out_luma, luma_scratch, out_luma_stride, out_luma_height, block_height) ||
-            !VicGeometry::SwizzleBlockLinear(out_chroma, chroma_scratch, out_chroma_stride, out_chroma_height, block_height)) {
+        // guest spans. The luma span ends, writing its backup back, before the chroma's is made:
+        // a luma plane that runs into the chroma is overwritten by the chroma either way, as the
+        // pitch path orders them, whether or not either plane copies through a backup.
+        bool swizzled;
+        {
+            Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_luma_swizzle_size, &swizzle_scratch);
+            swizzled = VicGeometry::SwizzleBlockLinear(out_luma, luma_scratch, out_luma_stride, out_luma_height, block_height);
+        }
+        if (swizzled) {
+            Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_chroma(host1x.gmmu_manager, regs.output_surface.chroma_u.Address(), out_chroma_swizzle_size, &chroma_swizzle_scratch);
+            swizzled = VicGeometry::SwizzleBlockLinear(out_chroma, chroma_scratch, out_chroma_stride, out_chroma_height, block_height);
+        }
+        if (!swizzled) {
             LOG_ERROR(HW_GPU, "Vic {} could not swizzle its Y8/V8U8 output", id);
         }
     } break;
