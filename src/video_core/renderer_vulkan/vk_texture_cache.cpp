@@ -5366,14 +5366,15 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
     s32 num_layers = (std::numeric_limits<s32>::max)();
 
     is_rescaled = is_rescaled_;
+    misses_attachment = false;
     const auto& resolution = runtime.resolution;
 
     u32 width = (std::numeric_limits<u32>::max)();
     u32 height = (std::numeric_limits<u32>::max)();
     for (size_t index = 0; index < NUM_RT; ++index) {
         const ImageView* const color_buffer = color_buffers[index];
-        // A view whose creation failed has no handle and is left out like an unbound target.
         if (!color_buffer || !color_buffer->RenderTarget()) {
+            misses_attachment |= color_buffer != nullptr;
             renderpass_key.color_formats[index] = PixelFormat::Invalid;
             continue;
         }
@@ -5411,6 +5412,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
         depth_image = depth_buffer->ImageHandle();
         depth_aspect_mask = subresource_range.aspectMask;
     } else {
+        misses_attachment |= depth_buffer != nullptr;
         renderpass_key.depth_format = PixelFormat::Invalid;
     }
     if (num_layers == (std::numeric_limits<s32>::max)()) {
