@@ -34,6 +34,7 @@ extern "C" {
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/nvdec.h"
 #include "video_core/host1x/vic.h"
+#include "video_core/host1x/vic_geometry.h"
 #include "video_core/memory_manager.h"
 #include "video_core/textures/decoders.h"
 
@@ -61,25 +62,6 @@ static bool HasSSE41() {
 #endif
 }
 
-void SwizzleSurface(std::span<u8> output, u32 out_stride, std::span<const u8> input, u32 in_stride, u32 height) noexcept {
-    //// Taken from https://github.com/averne/FFmpeg/blob/nvtegra/libavutil/hwcontext_nvtegra.c#L949
-    /// Can only handle block height == 1.
-    u32 const x_mask = 0xFFFFFFD2u, y_mask = 0x2Cu;
-    u32 offs_x = 0, offs_y = 0;
-    for (size_t y = 0; y < height; y += 2) {
-        auto dst_line = output.data() + offs_y * 16;
-        auto const src_line = input.data() + u32(y) * (in_stride / 16) * 16;
-
-        auto offs_line = offs_x;
-        for (u32 x = 0; x < in_stride; x += 16) {
-            std::memcpy(&dst_line[offs_line * 16], &src_line[x], 16);
-            std::memcpy(&dst_line[offs_line * 16 + 16], &src_line[x + in_stride], 16);
-            offs_line = (offs_line - x_mask) & x_mask;
-        }
-        offs_y = (offs_y - y_mask) & y_mask;
-        offs_x += offs_y ? 0 : out_stride; // Wrap into next tile row
-    }
-}
 
 } // namespace
 
@@ -888,8 +870,8 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_luma_swizzle_size, &swizzle_scratch);
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_chroma(host1x.gmmu_manager, regs.output_surface.chroma_u.Address(), out_chroma_swizzle_size, &swizzle_scratch);
         if (block_height == 1) {
-            SwizzleSurface(out_luma, out_luma_stride, luma_scratch, out_luma_stride, out_luma_height);
-            SwizzleSurface(out_chroma, out_chroma_stride, chroma_scratch, out_chroma_stride, out_chroma_height);
+            VicGeometry::SwizzleSurface(out_luma, out_luma_stride, luma_scratch, out_luma_stride, out_luma_height);
+            VicGeometry::SwizzleSurface(out_chroma, out_chroma_stride, chroma_scratch, out_chroma_stride, out_chroma_height);
         } else {
             Texture::SwizzleTexture(out_luma, luma_scratch, BytesPerPixel, out_luma_width, out_luma_height, 1, block_height, 0, 1);
             Texture::SwizzleTexture(out_chroma, chroma_scratch, BytesPerPixel, out_chroma_width, out_chroma_height, 1, block_height, 0, 1);
@@ -1052,7 +1034,7 @@ void Vic::WriteABGR(const OutputSurfaceConfig& output_surface_config, VideoPixel
 
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_swizzle_size, &swizzle_scratch);
         if (block_height == 1) {
-            SwizzleSurface(out_luma, out_luma_stride, luma_scratch, out_luma_stride, out_luma_height);
+            VicGeometry::SwizzleSurface(out_luma, out_luma_stride, luma_scratch, out_luma_stride, out_luma_height);
         } else {
             Texture::SwizzleTexture(out_luma, luma_scratch, BytesPerPixel, out_luma_width, out_luma_height, 1, block_height, 0, 1);
         }
