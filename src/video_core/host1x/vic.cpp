@@ -454,22 +454,31 @@ void Vic::Blend(const ConfigStruct& config, const SlotStruct& slot, VideoPixelFo
     auto rect_top = add_one(u32(config.output_config.target_rect_top.Value()));
     auto rect_bottom = add_one(u32(config.output_config.target_rect_bottom.Value()));
 
-    rect_left = (std::max)(rect_left, dest_left);
-    rect_right = (std::min)(rect_right, dest_right);
-    rect_top = (std::max)(rect_top, dest_top);
-    rect_bottom = (std::min)(rect_bottom, dest_bottom);
-
-    source_left = (std::max)(source_left, rect_left);
-    source_right = (std::min)(source_right, rect_right);
-    source_top = (std::max)(source_top, rect_top);
-    source_bottom = (std::min)(source_bottom, rect_bottom);
-
     auto const out_surface_width = config.output_surface_config.out_surface_width + 1;
     auto const out_surface_height = config.output_surface_config.out_surface_height + 1;
     auto const in_surface_width = slot.surface_config.slot_surface_width + 1;
 
-    source_bottom = (std::min)(source_bottom, out_surface_height);
-    source_right = (std::min)(source_right, out_surface_width);
+    // Fitted once, here, against both surfaces as they are sized now, for both paths below.
+    auto const fit = VicGeometry::FitBlend({
+        .source_left = source_left, .source_right = source_right,
+        .source_top = source_top, .source_bottom = source_bottom,
+        .dest_left = dest_left, .dest_right = dest_right,
+        .dest_top = dest_top, .dest_bottom = dest_bottom,
+        .target_left = rect_left, .target_right = rect_right,
+        .target_top = rect_top, .target_bottom = rect_bottom,
+        .out_width = out_surface_width, .out_height = out_surface_height,
+        .slot_width = in_surface_width,
+        .slot_rows = u32(slot_surface.size() / in_surface_width),
+    });
+    if (!fit) {
+        return; // Empty, or inverted: nothing to draw.
+    }
+    source_left = fit->source_left;
+    source_right = slot.color_matrix.matrix_enable ? fit->matrix_right : fit->source_right;
+    source_top = fit->source_top;
+    source_bottom = fit->source_bottom;
+    rect_left = fit->rect_left;
+    rect_right = fit->rect_right;
 
     [[maybe_unused]] auto const work_width = u32((std::max)(0, s32(source_right) - s32(source_left)));
     [[maybe_unused]] auto const work_height = u32((std::max)(0, s32(source_bottom) - s32(source_top)));
