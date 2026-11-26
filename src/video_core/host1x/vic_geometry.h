@@ -44,6 +44,11 @@ std::optional<BlendRects> FitBlend(const BlendInput& in) noexcept;
 void SwizzleSurface(std::span<u8> output, u32 out_stride, std::span<const u8> input, u32 in_stride,
                     u32 height) noexcept;
 
+/// The largest width or height Vic gives a scratch surface. The guest's fields are 14 bits wide,
+/// up to 16384, which would make an output surface of 2 GiB. This bound is a chosen one, not one
+/// read from the hardware's documentation: it holds a 4K frame (3840x2160).
+inline constexpr u32 MaxSurfaceDimension = 4096;
+
 /// The largest block height (log2 GOBs) a block-linear surface has.
 inline constexpr u32 MaxBlockHeight = 5;
 

@@ -3,6 +3,7 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <tuple>
 #include <stdint.h>
@@ -53,6 +54,17 @@ extern "C" {
 namespace Tegra::Host1x {
 namespace {
 
+/// Resizes a scratch buffer keeping its contents, and zeroes what it grows by the first time:
+/// `cleared` is how much of it has ever been written, so no byte of it is ever uninitialized.
+template <typename T>
+void ResizeCleared(Common::ScratchBuffer<T>& buffer, size_t& cleared, size_t size) noexcept {
+    buffer.resize(size);
+    if (size > cleared) {
+        std::fill(buffer.data() + cleared, buffer.data() + size, T{});
+        cleared = size;
+    }
+}
+
 static bool HasSSE41() {
 #ifdef ARCHITECTURE_x86_64
     return Common::g_cpu_caps.sse4_1;
@@ -95,7 +107,12 @@ void Vic::Execute() noexcept {
 
     auto output_width = config.output_surface_config.out_surface_width + 1;
     auto output_height = config.output_surface_config.out_surface_height + 1;
-    output_surface.resize(output_width * output_height);
+    // A surface past MaxSurfaceDimension is not drawn, but its slots' frames are still taken
+    // from the queue below, so the frames after them are not shown late.
+    const bool output_fits = FitsSurface(output_width, output_height);
+    if (output_fits) {
+        ResizeCleared(output_surface, output_cleared, output_width * output_height);
+    }
 
     if (Settings::values.nvdec_emulation.GetValue() != Settings::NvdecEmulation::Off) {
         bool decoded_frame = false;
@@ -105,6 +122,17 @@ void Vic::Execute() noexcept {
                 if (nvdec_id == -1)
                     nvdec_id = host1x.frame_queue.VicFindNvdecFdFromOffset(luma_offset);
                 if (auto frame = host1x.frame_queue.GetFrame(nvdec_id, luma_offset); frame.get()) {
+                    // The readers take TopField and BottomField into twice the slot surface's rows.
+                    // Every format but Progressive is counted so here, the ones no reader takes
+                    // included: such a slot is not read, and may be skipped a size earlier.
+                    const bool field =
+                        slot_config.config.frame_format != DxvhadFrameFormat::Progressive;
+                    const u32 slot_rows =
+                        (slot_config.surface_config.slot_surface_height + 1) * (field ? 2 : 1);
+                    if (!output_fits ||
+                        !FitsSurface(slot_config.surface_config.slot_surface_width + 1, slot_rows)) {
+                        continue; // The frame is taken from the queue, and dropped.
+                    }
                     switch (frame->GetPixelFormat()) {
                     case AV_PIX_FMT_YUV420P:
                         ReadY8__V8U8_N420(slot_config, regs.surfaces[i], std::move(frame), true);
@@ -123,12 +151,18 @@ void Vic::Execute() noexcept {
                 }
             }
         }
+        if (!output_fits) {
+            return;
+        }
         if (decoded_frame) {
             has_decoded_frame = true;
         } else if (!has_decoded_frame) {
             return;
         }
     } else {
+        if (!output_fits) {
+            return;
+        }
         // Fill the frame with black, as otherwise they can have random data and be very glitchy.
         std::fill(output_surface.begin(), output_surface.end(), Pixel{});
     }
@@ -172,7 +206,7 @@ void Vic::ReadProgressiveY8__V8U8_N420(const SlotStruct& slot, std::span<const P
         in_chroma_stride, out_luma_width, out_luma_height, out_luma_stride, out_luma_width,
         out_luma_height, out_luma_stride);
 
-    slot_surface.resize_destructive(out_luma_width * out_luma_height);
+    ResizeCleared(slot_surface, slot_cleared, out_luma_width * out_luma_height);
     if (COMPILED_HAS_SSE41 && HasSSE41() && in_luma_width % 16 == 0) {
 #if COMPILED_HAS_SSE41
         auto const alpha_linear = u16(slot.config.planar_alpha.Value());
@@ -350,7 +384,7 @@ void Vic::ReadInterlacedY8__V8U8_N420(const SlotStruct& slot, std::span<const Pl
         auto const out_luma_height{(slot.surface_config.slot_surface_height + 1) * 2};
         auto const out_luma_stride{out_luma_width};
 
-        slot_surface.resize(out_luma_width * out_luma_height);
+        ResizeCleared(slot_surface, slot_cleared, out_luma_width * out_luma_height);
 
         auto const in_luma_width = (std::min)(frame->GetWidth(), s32(out_luma_width));
         auto const in_luma_height = (std::min)(frame->GetHeight(), s32(out_luma_height));
@@ -682,6 +716,18 @@ void Vic::Blend(const ConfigStruct& config, const SlotStruct& slot, VideoPixelFo
     }
 }
 
+bool Vic::FitsSurface(u32 width, u32 height) noexcept {
+    if (width <= VicGeometry::MaxSurfaceDimension && height <= VicGeometry::MaxSurfaceDimension) {
+        return true;
+    }
+    if (!logged_large_surface) {
+        logged_large_surface = true;
+        LOG_ERROR(HW_GPU, "Vic {} skips a {}x{} surface, past {} a side", id, width, height,
+                  VicGeometry::MaxSurfaceDimension);
+    }
+    return false;
+}
+
 bool Vic::ValidBlockHeight(u32 block_height) noexcept {
     // A guest value of four bits: past the largest a surface has, the sizes and offsets derived
     // from it no longer agree.
@@ -710,6 +756,10 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
 
     auto const out_chroma_width = output_surface_config.out_chroma_width + 1;
     auto const out_chroma_height = output_surface_config.out_chroma_height + 1;
+    if (!FitsSurface(out_luma_width, out_luma_height) ||
+        !FitsSurface(out_chroma_width, out_chroma_height)) {
+        return;
+    }
     auto const out_chroma_stride = Common::AlignUp(out_chroma_width * BytesPerPixel * 2, 0x10);
     auto const out_chroma_size = out_chroma_height * out_chroma_stride;
 
@@ -901,12 +951,16 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
             out_chroma_height, out_chroma_stride, out_chroma_size, block_height,
             out_chroma_swizzle_size);
 
-        luma_scratch.resize_destructive(out_luma_size);
-        chroma_scratch.resize_destructive(out_chroma_size);
+        ResizeCleared(luma_scratch, luma_cleared, out_luma_size);
+        ResizeCleared(chroma_scratch, chroma_cleared, out_chroma_size);
         Decode(luma_scratch.data(), chroma_scratch.data());
 
         // Each plane copies through its own backup when its guest mapping is not contiguous: one
-        // shared buffer would be resized under the other span while both are alive.
+        // shared buffer would be resized under the other span while both are alive. Sized and
+        // cleared here, so the span's own resize keeps them, and the bytes the swizzle does not
+        // write (a block's padding) reach the guest as zero or as Vic's earlier output.
+        ResizeCleared(swizzle_scratch, swizzle_cleared, out_luma_swizzle_size);
+        ResizeCleared(chroma_swizzle_scratch, chroma_swizzle_cleared, out_chroma_swizzle_size);
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_luma_swizzle_size, &swizzle_scratch);
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_chroma(host1x.gmmu_manager, regs.output_surface.chroma_u.Address(), out_chroma_swizzle_size, &chroma_swizzle_scratch);
         // Rows of the planes' row bytes (the chroma's two bytes a pixel included), bounded by the
@@ -932,8 +986,8 @@ void Vic::WriteY8__V8U8_N420(const OutputSurfaceConfig& output_surface_config) n
         // create guest spans and decode into game memory directly to avoid the memory copy from
         // scratch to game. Due to this bug, we must write the luma first, and then the chroma
         // afterwards to re-overwrite the luma being too large.
-        luma_scratch.resize_destructive(out_luma_size);
-        chroma_scratch.resize_destructive(out_chroma_size);
+        ResizeCleared(luma_scratch, luma_cleared, out_luma_size);
+        ResizeCleared(chroma_scratch, chroma_cleared, out_chroma_size);
         Decode(luma_scratch.data(), chroma_scratch.data());
         host1x.gmmu_manager.WriteBlock(regs.output_surface.luma.Address(), luma_scratch.data(), out_luma_size);
         host1x.gmmu_manager.WriteBlock(regs.output_surface.chroma_u.Address(), chroma_scratch.data(), out_chroma_size);
@@ -960,6 +1014,9 @@ void Vic::WriteABGR(const OutputSurfaceConfig& output_surface_config, VideoPixel
     auto const out_luma_height = output_surface_config.out_luma_height + 1;
     auto const out_luma_stride = Common ::AlignUp(out_luma_width * BytesPerPixel, 0x10);
     auto const out_luma_size = out_luma_height * out_luma_stride;
+    if (!FitsSurface(out_luma_width, out_luma_height)) {
+        return;
+    }
 
     surface_width = (std::min)(surface_width, out_luma_width);
     surface_height = (std::min)(surface_height, out_luma_height);
@@ -1070,13 +1127,14 @@ void Vic::WriteABGR(const OutputSurfaceConfig& output_surface_config, VideoPixel
             break;
         }
         auto const out_swizzle_size = VicGeometry::BlockLinearSize(out_luma_stride, out_luma_height, block_height);
+        ResizeCleared(swizzle_scratch, swizzle_cleared, out_swizzle_size);
         LOG_TRACE(HW_GPU, "Writing ABGR swizzled frame\n"
             "\tinput surface {}x{} stride {} size {:#x}\n"
             "\toutput surface {}x{} stride {} size {:#x} block height {} swizzled size {:#x}",
             surface_width, surface_height, surface_stride * BytesPerPixel,
             surface_stride * surface_height * BytesPerPixel, out_luma_width, out_luma_height,
             out_luma_stride, out_luma_size, block_height, out_swizzle_size);
-        luma_scratch.resize_destructive(out_luma_size);
+        ResizeCleared(luma_scratch, luma_cleared, out_luma_size);
         Decode(luma_scratch.data(), output_surface.data());
 
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_swizzle_size, &swizzle_scratch);
@@ -1091,7 +1149,7 @@ void Vic::WriteABGR(const OutputSurfaceConfig& output_surface_config, VideoPixel
             surface_width, surface_height, surface_stride,
             surface_stride * surface_height * BytesPerPixel, out_luma_width, out_luma_height,
             out_luma_stride, out_luma_size);
-        luma_scratch.resize_destructive(out_luma_size);
+        ResizeCleared(luma_scratch, luma_cleared, out_luma_size);
         Tegra::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeWrite> out_luma(host1x.gmmu_manager, regs.output_surface.luma.Address(), out_luma_size, &luma_scratch);
         Decode(out_luma.data(), output_surface.data());
     } break;
