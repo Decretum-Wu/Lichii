@@ -6,14 +6,17 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "common/common_types.h"
 #include "common/settings_enums.h"
+#include "video_core/renderer_vulkan/vk_present_recovery.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Layout {
@@ -52,12 +55,21 @@ public:
         VkFormat requested_format = VK_FORMAT_B8G8R8A8_UNORM,
         VkColorSpaceKHR requested_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
-    /// Acquires the next image in the swapchain, waits as needed. Returns true when no image was
-    /// acquired (out of date) and the swapchain has to be recreated first.
+    /// Acquires the next image in the swapchain, waits ACQUIRE_TIMEOUT_NS at most. Returns true
+    /// when no image was acquired (out of date, or the wait timed out) and the swapchain has to be
+    /// recreated first.
     /// `may_flush`: false on the async present thread (see Scheduler::Wait).
     /// `game_frame_presents`: how many presents show this game frame, its generated frames
     /// included; Frame Pacing Mode targets game frames.
     bool AcquireNextImage(bool may_flush = true, u32 game_frame_presents = 1);
+
+    /// The surface reports another size than the swapchain has (a display that changed under it).
+    bool SurfaceExtentChanged() const;
+
+    /// Logs the first failure of a recovery (once per event, with its VkResult and how long the
+    /// failed call took); Present logs the end of the event.
+    void ReportRecovery(VkResult result, std::string_view what,
+                        std::chrono::steady_clock::duration took);
 
     /// Presents the rendered image to the swapchain. A non-zero `present_id` is chained as the
     /// present's id when the swapchain has ids (HasPresentIds). Returns whether the present was
@@ -237,6 +249,8 @@ private:
 
     bool is_outdated{};
     bool is_suboptimal{};
+
+    PresentRecovery recovery;
 
     /// Held for each use of the swapchain handle that Vulkan wants synchronized: acquires,
     /// presents, present waits and its destruction.
