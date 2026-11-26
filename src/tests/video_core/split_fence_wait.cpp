@@ -4,6 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <future>
+#include <latch>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -60,8 +62,15 @@ public:
         : VideoCommon::FenceManager<Traits>{rasterizer_, gpu_, texture, buffer, query},
           submission{submission_} {}
 
+    ~FenceManager() override {
+        if (on_destroy) {
+            on_destroy();
+        }
+    }
+
     u64 queued{};
     u32 submissions{};
+    std::function<void()> on_destroy; ///< Runs first in the destructor, before the base's
 
 protected:
     std::shared_ptr<Fence> CreateFence(bool stubbed) override {
@@ -160,4 +169,45 @@ TEST_CASE("Immediate fence waits still submit outstanding work", "[video_core][s
         REQUIRE_FALSE(submission.wrong_owner);
     }
     REQUIRE(callback.load());
+}
+
+TEST_CASE("Destroying the fence manager wakes a fencing thread about to sleep",
+          "[video_core][split_fence_wait]") {
+    ScopedSystemTestContext context;
+    Core::System system;
+    Tegra::GPU gpu{system, false, false};
+    Null::RasterizerNull rasterizer{gpu};
+    Cache texture, buffer, query;
+    Submission submission;
+    const auto previous = Settings::values.gpu_fence_behavior.GetValue();
+    SCOPE_EXIT { Settings::values.gpu_fence_behavior.SetValue(previous); };
+    Settings::values.gpu_fence_behavior.SetValue(Settings::GpuFenceBehavior::Accurate);
+    auto manager =
+        std::make_unique<FenceManager>(rasterizer, gpu, texture, buffer, query, submission);
+    // The fencing thread runs the marker's callback, finds no fences and, with guard held, is
+    // about to sleep: there it waits until the destructor has begun, so the stop is requested
+    // while the thread is between its look at the stop flag and its sleep.
+    bool marker_ran{}; // Fencing thread only
+    bool held{};       // Fencing thread only
+    std::latch in_window{1};
+    std::latch destroying{1};
+    manager->SetFenceThreadSleepHookForTest([&] {
+        if (marker_ran && !held) {
+            held = true;
+            in_window.count_down();
+            destroying.wait();
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+    });
+    manager->on_destroy = [&] { destroying.count_down(); };
+    manager->SignalFence([&] { marker_ran = true; });
+    in_window.wait();
+    std::promise<void> destroyed;
+    auto done = destroyed.get_future();
+    std::jthread teardown{[&manager, &destroyed] {
+        manager.reset();
+        destroyed.set_value();
+    }};
+    REQUIRE(done.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+    REQUIRE(held);
 }
