@@ -3280,7 +3280,15 @@ public:
     /// can read them as one indirect argument range
     bool IsMacroRangeContiguous(size_t index, size_t count) const {
         const GPUVAddr first = GetMacroAddress(index);
-        return first != 0 && GetMacroAddress(index + count - 1) == first + (count - 1) * sizeof(u32);
+        if (first == 0) {
+            return false;
+        }
+        for (size_t offset = 1; offset < count; ++offset) {
+            if (GetMacroAddress(index + offset) != first + offset * sizeof(u32)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     void RefreshParameters() {
