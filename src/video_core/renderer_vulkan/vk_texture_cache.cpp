@@ -4762,6 +4762,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
             if (result == VK_ERROR_DEVICE_LOST) {
                 device->ReportLoss();
             }
+            flags |= VideoCommon::ImageViewFlagBits::CreationFailed;
             return;
         }
         if (device->HasDebuggingToolAttached()) {

@@ -5569,7 +5569,27 @@ template <class P>
 ImageViewId TextureCache<P>::FindOrEmplaceImageView(ImageId image_id, const ImageViewInfo& info) {
     Image& image = slot_images[image_id];
     if (const ImageViewId image_view_id = image.FindView(info); image_view_id) {
-        return image_view_id;
+        if (False(slot_image_views[image_view_id].flags & ImageViewFlagBits::CreationFailed)) {
+            return image_view_id;
+        }
+        const std::array<ImageViewId, 1> failed{image_view_id};
+        std::ranges::replace(render_targets.color_buffer_ids, image_view_id, ImageViewId{});
+        if (render_targets.depth_buffer_id == image_view_id) {
+            render_targets.depth_buffer_id = ImageViewId{};
+        }
+        RemoveImageViewReferences(failed);
+        RemoveFramebuffers(failed);
+        sentenced_image_view.Push(std::move(slot_image_views[image_view_id]));
+        slot_image_views.erase(image_view_id);
+        const auto index =
+            std::ranges::find(image.image_view_ids, image_view_id) - image.image_view_ids.begin();
+        image.image_view_ids.erase(image.image_view_ids.begin() + index);
+        image.image_view_infos.erase(image.image_view_infos.begin() + index);
+        for (const size_t channel : active_channel_ids) {
+            channel_storage[channel].graphics_image_table.Invalidate();
+            channel_storage[channel].compute_image_table.Invalidate();
+        }
+        VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);
     }
     if (True(image.flags & ImageFlagBits::Unbacked) &&
         False(image.flags & ImageFlagBits::SparseLayers)) {
