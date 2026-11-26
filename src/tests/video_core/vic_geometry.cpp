@@ -253,8 +253,8 @@ TEST_CASE("Vic's block-linear swizzle handles the planes its writers pass",
     // What WriteY8__V8U8_N420 and WriteABGR pass: each plane's 16-byte-aligned stride as its row
     // bytes, the chroma plane with two bytes a pixel, the ABGR plane with four.
     const auto stride = [](u32 bytes) { return (bytes + 15) & ~15U; };
-    for (const auto [width, height] : {std::pair{1280U, 720U}, {854U, 480U}, {641U, 361U},
-                                       {100U, 37U}}) {
+    for (const auto& [width, height] : {std::pair{1280U, 720U}, {854U, 480U}, {641U, 361U},
+                                        {100U, 37U}}) {
         for (u32 block_height = 0; block_height <= 4; ++block_height) {
             CheckSwizzle(stride(width), height, block_height);                 // Y8 luma
             CheckSwizzle(stride((width + 1) / 2 * 2), (height + 1) / 2, block_height); // V8U8
