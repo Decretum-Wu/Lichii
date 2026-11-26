@@ -282,6 +282,10 @@ NvResult nvhost_ctrl::IocCtrlClearEventWait(IocCtrlEventClearParams& params) {
     auto lock = NvEventsLock();
 
     auto& event = events[event_id];
+    // A slot never registered, or unregistered since, has no KEvent to clear.
+    if (!event.registered) {
+        return NvResult::BadParameter;
+    }
     if (event.status.exchange(EventState::Cancelling, std::memory_order_acq_rel) ==
         EventState::Waiting) {
         auto& host1x_syncpoint_manager = system.Host1x().GetSyncpointManager();
