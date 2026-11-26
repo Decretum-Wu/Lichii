@@ -308,6 +308,9 @@ bool Swapchain::AcquireNextImage(bool may_flush, u32 game_frame_presents) {
         return true;
     case AcquireAction::Throw:
         ReportRecovery(result, "vkAcquireNextImageKHR", std::chrono::steady_clock::now() - began);
+        if (result == VK_ERROR_DEVICE_LOST) {
+            device.ReportLoss();
+        }
         throw vk::Exception(result);
     }
 
