@@ -2316,6 +2316,14 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
     clearing_render_targets = is_clear;
     drawing_render_targets = !is_clear;
     auto& flags = maxwell3d->dirty.flags;
+    const auto failed = [this](ImageViewId id) {
+        return id && True(slot_image_views[id].flags & ImageViewFlagBits::CreationFailed);
+    };
+    if (!flags[Dirty::RenderTargets] &&
+        (std::ranges::any_of(render_targets.color_buffer_ids, failed) ||
+         failed(render_targets.depth_buffer_id))) {
+        MarkRenderTargetsDirty();
+    }
     if (!flags[Dirty::RenderTargets]) {
         for (size_t index = 0; index < NUM_RT; ++index) {
             ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
@@ -5573,6 +5581,7 @@ ImageViewId TextureCache<P>::FindOrEmplaceImageView(ImageId image_id, const Imag
             return image_view_id;
         }
         const std::array<ImageViewId, 1> failed{image_view_id};
+        MarkRenderTargetsDirty();
         std::ranges::replace(render_targets.color_buffer_ids, image_view_id, ImageViewId{});
         if (render_targets.depth_buffer_id == image_view_id) {
             render_targets.depth_buffer_id = ImageViewId{};
@@ -6014,6 +6023,16 @@ void TextureCache<P>::InvalidateXc2LutViews(ImageBase& image) {
         info.compute_image_table.Invalidate();
     }
     VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);
+}
+
+template <class P>
+void TextureCache<P>::MarkRenderTargetsDirty() {
+    auto& dirty = maxwell3d->dirty.flags;
+    dirty[Dirty::RenderTargets] = true;
+    dirty[Dirty::ZetaBuffer] = true;
+    for (size_t rt = 0; rt < NUM_RT; ++rt) {
+        dirty[Dirty::ColorBuffer0 + rt] = true;
+    }
 }
 
 template <class P>
