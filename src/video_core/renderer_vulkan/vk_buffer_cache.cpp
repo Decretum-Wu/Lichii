@@ -643,11 +643,17 @@ bool BufferCacheRuntime::CanReorderUpload(const Buffer& buffer,
     if (Settings::values.disable_buffer_reorder) {
         return false;
     }
-    const bool can_use_upload_cmdbuf =
-        std::ranges::all_of(copies, [&](const VideoCommon::BufferCopy& copy) {
-            return !buffer.IsRegionUsed(copy.dst_offset, copy.size);
-        });
-    return can_use_upload_cmdbuf;
+    const bool unused = std::ranges::all_of(copies, [&](const VideoCommon::BufferCopy& copy) {
+        return !buffer.IsRegionUsed(copy.dst_offset, copy.size);
+    });
+    if (unused) {
+        return true;
+    }
+    // Only work whose submission has finished used the buffer: nothing in flight reads the
+    // regions, so the upload may still go to the upload command buffer and leave the render pass
+    // open. A use in the open command buffer carries its current tick, which is never finished.
+    const auto tick = arena.TickOf(buffer.LastUsageTick());
+    return tick && IsFreeNow(*tick);
 }
 
 void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
