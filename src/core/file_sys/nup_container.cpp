@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstring>
@@ -22,6 +23,17 @@
 #define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <csignal>
+#include <unistd.h>
+#endif
+
 #include "common/fs/file.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -34,6 +46,69 @@
 
 namespace FileSys {
 namespace {
+
+u64 CurrentProcessId() {
+#ifdef _WIN32
+    return GetCurrentProcessId();
+#else
+    return static_cast<u64>(getpid());
+#endif
+}
+
+bool ProcessAlive(u64 pid) {
+#ifdef _WIN32
+    const HANDLE process =
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (process == nullptr) {
+        return GetLastError() == ERROR_ACCESS_DENIED;
+    }
+    DWORD code = 0;
+    const bool alive = GetExitCodeProcess(process, &code) && code == STILL_ACTIVE;
+    CloseHandle(process);
+    return alive;
+#else
+    return kill(static_cast<pid_t>(pid), 0) == 0 || errno == EPERM;
+#endif
+}
+
+// Removes spill files of processes that ended without deleting them (a crash or a forced
+// stop on Windows, where an open file cannot be unlinked), and files of older builds that
+// named them without the owner's process ID once they are an hour old.
+void RemoveSpillsOfEndedRuns(const std::filesystem::path& dir) {
+    std::error_code ec;
+    u64 removed = 0;
+    u64 bytes = 0;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        const auto name = entry.path().filename().string();
+        if (!name.ends_with(".tmp") || !entry.is_regular_file(ec)) {
+            continue;
+        }
+        const auto dash = name.find('-');
+        const auto owner = name.substr(0, dash);
+        bool leftover;
+        if (dash != std::string::npos && dash <= 10 && !owner.empty() &&
+            std::ranges::all_of(owner, [](char c) { return c >= '0' && c <= '9'; })) {
+            const u64 pid = std::stoull(owner);
+            leftover = pid != CurrentProcessId() && !ProcessAlive(pid);
+        } else {
+            const auto written = entry.last_write_time(ec);
+            leftover = !ec && now - written > std::chrono::hours{1};
+        }
+        if (!leftover) {
+            continue;
+        }
+        const auto size = entry.file_size(ec);
+        if (std::filesystem::remove(entry.path(), ec)) {
+            ++removed;
+            bytes += ec ? 0 : size;
+        }
+    }
+    if (removed != 0) {
+        LOG_INFO(Loader, "Removed {} NUP temporary files ({} MiB) left by earlier runs", removed,
+                 bytes >> 20);
+    }
+}
 
 constexpr u32 NoDir = 0xFFFFFFFF;
 constexpr std::size_t SuperblockSize = 0x80;
@@ -427,7 +502,9 @@ private:
                     std::random_device random;
                     std::error_code ec;
                     std::filesystem::create_directories(cache->spill_dir, ec);
-                    member.path = cache->spill_dir / fmt::format("{:08x}{:08x}-{}.tmp", random(),
+                    // The owner's process ID lets a later run remove files a crashed run left.
+                    member.path = cache->spill_dir / fmt::format("{}-{:08x}{:08x}-{}.tmp",
+                                                                 CurrentProcessId(), random(),
                                                                  random(), cache_index);
                     member.file.Open(member.path, Common::FS::FileAccessMode::Write);
                     member.file.Close();
@@ -435,6 +512,12 @@ private:
                     if (!member.file.IsOpen()) {
                         return fail("cannot create the temporary file");
                     }
+#ifndef _WIN32
+                    // Unlinked while open: the system frees it when the process ends, even on a
+                    // crash.
+                    std::filesystem::remove(member.path, ec);
+                    member.path.clear();
+#endif
                 } else {
                     member.data = std::make_unique_for_overwrite<u8[]>(
                         static_cast<std::size_t>(uncompressed_size));
@@ -531,6 +614,14 @@ private:
 
 } // namespace
 
+void NupContainer::RemoveLeftoverSpills(const std::filesystem::path& dir) {
+    RemoveSpillsOfEndedRuns(dir);
+}
+
+u64 NupContainer::CurrentProcessIdForSpills() {
+    return CurrentProcessId();
+}
+
 bool NupContainer::IsNupFile(const VirtualFile& file) {
     if (file == nullptr || file->GetSize() < SuperblockSize) {
         return false;
@@ -547,6 +638,8 @@ NupContainer::NupContainer(VirtualFile file_, std::size_t memory_cache_cap,
     cache->spill_dir = spill_dir_.empty()
                            ? Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "nup"
                            : std::move(spill_dir_);
+    static std::once_flag sweep;
+    std::call_once(sweep, [dir = cache->spill_dir] { RemoveSpillsOfEndedRuns(dir); });
     if (file == nullptr) {
         return;
     }

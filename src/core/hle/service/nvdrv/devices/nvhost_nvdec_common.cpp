@@ -107,6 +107,17 @@ NvResult nvhost_nvdec_common::Submit(IoctlSubmit& params, std::span<u8> data, De
 
     auto* session = core.GetSession(sessions[fd]);
 
+    // Each increment names a syncpoint by a guest id. One past the syncpoints made
+    // IncrementSyncpointMaxExt throw std::out_of_range, which nothing catches: refuse the submit
+    // before any syncpoint's maximum is raised.
+    for (const SyncptIncr& syncpt_incr : syncpt_increments) {
+        if (syncpt_incr.id >= MaxSyncPoints) {
+            LOG_ERROR(Service_NVDRV, "Submit refused: syncpoint {} past the syncpoints",
+                      syncpt_incr.id);
+            return NvResult::BadParameter;
+        }
+    }
+
     // The guest gives the two counts separately: each increment raises its syncpoint's max, and
     // its threshold is returned only where the guest made room for one.
     for (std::size_t i = 0; i < syncpt_increments.size(); i++) {

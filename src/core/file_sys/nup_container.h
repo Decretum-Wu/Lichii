@@ -78,6 +78,12 @@ public:
     /// Quick magic check without a full parse.
     static bool IsNupFile(const VirtualFile& file);
 
+    /// Deletes spill files in `dir` whose owning process ended (and old-format ones over an
+    /// hour old). Runs once per process for the default spill directory.
+    static void RemoveLeftoverSpills(const std::filesystem::path& dir);
+    /// The process ID spill file names start with.
+    static u64 CurrentProcessIdForSpills();
+
     /// Recursively merges overlay into a copy of base; overlay paths win.
     static VirtualDir MergeShadowDirs(const VirtualDir& base, const VirtualDir& overlay);
 
