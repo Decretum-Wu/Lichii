@@ -49,8 +49,13 @@ public:
                 return Result::InvalidTarget;
             const bool diverged_only = opcode == 0x947 && instruction.Bits(32, 2) == 2;
             // CALL.REL.NOINC (bit 86) pushes no return address, but its callee still returns
-            // with RET.REL.NODEC through the link register set ahead of the call.
-            if (opcode == 0x944) {
+            // with RET.REL.NODEC through the link register set ahead of the call. A predicated one
+            // is a loop-exit jump inside the program, as the lowering treats it: counted as a call,
+            // its target would hold the main EXIT back and the capture would run on past the
+            // shader.
+            const bool noinc_jump = opcode == 0x944 && (instruction.words[2] & 0x400000) != 0 &&
+                                    instruction.Bits(12, 4) != 7;
+            if (opcode == 0x944 && !noinc_jump) {
                 last_call_target = std::max(last_call_target, static_cast<u32>(target / 16));
             } else if (!diverged_only) {
                 last_forward_target = std::max(last_forward_target, static_cast<u32>(target / 16));
