@@ -182,6 +182,7 @@ void MasterSemaphore::Wait(u64 tick) {
             }
         }
         if (const auto total = stall.End(std::chrono::steady_clock::now())) {
+            Refresh();
             LOG_WARNING(Render_Vulkan,
                         "GPU wait for tick {} ended after {} ms; GPU now at tick {}", tick,
                         total->count(), KnownGpuTick());
