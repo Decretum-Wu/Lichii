@@ -643,25 +643,24 @@ bool BufferCacheRuntime::CanReorderUpload(Buffer& buffer,
     if (Settings::values.disable_buffer_reorder) {
         return false;
     }
-    const bool unused = std::ranges::all_of(copies, [&](const VideoCommon::BufferCopy& copy) {
+    bool reorder = std::ranges::all_of(copies, [&](const VideoCommon::BufferCopy& copy) {
         return !buffer.IsRegionUsed(copy.dst_offset, copy.size);
     });
-    if (unused) {
-        return true;
+    if (!reorder) {
+        // Only work whose submission has finished used the buffer: nothing in flight reads the
+        // regions, so the upload may still go to the upload command buffer and leave the render
+        // pass open. A use in the open command buffer carries its current tick, which is never
+        // finished.
+        const auto tick = arena.TickOf(buffer.LastUsageTick());
+        reorder = tick && IsFreeNow(*tick);
     }
-    // Only work whose submission has finished used the buffer: nothing in flight reads the
-    // regions, so the upload may still go to the upload command buffer and leave the render pass
-    // open. A use in the open command buffer carries its current tick, which is never finished.
-    const auto tick = arena.TickOf(buffer.LastUsageTick());
-    if (tick && IsFreeNow(*tick)) {
-        return true;
-    }
-    // The upload goes through the open command buffer, which runs after the upload command
-    // buffer: stamp the regions so a later upload to them cannot be reordered ahead of it.
+    // Whichever buffer the upload goes to, stamp its regions: a later upload to them stays in
+    // order behind it, since the upload command buffer has no barrier between its copies and the
+    // open command buffer runs after it.
     for (const VideoCommon::BufferCopy& copy : copies) {
         buffer.MarkUsage(copy.dst_offset, copy.size);
     }
-    return false;
+    return reorder;
 }
 
 void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
