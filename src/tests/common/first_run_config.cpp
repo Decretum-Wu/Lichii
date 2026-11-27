@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <random>
 #include <sstream>
 #include <type_traits>
+#include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include "common/fs/path_util.h"
@@ -321,6 +323,32 @@ TEST_CASE("Missing per-game and input profiles are not seeded", "[config]") {
     FileConfig input{std::string{"controller"}, Config::ConfigType::InputProfile};
     CHECK_FALSE(input.Exists("Renderer", "scaling_filter"));
     CheckFreshProfile();
+}
+
+TEST_CASE("Input profiles with non-ASCII names keep their name on disk", "[config]") {
+    ConfigDirectory directory;
+    const std::string name = "Handger\xC3\xA4t";
+    const auto file_name = Common::FS::ToU8String(name + ".ini");
+    {
+        FileConfig input{name, Config::ConfigType::InputProfile};
+        CHECK(input.GetConfigFilePath() ==
+              Common::FS::PathToUTF8String(directory.path / "input" / file_name));
+    }
+    CHECK(std::filesystem::exists(directory.path / "input" / file_name));
+
+    std::vector<std::string> listed;
+    for (const auto& entry : std::filesystem::directory_iterator{directory.path / "input"}) {
+        auto filename = entry.path().filename();
+        listed.push_back(Common::FS::PathToUTF8String(filename.replace_extension()));
+    }
+    REQUIRE(listed.size() == 1);
+    CHECK(listed.front() == name);
+
+    {
+        FileConfig again{listed.front(), Config::ConfigType::InputProfile};
+    }
+    CHECK(std::distance(std::filesystem::directory_iterator{directory.path / "input"},
+                        std::filesystem::directory_iterator{}) == 1);
 }
 
 namespace {
