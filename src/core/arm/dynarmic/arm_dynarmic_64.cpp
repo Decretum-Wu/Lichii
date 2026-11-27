@@ -11,6 +11,7 @@
 #endif
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
+#include "core/arm/dynarmic/address_tag.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/arm/dynarmic/window_trace.h"
@@ -62,7 +63,23 @@ DynarmicCallbacks64::DynarmicCallbacks64(ArmDynarmic64& parent, Kernel::KProcess
     , m_check_memory_access{m_debugger_enabled || !Settings::values.cpuopt_ignore_memory_aborts.GetValue()}
 {}
 
+u64 DynarmicCallbacks64::UntagAddress(u64 vaddr, size_t size) {
+    const u64 stripped = StripAddressTag(vaddr);
+    if (stripped == vaddr) [[likely]] {
+        return vaddr;
+    }
+    static std::atomic<u32> logged{};
+    if (logged.fetch_add(1) < 16) {
+        LOG_WARNING(Core_ARM,
+                    "Tagged guest address {:#x} ({} bytes) -> {:#x}, mapped: {} at pc {:#x} lr {:#x}",
+                    vaddr, size, stripped, m_memory.IsValidVirtualAddressRange(stripped, size),
+                    m_parent.m_jit->GetPC(), m_parent.m_jit->GetRegister(30));
+    }
+    return stripped;
+}
+
 u64 DynarmicCallbacks64::MemoryRead(u64 vaddr, size_t size) {
+    vaddr = UntagAddress(vaddr, size);
     CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Read);
     u64 value{};
     switch (size) {
@@ -84,6 +101,7 @@ u64 DynarmicCallbacks64::MemoryRead(u64 vaddr, size_t size) {
     return value;
 }
 Dynarmic::A64::Vector DynarmicCallbacks64::MemoryRead128(u64 vaddr) {
+    vaddr = UntagAddress(vaddr, 16);
     CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Read);
     return {m_memory.Read64(vaddr), m_memory.Read64(vaddr + 8)};
 }
@@ -111,6 +129,7 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
 }
 
 void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std::size_t size) {
+    vaddr = UntagAddress(vaddr, size);
     if (CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Write)) {
         switch (size) {
         case sizeof(u64): return m_memory.Write64(vaddr, u64(value));
@@ -122,6 +141,7 @@ void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std
     }
 }
 void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value) {
+    vaddr = UntagAddress(vaddr, 16);
     if (CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write)) {
         m_memory.Write64(vaddr, value[0]);
         m_memory.Write64(vaddr + 8, value[1]);
@@ -129,22 +149,27 @@ void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value)
 }
 
 bool DynarmicCallbacks64::MemoryWriteExclusive8(u64 vaddr, std::uint8_t value, std::uint8_t expected) {
+    vaddr = UntagAddress(vaddr, 1);
     return CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive8(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive16(u64 vaddr, std::uint16_t value, std::uint16_t expected) {
+    vaddr = UntagAddress(vaddr, 2);
     return CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive16(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive32(u64 vaddr, std::uint32_t value, std::uint32_t expected) {
+    vaddr = UntagAddress(vaddr, 4);
     return CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive32(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive64(u64 vaddr, std::uint64_t value, std::uint64_t expected) {
+    vaddr = UntagAddress(vaddr, 8);
     return CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive64(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive128(u64 vaddr, Dynarmic::A64::Vector value, Dynarmic::A64::Vector expected) {
+    vaddr = UntagAddress(vaddr, 16);
     return CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive128(vaddr, value, expected);
 }

@@ -76,6 +76,7 @@ add_executable(tests
     core/gpu_dirty_memory.cpp
     core/nso_loader.cpp
     core/nsp_loader.cpp
+    core/address_tag.cpp
     core/memory_acquire.cpp
     core/kip_sections.cpp
     core/memory_span.cpp
