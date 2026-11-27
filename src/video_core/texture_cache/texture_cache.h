@@ -211,7 +211,12 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) 
     // Not const, here and below: with OpenGL both would be constant expressions, which the
     // lambda below must then not capture (-Wunused-lambda-capture), while Vulkan's must be.
     bool download_overlaps = std::is_trivially_destructible_v<DownloadMap> &&
-                             WritebackSwitches::WritebackDefault();
+                             WritebackSwitches::AnyWritebackOn();
+    // EDEN_NX2_OOT_STALE_WRITEBACK=1: only the overlaps a later frame sampled after their last
+    // write. Ocarina renders its pause menu's item preview once and samples it every frame; once
+    // the collector dropped it, it was made again over the stale pages without an upload and
+    // showed recycled host memory (#2056).
+    bool sampled_only = !WritebackSwitches::WritebackDefault();
     // The collector does not wait for its
     // write-backs (each wait was 5-10 ms, several a second in combat); they reach guest memory
     // when the GPU is done with them.
@@ -240,7 +245,8 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) 
     };
     const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode, &CanEvict,
                           &evict_bad_overlaps, &keep, &keep_ticks, out_of_memory,
-                          &overlap_downloads, download_overlaps, async_downloads](ImageId image_id) {
+                          &overlap_downloads, download_overlaps, async_downloads,
+                          sampled_only](ImageId image_id) {
         if (num_iterations == 0) {
             return true;
         }
@@ -255,6 +261,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) 
         // already hold all of it (then its data is not lost with it).
         const bool overlap_writeback =
             download_overlaps && True(image.flags & ImageFlagBits::BadOverlap) &&
+            (!sampled_only || image.last_sampled_frame > image.last_written_frame) &&
             (async_downloads || image.guest_size_bytes <= OverlapDownloadMaxBytes()) &&
             IsDownloadable(image) && HasGuestRange(image);
         const bool covered =
@@ -297,6 +304,18 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) 
             ++gc_download_deletes;
         } else if (overlap_writeback && !covered) {
             download_queued = true;
+            if (sampled_only) {
+                static u64 sampled_writebacks{};
+                if (sampled_writebacks++ % 256 < 8) {
+                    LOG_INFO(HW_GPU,
+                             "OoT stale write-back #{}: gpu={:#x} {}x{} format={} {} KiB, "
+                             "written frame {}, sampled frame {}",
+                             sampled_writebacks, image.gpu_addr, image.info.size.width,
+                             image.info.size.height, static_cast<u32>(image.info.format),
+                             image.guest_size_bytes / 1024, image.last_written_frame - 1,
+                             image.last_sampled_frame - 1);
+                }
+            }
             NoteOverlapWriteback(image);
             // Deferred also when waiting: a later image's synchronous download in this pass
             // finishes the GPU work, after which the pool would hand this buffer out again.
@@ -6020,6 +6039,7 @@ void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_vi
 template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
     image.flags |= ImageFlagBits::GpuModified;
+    image.last_written_frame = frame_tick + 1;
     image.storage_written_levels = 0;
     SetModificationTick(slot_images, image, ++modification_tick);
     if (image.overlapping_images.empty() || Settings::GetCurrentProgramID() != Xc2ProgramId) {
@@ -6107,6 +6127,9 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         }
     }
     Image& image = slot_images[image_id];
+    if (!is_modification) {
+        image.last_sampled_frame = frame_tick + 1;
+    }
     if (is_modification && !invalidate && !async_overlap_downloads.empty() &&
         WritebackWouldReload(image)) {
         // Its write-back landing would reload it, but not once the GPU has written to it: a
