@@ -3842,7 +3842,7 @@ bool TextureCache<P>::UploadsByLayer(const ImageBase& image) noexcept {
         static const u64 plain_min_bytes = []() -> u64 {
             const char* const value = std::getenv("EDEN_NX2_LAYER_UPLOAD_MIB");
             if (value == nullptr) {
-                return 0;
+                return 32_MiB;
             }
             const std::string_view text{value};
             u64 mib{};
