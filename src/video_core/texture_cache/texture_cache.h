@@ -261,7 +261,8 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) 
         // already hold all of it (then its data is not lost with it).
         const bool overlap_writeback =
             download_overlaps && True(image.flags & ImageFlagBits::BadOverlap) &&
-            (!sampled_only || image.last_sampled_frame > image.last_written_frame) &&
+            (!sampled_only || (image.last_written_frame != 0 &&
+                               image.last_sampled_frame > image.last_written_frame)) &&
             (async_downloads || image.guest_size_bytes <= OverlapDownloadMaxBytes()) &&
             IsDownloadable(image) && HasGuestRange(image);
         const bool covered =
@@ -5068,6 +5069,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
             CopyImage(new_image_id, aliased->id, aliased->copies);
             SetModificationTick(slot_images, new_image, overlap.modification_tick);
+            new_image.last_written_frame =
+                (std::max)(new_image.last_written_frame, overlap.last_written_frame);
             continue;
         }
         if (True(overlap.flags & ImageFlagBits::GpuModified)) {
@@ -5083,6 +5086,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
                 runtime.CopyImage(new_image, overlap, copies);
             }
             SetModificationTick(slot_images, new_image, overlap.modification_tick);
+            new_image.last_written_frame =
+                (std::max)(new_image.last_written_frame, overlap.last_written_frame);
         }
         if (True(overlap.flags & ImageFlagBits::Tracked)) {
             UntrackImage(overlap, copy_object.id);
@@ -6068,10 +6073,12 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     bool any_rescaled = True(image.flags & ImageFlagBits::Rescaled);
     bool any_modified = True(image.flags & ImageFlagBits::GpuModified);
     u64 most_recent_tick = image.modification_tick;
+    u64 last_written_frame = image.last_written_frame;
     for (const AliasedImage& aliased : image.aliased_images) {
         ImageBase& aliased_image = slot_images[aliased.id];
         if (image.modification_tick < aliased_image.modification_tick) {
             most_recent_tick = (std::max)(most_recent_tick, aliased_image.modification_tick);
+            last_written_frame = (std::max)(last_written_frame, aliased_image.last_written_frame);
             aliased_images.push_back(&aliased);
             any_rescaled |= True(aliased_image.flags & ImageFlagBits::Rescaled);
             any_modified |= True(aliased_image.flags & ImageFlagBits::GpuModified);
@@ -6092,6 +6099,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     }
     SetModificationTick(slot_images, image, most_recent_tick);
     image.newest_alias_tick = most_recent_tick;
+    image.last_written_frame = last_written_frame;
     image.storage_written_levels = 0;
     if (any_modified) {
         image.flags |= ImageFlagBits::GpuModified;
