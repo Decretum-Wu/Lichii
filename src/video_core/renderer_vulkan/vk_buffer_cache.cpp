@@ -638,7 +638,7 @@ bool BufferCacheRuntime::IsFreeNow(u64 tick) {
     return scheduler.IsFree(tick);
 }
 
-bool BufferCacheRuntime::CanReorderUpload(const Buffer& buffer,
+bool BufferCacheRuntime::CanReorderUpload(Buffer& buffer,
                                           std::span<const VideoCommon::BufferCopy> copies) {
     if (Settings::values.disable_buffer_reorder) {
         return false;
@@ -653,7 +653,15 @@ bool BufferCacheRuntime::CanReorderUpload(const Buffer& buffer,
     // regions, so the upload may still go to the upload command buffer and leave the render pass
     // open. A use in the open command buffer carries its current tick, which is never finished.
     const auto tick = arena.TickOf(buffer.LastUsageTick());
-    return tick && IsFreeNow(*tick);
+    if (tick && IsFreeNow(*tick)) {
+        return true;
+    }
+    // The upload goes through the open command buffer, which runs after the upload command
+    // buffer: stamp the regions so a later upload to them cannot be reordered ahead of it.
+    for (const VideoCommon::BufferCopy& copy : copies) {
+        buffer.MarkUsage(copy.dst_offset, copy.size);
+    }
+    return false;
 }
 
 void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
