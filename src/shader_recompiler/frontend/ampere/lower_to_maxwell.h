@@ -2512,17 +2512,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         case 0xf66: { // TLD.SCR.LZ with the handle in a uniform register (bit 91).
             // Maxwell TLD.B with the coordinates in R250.. (as 0xb66's second-buffer form: x | y,
             // layer, x | y or x, y | z over Ra and Rb) and the handle in Rb.
+            // Bit 78 is the multisample flag (Mesa NAK encodes TLD's is_ms there below SM120): the
+            // 2D coordinates are then x, y in Ra, Ra+1 and the sample index alone is Rb (the handle
+            // is the uniform register), as Maxwell TLD.B.MS takes the sample after the handle.
             const u32 handle = uniform_register(insn.Bits(40, 6));
             const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const u32 dimension = insn.Bits(61, 3);
             const bool array = dimension == 5, volume = dimension == 2;
+            const bool multisample = insn.Bits(78, 1) != 0;
             const bool split = second_dest != 255;
             const u32 components = static_cast<u32>(std::popcount(mask));
             if (handle == ~0U || handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1) ||
-                !insn.Bits(60, 1) || insn.Bits(59, 1) || insn.Bits(76, 5) || insn.Bits(81, 3) != 7 ||
+                !insn.Bits(60, 1) || insn.Bits(59, 1) || (insn.Bits(76, 5) & ~4U) ||
+                (multisample && (dimension != 1 || source_b >= high_uniform_base)) ||
+                insn.Bits(81, 3) != 7 ||
                 insn.Bits(87, 3) != 1 || (dimension != 0 && dimension != 1 && !array && !volume) ||
-                mask == 0 || ((array || volume) && source_a + 1 >= high_uniform_base) ||
+                mask == 0 || ((array || volume || multisample) && source_a + 1 >= high_uniform_base) ||
                 (dest != 255 && dest + (split ? (std::min)(components, 2U) : components) > high_uniform_base) ||
                 (split && components > 2 && second_dest + components - 2 > high_uniform_base))
                 return fail(index, "native bindless texel fetch mode");
@@ -2530,12 +2536,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
             };
             copy(250, source_a);
-            if (array || volume) copy(251, source_a + 1);
-            if (dimension != 0) copy(array || volume ? 252 : 251, source_b);
+            if (array || volume || multisample) copy(251, source_a + 1);
+            if (multisample) copy(247, source_b);
+            else if (dimension != 0) copy(array || volume ? 252 : 251, source_b);
             copy(246, handle);
             emit(0xdd00000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
                  (u64{array ? 3U : volume ? 4U : dimension == 0 ? 0U : 2U} << 28) | (u64{mask} << 31) |
-                 (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+                 (u64{insn.Bits(90, 1)} << 49) | (u64{multisample} << 50) | (u64{7} << 51));
             for (u32 i = 0; i < components; ++i) {
                 const u32 target = !split || i < 2 ? (dest == 255 ? 255U : static_cast<u32>(dest) + i)
                                                    : second_dest + (i - 2);

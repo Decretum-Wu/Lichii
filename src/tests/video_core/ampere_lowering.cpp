@@ -84,6 +84,55 @@ TEST_CASE("Ampere TLD.SCR.LZ takes its handle from a uniform register", "[video_
     REQUIRE(((tld >> 31) & 0xf) == 7);
 }
 
+TEST_CASE("Ampere TLD.SCR.LZ.MS takes the sample index from Rb and sets the multisample bit",
+          "[video_core][ampere]") {
+    // Shine Post: Be Your Idol! (#2647), pixel shader 0x1161204a00 at 0x120:
+    // TLD.SCR.LZ.MS R7, R2, R7, UR4, 2D, 0x1 (bit 78 set, bits 76-80 = 4).
+    const Instruction fetch{{0x02077f66, 0x30000407, 0x0c9e41ff, 0x101f4200}};
+    const auto lowered = LowerToMaxwell(std::array{fetch, EXIT});
+    INFO(lowered.error);
+    REQUIRE(static_cast<bool>(lowered));
+    std::array<u32, 256> regs{};
+    for (u32 i = 0; i < regs.size(); ++i) regs[i] = 0x1000 + i;
+    bool fetched = false;
+    for (const u64 word : lowered.instructions) {
+        if ((word >> 48) == 0x5c98) {
+            regs[word & 255] = regs[(word >> 20) & 255];
+        } else if ((word >> 56) == 0xdd) {
+            REQUIRE_FALSE(fetched);
+            fetched = true;
+            CHECK(((word >> 28) & 7) == 2); // 2D
+            CHECK(((word >> 31) & 15) == 1);
+            CHECK(((word >> 49) & 1) == 1); // NODEP, from bit 90
+            CHECK(((word >> 50) & 1) == 1); // multisample
+            CHECK(((word >> 55) & 1) == 0); // level zero
+            const u32 coord = (word >> 8) & 255, meta = (word >> 20) & 255;
+            CHECK(regs[coord] == 0x1000 + 2);
+            CHECK(regs[coord + 1] == 0x1000 + 3);
+            CHECK(regs[meta] == 0x1000 + 216 + 4); // UR4: the handle
+            CHECK(regs[meta + 1] == 0x1000 + 7);   // the sample index
+            regs[word & 255] = 0xfeed0000;
+        }
+    }
+    REQUIRE(fetched);
+    CHECK(regs[7] == 0xfeed0000);
+
+    Instruction plain = fetch;
+    plain.words[2] &= ~(1U << 14);
+    const auto plain_lowered = LowerToMaxwell(std::array{plain, EXIT});
+    REQUIRE(static_cast<bool>(plain_lowered));
+    const u64 plain_tld = FindMaxwell(plain_lowered, 0xdd, 56);
+    REQUIRE(plain_tld != 0);
+    CHECK(((plain_tld >> 50) & 1) == 0);
+
+    Instruction array = fetch;
+    array.words[1] |= 1U << 31; // dimension 5, 2D array: a multisample array fetch stays rejected
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(std::array{array, EXIT})));
+    Instruction other_bits = fetch;
+    other_bits.words[2] |= 1U << 15; // bit 79 is not part of this form
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(std::array{other_bits, EXIT})));
+}
+
 TEST_CASE("Ampere TLD.B.LL takes the handle, then the level, after the coordinates",
           "[video_core][ampere]") {
     // Cyberpunk 2077 (#1084): TLD.B.LL 2D, x, y in Ra, Ra+1 and the handle, level in Rb, Rb+1.
