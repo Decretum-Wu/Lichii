@@ -514,17 +514,22 @@ void EmitSetSampleMask(EmitContext& ctx, Id value) {
     ctx.OpStore(pointer, value);
 }
 
-void EmitSetFragDepth(EmitContext& ctx, Id value) {
+void EmitSetFragDepth(EmitContext& ctx, IR::Inst* inst, Id value) {
     Id depth{value};
     if (ctx.runtime_info.convert_depth_mode && !ctx.profile.support_native_ndc) {
         const Id unit{ctx.Const(0.5f)};
         depth = ctx.OpFma(ctx.F32[1], depth, unit, unit);
     }
-    if (ctx.runtime_info.quantize_frag_depth_d24) {
+    // Fixed-function depth stays a float, so a shader that stores FragCoord.z as it is keeps it
+    // unrounded to match a fixed-function pass. Any computed depth is rounded, even when it
+    // happens to equal FragCoord.z (min(FragCoord.z, offset depth) picks either per pixel).
+    const IR::Value stored{inst->Arg(0).Resolve()};
+    const IR::Inst* const source{stored.IsImmediate() ? nullptr : stored.InstRecursive()};
+    const bool frag_coord_z{source && source->GetOpcode() == IR::Opcode::GetAttribute &&
+                            source->Arg(0).Attribute() == IR::Attribute::PositionZ};
+    if (ctx.runtime_info.quantize_frag_depth_d24 && !frag_coord_z) {
         // Two passes that compute the same depth a few float ULPs apart store the same D24 value
         // on the guest, so an equal depth test between them passes there; keep that on the host.
-        // Fixed-function depth stays a float, so FragCoord.z passes through unrounded to keep
-        // matching it.
         const Id f32{ctx.F32[1]};
         const Id max_unorm{ctx.Const(16777215.0f)};
         const Id half{ctx.Const(0.5f)};
@@ -546,10 +551,7 @@ void EmitSetFragDepth(EmitContext& ctx, Id value) {
         const Id step{ctx.OpSelect(f32, up, one,
                                    ctx.OpSelect(f32, down, ctx.OpFNegate(f32, one),
                                                 ctx.f32_zero_value))};
-        const Id rounded{ctx.OpFDiv(f32, ctx.OpFAdd(f32, guess, step), max_unorm)};
-        const Id frag_z{ctx.OpLoad(f32, ctx.OpAccessChain(ctx.input_f32, ctx.input_position,
-                                                          ctx.Const(2u)))};
-        depth = ctx.OpSelect(f32, ctx.OpFOrdEqual(ctx.U1, depth, frag_z), depth, rounded);
+        depth = ctx.OpFDiv(f32, ctx.OpFAdd(f32, guess, step), max_unorm);
     }
     ctx.OpStore(ctx.frag_depth, depth);
 }
