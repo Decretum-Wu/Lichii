@@ -752,7 +752,12 @@ TEST_CASE("NUP reads zstd members above the memory cache through a temporary fil
         }
         REQUIRE(file->Read(reinterpret_cast<u8*>(chunk.data()), 10, large.size()) == 0);
 
+#ifdef _WIN32
         REQUIRE(std::distance(fs::directory_iterator(spill_dir), fs::directory_iterator{}) > 0);
+#else
+        // Unlinked while open: nothing is left behind even if the process dies.
+        REQUIRE(std::distance(fs::directory_iterator(spill_dir), fs::directory_iterator{}) == 0);
+#endif
         REQUIRE(PackedTree(nup.GetRomFSDir(0)) == SourceTree(root / "Base/RomFS"));
         REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
     }
@@ -2078,4 +2083,27 @@ TEST_CASE("A fresh System resolves its boot file before kernel allocation", "[bo
     CHECK(system.Load(window, Common::FS::PathToUTF8String(t.path / "main"), params) ==
           Core::SystemResultStatus::ErrorMemoryAllocation);
     CHECK(Settings::CurrentProgramIsSwitch2());
+}
+
+TEST_CASE("NUP removes temporary files that earlier runs left behind", "[nup]") {
+    TempDir t;
+    const auto dir = t.path / "spill";
+    // A process ID above any system's limit is never running.
+    Put(dir / "4294967294-0123456789abcdef-8.tmp", "dead owner");
+    const auto own = fmt::format("{}-0123456789abcdef-9.tmp",
+                                 FileSys::NupContainer::CurrentProcessIdForSpills());
+    Put(dir / own, "this process");
+    Put(dir / "0123456789abcdef-8.tmp", "old build, old");
+    Put(dir / "fedcba9876543210-8.tmp", "old build, recent");
+    Put(dir / "notes.txt", "not ours");
+    fs::last_write_time(dir / "0123456789abcdef-8.tmp",
+                        fs::file_time_type::clock::now() - std::chrono::hours{2});
+
+    FileSys::NupContainer::RemoveLeftoverSpills(dir);
+
+    REQUIRE_FALSE(fs::exists(dir / "4294967294-0123456789abcdef-8.tmp"));
+    REQUIRE(fs::exists(dir / own));
+    REQUIRE_FALSE(fs::exists(dir / "0123456789abcdef-8.tmp"));
+    REQUIRE(fs::exists(dir / "fedcba9876543210-8.tmp"));
+    REQUIRE(fs::exists(dir / "notes.txt"));
 }
